@@ -8,7 +8,7 @@ data:
     min_price: 1.0
     max_price: 1000.0
   akshare:
-    qps: 5
+    qps: 3
     max_retries: 3
     timeout_s: 30
     backoff_base_s: 0.5

@@ -224,34 +224,91 @@ class DataRepository:
         )
 
     def bootstrap_history(self, lookback_days: int, progress_cb=None) -> None:
-        """按近 ``lookback_days`` 个交易日倒序回填，并支持断点续传。
+        """按 symbol 模式回填近 ``lookback_days`` 个交易日历史。
 
-        单日任何异常（含 ``FetchError`` 与意外错误）都会被 catch 并记入
-        ``fetch_errors``、跳过该日（不写 ``refresh_state``，下次重跑会重试），
-        **绝不中断整个回填进程** —— 长跑任务的可恢复性优先于异常忠实传递。
+        与 ``refresh_daily`` 的"按天"循环互补：本方法对每只 symbol 一次性调用
+        ``gateway.fetch_ohlcv(symbol, start, end)`` 把整段 2 年数据拿回来，
+        再按日切分写入 Parquet 分区。这避免了"每天对全市场每只股发一次请求"
+        造成的 N×M 接口压力。
+
+        步骤：
+        1. 取最新 universe（一次 spot 调用）作为待回填的 symbol 全集。
+        2. 决定回填日历窗口 ``[start, end]``。
+        3. 逐 symbol 拉一段 OHLCV → 缓存进 ``self._symbol_buffer``。
+        4. 全部 symbol 处理完后按日切片，每日调用一次 ``_finalize_day(...)``
+           做质量门 + 落 parquet + 写 refresh_state。
+        5. 单 symbol 失败 → 写 fetch_errors 继续；单日质量失败 → 写
+           data_quality_log 但不阻塞其它日；**整个过程绝不抛**。
+
+        ``progress_cb(done, total, status)``：每完成一个 symbol 回调一次，
+        ``status`` ∈ ``{"ok", "skipped"}``。
         """
+        self._ensure_storage()
         end = date.today()
-        start = end - timedelta(days=max(lookback_days * 3, lookback_days))
-        trading_days = self._calendar.trading_days_between(start, end)
+        # 用足够长的窗口让 calendar 选出 lookback_days 个交易日
+        start_window = end - timedelta(days=max(lookback_days * 3, lookback_days))
+        trading_days = self._calendar.trading_days_between(start_window, end)
         if len(trading_days) > lookback_days:
             trading_days = trading_days[-lookback_days:]
-        trading_days = list(reversed(trading_days))
-        total = len(trading_days)
+        if not trading_days:
+            return
+        target_start = trading_days[0]
+        target_end = trading_days[-1]
+        trading_day_set = set(trading_days)
 
-        for index, current_day in enumerate(trading_days, start=1):
+        # 取 universe（一次 spot 调用）
+        snapshot_date = end
+        try:
+            snapshot = self._universe_manager.build_snapshot(snapshot_date)
+        except Exception as exc:  # noqa: BLE001
+            reason_code = getattr(exc, "reason_code", "UNKNOWN")
+            message = getattr(exc, "message", None) or str(exc)
+            self._insert_fetch_error(self._now_iso(), None, "universe", reason_code, message)
+            return
+        self._write_universe(snapshot)
+
+        # 逐 symbol 拉数据，按日聚合到 buffer
+        # 结构：{date_iso: list[pd.DataFrame(rows for that day)]}
+        day_buffer: dict[str, list[pd.DataFrame]] = {}
+        total = len(snapshot.symbols)
+        for index, symbol in enumerate(snapshot.symbols, start=1):
             status = "ok"
-            if self._refresh_state_rows(current_day) is None:
-                try:
-                    self.refresh_daily(current_day)
-                except Exception as exc:  # noqa: BLE001 — long-running job must not crash
-                    status = "skipped"
-                    reason_code = getattr(exc, "reason_code", "UNKNOWN")
-                    message = getattr(exc, "message", None) or str(exc)
-                    self._insert_fetch_error(
-                        self._now_iso(), None, "bootstrap_daily", reason_code, message
-                    )
+            try:
+                frame = self._gateway.fetch_ohlcv(symbol, target_start, target_end).copy()
+            except Exception as exc:  # noqa: BLE001
+                status = "skipped"
+                reason_code = getattr(exc, "reason_code", "UNKNOWN")
+                message = getattr(exc, "message", None) or str(exc)
+                self._insert_fetch_log(self._now_iso(), "ohlcv", symbol, target_end, "failed", message)
+                self._insert_fetch_error(self._now_iso(), symbol, "ohlcv", reason_code, message)
+            else:
+                frame["symbol"] = symbol
+                frame["date"] = pd.to_datetime(frame["date"]).dt.date
+                # 只保留交易日（防 akshare 返回非交易日）
+                frame = frame[frame["date"].isin(trading_day_set)]
+                if not frame.empty:
+                    sub = frame.loc[:, _OHLCV_COLUMNS].copy()
+                    for day_iso, daily_frame in sub.groupby(sub["date"].map(lambda x: x.isoformat())):
+                        day_buffer.setdefault(str(day_iso), []).append(daily_frame)
+                self._insert_fetch_log(self._now_iso(), "ohlcv", symbol, target_end, "ok", None)
+
             if progress_cb is not None:
                 progress_cb(index, total, status)
+
+        # 按日落盘
+        for day_iso, frames in day_buffer.items():
+            d = date.fromisoformat(day_iso)
+            if self._refresh_state_rows(d) is not None:
+                continue
+            combined = pd.concat(frames, ignore_index=True)
+            try:
+                checks = self._quality_gate.check(combined)
+            except QualityCheckFailed as exc:
+                self._insert_data_quality_log(d, False, exc.checks)
+                continue
+            self._insert_data_quality_log(d, True, checks)
+            self._write_ohlcv(d, combined)
+            self._upsert_refresh_state(d, "ok", len(combined))
 
     def quality_report(self) -> DataHealth:
         """汇总最新 refresh 状态、今日覆盖率和错误积压。"""

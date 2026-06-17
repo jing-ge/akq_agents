@@ -293,97 +293,126 @@ def test_pending_retries_counts_unresolved(
     assert repository.pending_retries() == 1
 
 
-def test_bootstrap_history_iterates_and_resumes(
+def test_bootstrap_history_iterates_per_symbol_and_persists_per_day(
     repo: tuple[DataRepository, MagicMock, MagicMock, MagicMock, MagicMock]
 ) -> None:
+    """P1.5 新模型：bootstrap 按 symbol 拉一段，再按日切分写 parquet。"""
     repository, gateway, calendar, universe_mgr, _ = repo
     days = [date(2026, 6, 13) + timedelta(days=offset) for offset in range(5)]
+    calendar.trading_days_between.side_effect = None
     calendar.trading_days_between.return_value = days
-    universe_mgr.build_snapshot.side_effect = lambda d: _make_snapshot(d, ["000001", "000002"])
-    gateway.fetch_ohlcv.side_effect = lambda symbol, start, end: _make_ohlcv(symbol, start)
-    progress: list[tuple[int, int, str]] = []
+    symbols = ["000001", "000002"]
+    universe_mgr.build_snapshot.return_value = _make_snapshot(days[-1], symbols)
 
+    # 每 symbol 返回整段 5 日数据
+    def fake_ohlcv(symbol: str, start: date, end: date) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": [pd.Timestamp(d) for d in days],
+                "open": [10.0] * 5,
+                "high": [11.0] * 5,
+                "low": [9.0] * 5,
+                "close": [10.5] * 5,
+                "volume": [1000.0] * 5,
+                "amount": [10000.0] * 5,
+            }
+        )
+
+    gateway.fetch_ohlcv.side_effect = fake_ohlcv
+    progress: list[tuple[int, int, str]] = []
     repository.bootstrap_history(
         5,
         progress_cb=lambda done, total, status: progress.append((done, total, status)),
     )
-    first_call_count = gateway.fetch_ohlcv.call_count
 
-    with sqlite3.connect(tmp_path_from_repo(repository) / "meta.db") as conn:
-        conn.execute("DELETE FROM refresh_state WHERE target_date = ?", (days[2].isoformat(),))
-        conn.commit()
+    # 每 symbol 一次 ohlcv 调用（2 次）
+    assert gateway.fetch_ohlcv.call_count == 2
+    # progress 按 symbol 计数（2 次 ok）
+    assert progress == [(1, 2, "ok"), (2, 2, "ok")]
+    # 每一天的 parquet 都已写入
+    for d in days:
+        assert (
+            tmp_path_from_repo(repository)
+            / "parquet"
+            / "ohlcv"
+            / f"date={d.isoformat()}"
+            / "part.parquet"
+        ).exists()
 
-    repository.bootstrap_history(5)
 
-    assert first_call_count == 10
-    assert gateway.fetch_ohlcv.call_count == 12
-    assert progress == [(i, 5, "ok") for i in range(1, 6)]
-
-
-def test_bootstrap_history_continues_when_single_day_universe_fails(
+def test_bootstrap_history_skips_symbol_on_fetch_error_keeps_running(
     repo: tuple[DataRepository, MagicMock, MagicMock, MagicMock, MagicMock]
 ) -> None:
-    """spec §3 流程 4：单日 universe 失败不应中断整个回填。"""
+    """单 symbol 拉取失败 → 记 fetch_errors → 继续处理其他 symbol；不崩。"""
     from akq_agents.services.data.exceptions import FetchError
 
     repository, gateway, calendar, universe_mgr, _ = repo
     days = [date(2026, 6, 13) + timedelta(days=offset) for offset in range(3)]
     calendar.trading_days_between.side_effect = None
     calendar.trading_days_between.return_value = days
+    universe_mgr.build_snapshot.return_value = _make_snapshot(days[-1], ["000001", "000002"])
 
-    # 第二天 universe 直接炸（spot 接口断连，模拟实战中遇到的 NETWORK error）
-    def _flaky_build(d: date):
-        if d == days[1]:
+    def flaky(symbol: str, start: date, end: date) -> pd.DataFrame:
+        if symbol == "000001":
             raise FetchError(reason_code="NETWORK", message="Remote end closed connection")
-        return _make_snapshot(d, ["000001"])
+        return pd.DataFrame(
+            {
+                "date": [pd.Timestamp(d) for d in days],
+                "open": [1.0] * 3,
+                "high": [1.0] * 3,
+                "low": [1.0] * 3,
+                "close": [1.0] * 3,
+                "volume": [1.0] * 3,
+                "amount": [1.0] * 3,
+            }
+        )
 
-    universe_mgr.build_snapshot.side_effect = _flaky_build
-    gateway.fetch_ohlcv.side_effect = lambda symbol, start, end: _make_ohlcv(symbol, start)
+    gateway.fetch_ohlcv.side_effect = flaky
     progress: list[tuple[int, int, str]] = []
-
-    # 必须不抛
     repository.bootstrap_history(
         3,
         progress_cb=lambda done, total, status: progress.append((done, total, status)),
     )
 
-    statuses = [p[2] for p in progress]
-    # 3 天的 bootstrap 全部不抛 (refresh_daily 内部消化了第 2 天的 universe 失败)，
-    # 所以 bootstrap 层看到的 status 全是 "ok"
-    assert statuses == ["ok", "ok", "ok"]
-    # 验证 fetch_errors 表里有 universe 失败记录
+    assert sorted([p[2] for p in progress]) == ["ok", "skipped"]
     with sqlite3.connect(tmp_path_from_repo(repository) / "meta.db") as conn:
         rows = conn.execute(
-            "SELECT endpoint, reason_code FROM fetch_errors WHERE endpoint='universe'"
+            "SELECT symbol, reason_code FROM fetch_errors WHERE endpoint='ohlcv'"
         ).fetchall()
-    assert len(rows) == 1
-    assert rows[0] == ("universe", "NETWORK")
+    assert rows == [("000001", "NETWORK")]
+    # 第二只 symbol 的数据仍落了盘
+    for d in days:
+        assert (
+            tmp_path_from_repo(repository)
+            / "parquet"
+            / "ohlcv"
+            / f"date={d.isoformat()}"
+            / "part.parquet"
+        ).exists()
 
 
-def test_bootstrap_history_survives_unexpected_exception(
+def test_bootstrap_history_bails_out_when_universe_fails(
     repo: tuple[DataRepository, MagicMock, MagicMock, MagicMock, MagicMock]
 ) -> None:
-    """非 FetchError 的意外异常也不能让 bootstrap 整体崩。"""
+    """spot 接口失败 → universe 无法构建 → 记 fetch_errors → 干净退出（不抛、不拉 ohlcv）。"""
     repository, gateway, calendar, universe_mgr, _ = repo
     days = [date(2026, 6, 13) + timedelta(days=offset) for offset in range(2)]
     calendar.trading_days_between.side_effect = None
     calendar.trading_days_between.return_value = days
-
-    # universe_mgr 用 mock 没 catch 住 → refresh_daily 内部应消化掉
     universe_mgr.build_snapshot.side_effect = RuntimeError("disk full")
-    progress: list[tuple[int, int, str]] = []
-    repository.bootstrap_history(
-        2,
-        progress_cb=lambda done, total, status: progress.append((done, total, status)),
-    )
-    # 两天都被 refresh_daily 内部消化（不抛 → bootstrap 层 status=ok 但 fetch_errors 各记一条）
+
+    repository.bootstrap_history(2)
+
+    # ohlcv 完全没被调用
+    assert gateway.fetch_ohlcv.call_count == 0
+    # universe 失败记一条
     with sqlite3.connect(tmp_path_from_repo(repository) / "meta.db") as conn:
         rows = conn.execute(
             "SELECT reason_code, message FROM fetch_errors WHERE endpoint='universe'"
         ).fetchall()
-    assert len(rows) == 2
-    assert all(row[0] == "UNKNOWN" for row in rows)
-    assert all("disk full" in row[1] for row in rows)
+    assert len(rows) == 1
+    assert rows[0][0] == "UNKNOWN"
+    assert "disk full" in rows[0][1]
 
 
 def tmp_path_from_repo(repository: DataRepository) -> Path:

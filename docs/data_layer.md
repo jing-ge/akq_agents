@@ -55,21 +55,25 @@ PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app data 
 PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app data inspect 600519
 ```
 
-## 4. 字段映射约定
+## 4. 字段映射约定（P1.5 重构后）
 
-AKShare 中文列 → 数据层内部英文列（在 `akshare_gateway.py` 统一映射）：
+由于东方财富 ``_em`` 系列接口在部分本地网络下持续 ``RemoteDisconnected``，
+本仓库切换到 **新浪 + 交易所官方源** 作为稳定数据底盘。
 
-| AKShare 列 | 内部列 | 接口来源 |
-|---|---|---|
-| 日期 | date | stock_zh_a_hist |
-| 开盘 / 收盘 / 最高 / 最低 | open / close / high / low | stock_zh_a_hist |
-| 成交量 / 成交额 | volume / amount | stock_zh_a_hist / spot |
-| 代码 | symbol | stock_zh_a_spot_em |
-| 名称 | name | stock_zh_a_spot_em |
-| 最新价 | price | stock_zh_a_spot_em |
-| 换手率 | turnover_ratio | stock_zh_a_spot_em |
+| 内部接口 | AKShare 接口 | 来源 | 备注 |
+|---|---|---|---|
+| ``fetch_spot()`` | ``stock_info_sh_name_code`` + ``stock_info_sz_name_code`` | **沪深交易所官方** | 合并后输出 `[symbol, name, listing_date]`；**无 price 字段** |
+| ``fetch_ohlcv(symbol, start, end)`` | ``stock_zh_a_daily`` | **新浪** | symbol 自动加市场前缀（6→sh / 0,3→sz / 4,8→bj），返回 `[date, open, high, low, close, volume, amount]` |
+| ``fetch_trading_dates()`` | ``tool_trade_date_hist_sina`` | 新浪 | 不变 |
+| ``fetch_st_list()`` | —— | **stub** | 返回空列表 + RuntimeWarning（东财源不可用，等待替代源） |
+| ``fetch_individual_info(symbol)`` | —— | **stub** | 返回 ``{"listing_date": None, "is_suspended": None}`` |
 
-关键列缺失 → `FetchError(reason_code="SCHEMA_DRIFT")`，提示上游 AKShare 字段变更。
+关键列缺失 → ``FetchError(reason_code="SCHEMA_DRIFT")``，提示上游字段变更。
+
+### 字段重命名
+
+- 沪：``证券代码 → symbol``、``证券简称 → name``、``上市日期 → listing_date``
+- 深：``A股代码 → symbol``、``A股简称 → name``、``A股上市日期 → listing_date``
 
 ## 5. 过滤规则（UniverseManager）
 
@@ -77,12 +81,13 @@ AKShare 中文列 → 数据层内部英文列（在 `akshare_gateway.py` 统一
 
 | Filter | reason_code | 默认启用 | 说明 |
 |---|---|---|---|
-| STFilter | ST | ✓ | 来自 `ak.stock_zh_a_st_em` |
-| ListingAgeFilter | LISTING_TOO_NEW | ✓ | 上市天数 < `min_listing_days` (默认 180) |
-| SuspendedFilter | SUSPENDED | ✓ | `ak.stock_individual_info_em` 的停牌字段 |
-| PriceRangeFilter | PRICE_OUT_OF_RANGE | ✓ | close 不在 `[min_price, max_price]` |
+| STFilter | ST | ✓（但 st_set 当前为空） | ST 数据源待补 |
+| ListingAgeFilter | LISTING_TOO_NEW | ✓ | 上市天数 < `min_listing_days` (默认 180)；listing_date 直接从 spot 行取 |
+| SuspendedFilter | SUSPENDED | ✓（缺数据透明跳过） | is_suspended 现无稳定源；缺值时 keep=True |
+| PriceRangeFilter | PRICE_OUT_OF_RANGE | ✓（缺数据透明跳过） | price 现不在 spot 中；缺值时 keep=True |
 
-字段缺失 fail-closed：filter 拿不到关键字段就视为"不通过"，避免脏数据漏过。
+**P1.5 重要变更**：``SuspendedFilter`` / ``PriceRangeFilter`` 在缺值时改为透明
+跳过（不再 fail-closed），因为新浪源没这两个字段，否则会清空 universe。
 
 ## 6. 故障排查
 
