@@ -1,0 +1,62 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.installed.cfg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# OMC / Claude session state
+.omc/state/
+.omc/logs/
+
+# Project runtime artifacts (data + state + reports)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+runtime_state.yaml
+reports/
+exports/
+
+# Logs
+*.log
+logs/
+
+# Coverage / test
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local secrets
+.env
+.env.local
+secrets.yaml

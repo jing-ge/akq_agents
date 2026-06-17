@@ -1,0 +1,6 @@
+pydantic>=2.7
+pyyaml>=6.0
+pandas>=2.0
+numpy>=1.26
+apscheduler>=3.10
+tenacity>=8.2

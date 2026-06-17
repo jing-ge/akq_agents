@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akq-agents"
+version = "0.1.0"
+description = "Multi-agent quantitative research and daily trading suggestion system built around AKShare and akquant"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.7",
+  "pyyaml>=6.0",
+  "pandas>=2.0",
+  "numpy>=1.26",
+  "apscheduler>=3.10",
+  "tenacity>=8.2"
+]
+
+[project.optional-dependencies]
+quant = [
+  "akshare",
+  "akquant"
+]
+llm = [
+  "openai>=1.30"
+]
+
+[project.scripts]
+akq-agents = "akq_agents.main:main"
+akq-scheduler = "akq_agents.main:run_scheduler"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

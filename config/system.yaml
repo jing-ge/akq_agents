@@ -1,0 +1,52 @@
+system:
+  name: akq-agents
+  timezone: Asia/Shanghai
+  scheduler:
+    factor_refresh_minutes: 30
+    backtest_refresh_minutes: 120
+    portfolio_refresh_minutes: 180
+    daily_advice_hour: 8
+    daily_advice_minute: 30
+
+universe:
+  market: cn
+  symbols:
+    - "600519"
+    - "000001"
+    - "300750"
+    - "601318"
+    - "600036"
+  lookback_days: 120
+
+research:
+  benchmark: "000300"
+  rebalance_frequency: daily
+  top_n_factors: 5
+  top_n_symbols: 3
+  min_sharpe: 0.8
+  max_drawdown: 0.25
+  min_ic: -1.0
+
+risk:
+  max_single_weight: 0.4
+  min_single_weight: 0.05
+  max_portfolio_size: 5
+  min_liquidity_score: 1.0
+
+backtest:
+  engine: akquant
+  commission: 0.0003
+  slippage: 0.0005
+  initial_capital: 1000000
+  start_date: "2023-01-01"
+  end_date: null
+
+storage:
+  state_file: ./runtime_state.yaml
+  sqlite_path: ./akq_agents.db
+
+services:
+  use_mock_data: false
+  use_mock_backtest: false
+  enable_llm: false
+  strict_real_services: true
