@@ -6,6 +6,7 @@ from pprint import pprint
 import yaml
 
 from akq_agents.agents.advisor_agent import AdvisorAgent
+from akq_agents.agents.analyst_agent import AnalystAgent
 from akq_agents.agents.backtest_agent import BacktestAgent
 from akq_agents.agents.base import AgentContext
 from akq_agents.agents.data_agent import DataAgent
@@ -25,7 +26,7 @@ class QuantWorkflow:
         self.store = store
         self.sqlite_store = sqlite_store
         reports_path = Path(reports_dir) if reports_dir else _PROJECT_ROOT / "reports"
-        self.agents = [
+        agents: list = [
             DataAgent(services["market"], config.universe.symbols, config.universe.lookback_days),
             FactorAgent(services["factor"], repository=services.get("data_repository")),
             BacktestAgent(services["backtest"]),
@@ -35,7 +36,7 @@ class QuantWorkflow:
                 config.research.max_drawdown,
                 config.research.min_ic,
             ),
-            PortfolioAgent(config.research.top_n_symbols),
+            PortfolioAgent(config.research.top_n_symbols, services=services),
             RiskAgent(
                 config.risk.max_single_weight,
                 config.risk.min_single_weight,
@@ -43,8 +44,20 @@ class QuantWorkflow:
                 config.risk.min_liquidity_score,
             ),
             AdvisorAgent(services["advisor"]),
-            ReportAgent(str(reports_path)),
         ]
+        # P4 AnalystAgent：在 ReportAgent 之前；LLM 组件齐时才注入
+        if {"llm_orchestrator", "llm_config"}.issubset(services.keys()):
+            llm_cfg = services["llm_config"]
+            agents.append(
+                AnalystAgent(
+                    orchestrator=services["llm_orchestrator"],
+                    cfg=llm_cfg.analyst,
+                    reports_dir=reports_path,
+                    safety=llm_cfg.safety,
+                )
+            )
+        agents.append(ReportAgent(str(reports_path)))
+        self.agents = agents
 
     def run_once(self):
         state = self.store.load()
