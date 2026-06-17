@@ -1,0 +1,112 @@
+{% extends "base.html.j2" %}
+{% block title %}Ops{% endblock %}
+
+{% block content %}
+<h1>Ops 仪表盘</h1>
+
+<!-- Health cards：5s 轮询 -->
+<div class="card">
+  <div id="health-cards" hx-get="/api/ops/health" hx-trigger="load, every {{ (ctx.poll_intervals_ms.ops_health / 1000)|int }}s" hx-swap="innerHTML">
+    <p class="small">加载中...</p>
+  </div>
+</div>
+
+<div class="grid grid-2">
+  <div class="card">
+    <h2>最近任务运行 <span class="small">(每 {{ (ctx.poll_intervals_ms.ops_jobs / 1000)|int }} 秒刷新)</span></h2>
+    <div id="jobs-table" hx-get="/api/ops/job-runs?limit=20" hx-trigger="load, every {{ (ctx.poll_intervals_ms.ops_jobs / 1000)|int }}s" hx-swap="innerHTML">
+      <p class="small">加载中...</p>
+    </div>
+  </div>
+  <div class="card">
+    <h2>事件流 <span class="small">(每 {{ (ctx.poll_intervals_ms.ops_events / 1000)|int }} 秒刷新)</span></h2>
+    <div id="events-list" hx-get="/api/ops/events?limit=20" hx-trigger="load, every {{ (ctx.poll_intervals_ms.ops_events / 1000)|int }}s" hx-swap="innerHTML">
+      <p class="small">加载中...</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 把 /api/ops/health 的 JSON 渲染成卡片
+htmx.on('#health-cards', 'htmx:afterRequest', e => {
+  if (!e.detail.xhr || e.detail.xhr.status !== 200) return;
+  try {
+    const data = JSON.parse(e.detail.xhr.responseText);
+    e.target.innerHTML = renderHealth(data);
+  } catch (err) {
+    e.target.innerHTML = '<p>解析失败</p>';
+  }
+});
+function renderHealth(d) {
+  const dh = d.data_health || {};
+  const dm = d.daemon || {};
+  const tb = d.today_batch;
+  const evt = d.scheduler_events_24h_by_level || {};
+  return `
+    <div class="grid grid-4">
+      <div>
+        <div class="stat-label">Daemon</div>
+        <div class="stat-num">${dm.is_alive ? '<span class="pill alive">运行中</span>' : '<span class="pill dead">未运行</span>'}</div>
+        <div class="small">${dm.state ? 'last_heartbeat: ' + (dm.state.last_heartbeat || '') : ''}</div>
+      </div>
+      <div>
+        <div class="stat-label">数据健康</div>
+        <div class="stat-num"><span class="status-${(dh.health || 'unknown').toLowerCase()}">${dh.health || 'UNKNOWN'}</span></div>
+        <div class="small">universe: ${dh.universe_size_today ?? '-'} | coverage: ${dh.ohlcv_coverage_today != null ? (dh.ohlcv_coverage_today * 100).toFixed(1) + '%' : '-'}</div>
+      </div>
+      <div>
+        <div class="stat-label">今日盘后</div>
+        <div class="stat-num">${tb ? '<span class="status-' + tb.status + '">' + tb.status + '</span>' : '<span class="small">未跑</span>'}</div>
+        <div class="small">${tb && tb.duration_ms != null ? (tb.duration_ms / 1000).toFixed(1) + 's' : ''}</div>
+      </div>
+      <div>
+        <div class="stat-label">24h 事件</div>
+        <div class="stat-num">${(evt.info || 0) + (evt.warning || 0) + (evt.error || 0)}</div>
+        <div class="small">info ${evt.info || 0} | warning ${evt.warning || 0} | <span class="status-error">error ${evt.error || 0}</span></div>
+      </div>
+    </div>
+  `;
+}
+
+htmx.on('#jobs-table', 'htmx:afterRequest', e => {
+  if (!e.detail.xhr || e.detail.xhr.status !== 200) return;
+  try {
+    const d = JSON.parse(e.detail.xhr.responseText);
+    e.target.innerHTML = renderJobs(d.runs);
+  } catch { e.target.innerHTML = '<p>解析失败</p>'; }
+});
+function renderJobs(runs) {
+  if (!runs || !runs.length) return '<p class="small">暂无</p>';
+  return `<table><thead><tr><th>job_id</th><th>partition</th><th>status</th><th>耗时</th><th>started_at</th></tr></thead><tbody>
+    ${runs.map(r => `<tr>
+      <td><code>${r.job_id}</code></td>
+      <td>${r.partition}</td>
+      <td><span class="status-${r.status}">${r.status}</span>${r.reason_code ? ' <code>' + r.reason_code + '</code>' : ''}</td>
+      <td>${r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) + 's' : '-'}</td>
+      <td class="small">${r.started_at || '-'}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+htmx.on('#events-list', 'htmx:afterRequest', e => {
+  if (!e.detail.xhr || e.detail.xhr.status !== 200) return;
+  try {
+    const d = JSON.parse(e.detail.xhr.responseText);
+    e.target.innerHTML = renderEvents(d.events);
+  } catch { e.target.innerHTML = '<p>解析失败</p>'; }
+});
+function renderEvents(events) {
+  if (!events || !events.length) return '<p class="small">暂无</p>';
+  return `<table><thead><tr><th>ts</th><th>level</th><th>kind</th><th>source</th></tr></thead><tbody>
+    ${events.map(e => `<tr>
+      <td class="small">${e.ts}</td>
+      <td><span class="status-${e.level === 'info' ? 'ok' : e.level}">${e.level}</span></td>
+      <td><code>${e.kind}</code></td>
+      <td class="small">${e.source || '-'}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+</script>
+{% endblock %}

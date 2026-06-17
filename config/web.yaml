@@ -1,0 +1,18 @@
+# P5 Web 控制台配置
+# 参考 docs/superpowers/specs/2026-06-17-p5-web-console-design.md
+web:
+  bind_host: "127.0.0.1"
+  bind_port: 8765
+  poll_intervals_ms:
+    ops_health: 5000
+    ops_jobs: 5000
+    ops_events: 3000
+  chat:
+    sse_keepalive_s: 15
+    max_message_chars: 4000
+  ui:
+    title: "AKQ Agents Console"
+    timezone: "Asia/Shanghai"
+  echarts:
+    use_cdn: true
+    cdn_url: "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"

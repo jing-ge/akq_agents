@@ -1,0 +1,165 @@
+{% extends "base.html.j2" %}
+{% block title %}Research{% endblock %}
+
+{% block content %}
+<h1>Research</h1>
+
+<div class="grid grid-2">
+  <!-- Portfolio -->
+  <div class="card">
+    <h2>组合</h2>
+    <div style="margin-bottom: 12px;">
+      <label>日期：
+        <select id="portfolio-date">
+          {% for d in snapshot_dates %}
+          <option value="{{ d }}">{{ d }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button onclick="loadPortfolio()" class="primary">查询</button>
+    </div>
+    <div id="portfolio-summary" class="small"></div>
+    <div id="portfolio-table"></div>
+    <div id="industry-chart" class="chart"></div>
+  </div>
+
+  <!-- Factors -->
+  <div class="card">
+    <h2>因子</h2>
+    <div style="margin-bottom: 12px;">
+      <label>因子：
+        <select id="factor-name">
+          {% for f in factors %}
+          <option value="{{ f.name }}">{{ f.name }} (v{{ f.factor_version }}, {{ f.direction }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button onclick="loadFactor()" class="primary">查询</button>
+    </div>
+    <div id="factor-table" class="small"></div>
+    <div id="ic-chart" class="chart"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>归因 - 因子贡献</h2>
+  <div id="attribution-chart" class="chart"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadPortfolio() {
+  const date = document.getElementById('portfolio-date').value;
+  if (!date) { document.getElementById('portfolio-table').innerHTML = '<p class="small">暂无组合快照</p>'; return; }
+  const summary = document.getElementById('portfolio-summary');
+  const tableEl = document.getElementById('portfolio-table');
+  summary.textContent = '加载中...';
+  tableEl.innerHTML = '';
+  try {
+    const r = await fetch(`/api/research/portfolio?date=${date}`);
+    if (r.status === 404) { summary.textContent = '该日期暂无组合快照'; return; }
+    if (!r.ok) { summary.textContent = '加载失败'; return; }
+    const d = await r.json();
+    summary.textContent = d.summary;
+    tableEl.innerHTML = renderPortfolioTable(d.rows);
+    renderIndustryChart(d.industry_breakdown);
+    // 同时加载归因
+    loadAttribution(date);
+  } catch (e) { summary.textContent = '错误: ' + e.message; }
+}
+function renderPortfolioTable(rows) {
+  if (!rows || !rows.length) return '<p class="small">空</p>';
+  return `<table><thead><tr><th>symbol</th><th>name</th><th>weight</th><th>score</th><th>top_factors</th></tr></thead><tbody>
+    ${rows.slice(0, 50).map(r => `<tr>
+      <td><code>${r.symbol}</code></td>
+      <td>${r.name || '-'}</td>
+      <td>${(r.weight * 100).toFixed(2)}%</td>
+      <td>${r.composite_score != null ? r.composite_score.toFixed(3) : '-'}</td>
+      <td class="small">${(r.top_factors || []).slice(0, 3).map(f => `${f.name}=${f.contribution.toFixed(3)}`).join(', ')}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+function renderIndustryChart(items) {
+  if (typeof echarts === 'undefined') return;
+  const el = document.getElementById('industry-chart');
+  const chart = echarts.init(el);
+  chart.setOption({
+    title: { text: '行业分布' },
+    tooltip: {},
+    series: [{
+      type: 'pie',
+      radius: '60%',
+      data: items.map(i => ({ name: i.industry || '未分类', value: i.total_weight })),
+    }],
+  });
+}
+
+async function loadAttribution(date) {
+  try {
+    const r = await fetch(`/api/research/portfolio/attribution?date=${date}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const items = Object.entries(d.portfolio_contribution).slice(0, 20);
+    if (typeof echarts === 'undefined') return;
+    const chart = echarts.init(document.getElementById('attribution-chart'));
+    chart.setOption({
+      title: { text: '因子贡献 (top 20)' },
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: items.map(i => i[0]), axisLabel: { rotate: 30 } },
+      yAxis: { type: 'value' },
+      series: [{ type: 'bar', data: items.map(i => i[1]) }],
+    });
+  } catch (e) { /* ignore */ }
+}
+
+async function loadFactor() {
+  const name = document.getElementById('factor-name').value;
+  if (!name) return;
+  const tableEl = document.getElementById('factor-table');
+  tableEl.innerHTML = '加载中...';
+  try {
+    const r = await fetch(`/api/research/factors/${name}/metrics?limit=120`);
+    if (!r.ok) { tableEl.innerHTML = '加载失败'; return; }
+    const d = await r.json();
+    if (!d.metrics || !d.metrics.length) {
+      tableEl.innerHTML = '<p class="small">暂无数据（factor_metrics 表为空，等 batch.deep_research 跑过一次）</p>';
+      return;
+    }
+    tableEl.innerHTML = `<p class="small">${d.n} 条 metrics（按 version DESC, date DESC）</p>`;
+    if (typeof echarts === 'undefined') return;
+    const chart = echarts.init(document.getElementById('ic-chart'));
+    // 按 factor_version 分组
+    const groups = {};
+    d.metrics.forEach(m => {
+      const k = `v${m.factor_version}`;
+      if (!groups[k]) groups[k] = { dates: [], irs: [], ics: [] };
+      groups[k].dates.push(m.as_of_date);
+      groups[k].irs.push(m.ir);
+      groups[k].ics.push(m.ic_mean);
+    });
+    const series = [];
+    Object.entries(groups).forEach(([k, g]) => {
+      series.push({ name: `IR ${k}`, type: 'line', data: g.irs });
+      series.push({ name: `IC ${k}`, type: 'line', data: g.ics });
+    });
+    chart.setOption({
+      title: { text: `${name} IC / IR` },
+      tooltip: { trigger: 'axis' },
+      legend: {},
+      xAxis: { type: 'category', data: d.metrics.map(m => m.as_of_date).reverse() },
+      yAxis: { type: 'value' },
+      series: series,
+    });
+  } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
+}
+
+// 自动加载第一个日期 / 因子
+window.addEventListener('load', () => {
+  const dateSel = document.getElementById('portfolio-date');
+  if (dateSel.value) loadPortfolio();
+  const factorSel = document.getElementById('factor-name');
+  if (factorSel.value) loadFactor();
+});
+</script>
+{% endblock %}

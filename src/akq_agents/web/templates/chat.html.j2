@@ -1,0 +1,150 @@
+{% extends "base.html.j2" %}
+{% block title %}Chat{% endblock %}
+
+{% block content %}
+<h1>Chat</h1>
+
+<div class="grid grid-2" style="grid-template-columns: 1fr 3fr;">
+  <!-- Sessions sidebar -->
+  <div class="card">
+    <h2>会话</h2>
+    <button onclick="newSession()" class="primary">+ 新会话</button>
+    <div id="sessions-list" style="margin-top: 12px;">
+      {% if sessions %}
+        {% for s in sessions %}
+        <div onclick="loadSession('{{ s.session_id }}')" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 4px; background: #f3f4f6;">
+          <code>{{ s.session_id }}</code>
+          <div class="small">{{ s.last_ts }} · {{ s.message_count }} 条</div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="small">暂无会话</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Conversation -->
+  <div class="card">
+    <h2 id="session-title">未选择会话</h2>
+    <div id="chat-window" class="chat-window"></div>
+    <div class="chat-input">
+      <input id="chat-input" type="text" placeholder="按 Enter 发送" />
+      <button id="chat-send" onclick="sendMessage()" class="primary" disabled>发送</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentSession = null;
+
+async function newSession() {
+  const r = await fetch('/api/chat/sessions', { method: 'POST' });
+  if (!r.ok) { alert('创建失败: ' + r.status); return; }
+  const d = await r.json();
+  currentSession = d.session_id;
+  document.getElementById('session-title').textContent = '会话: ' + currentSession;
+  document.getElementById('chat-window').innerHTML = '';
+  document.getElementById('chat-send').disabled = false;
+}
+
+async function loadSession(sid) {
+  currentSession = sid;
+  document.getElementById('session-title').textContent = '会话: ' + sid;
+  document.getElementById('chat-send').disabled = false;
+  const r = await fetch(`/api/chat/sessions/${sid}/messages?limit=200`);
+  if (!r.ok) return;
+  const d = await r.json();
+  const win = document.getElementById('chat-window');
+  win.innerHTML = '';
+  d.messages.forEach(m => addMessage(m.role, m.content, m.tool_name));
+  win.scrollTop = win.scrollHeight;
+}
+
+function addMessage(role, content, toolName) {
+  if (role === 'system') return;
+  const win = document.getElementById('chat-window');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  if (role === 'tool') {
+    div.textContent = '🔧 ' + (toolName || '工具调用');
+  } else {
+    div.textContent = content;
+  }
+  win.appendChild(div);
+  win.scrollTop = win.scrollHeight;
+}
+
+function addToolEvent(payload) {
+  const win = document.getElementById('chat-window');
+  const div = document.createElement('div');
+  div.className = 'chat-msg tool';
+  div.innerHTML = `🔧 <code>${payload.name}</code><br><span class="small">${JSON.stringify(payload.args || {}).slice(0, 80)}</span>`;
+  win.appendChild(div);
+  win.scrollTop = win.scrollHeight;
+}
+
+async function sendMessage() {
+  if (!currentSession) return;
+  const input = document.getElementById('chat-input');
+  const content = input.value.trim();
+  if (!content) return;
+  addMessage('user', content);
+  input.value = '';
+  input.disabled = true;
+  document.getElementById('chat-send').disabled = true;
+
+  // 使用 fetch + EventSource 不太直接；改用 POST + text/event-stream 解析
+  try {
+    const response = await fetch(`/api/chat/sessions/${currentSession}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      body: JSON.stringify({ content }),
+    });
+    if (!response.ok) {
+      addMessage('assistant', `[错误 ${response.status}: ${await response.text()}]`);
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+      for (const ev of events) {
+        if (!ev.trim()) continue;
+        const lines = ev.split('\n');
+        let evName = 'message';
+        let evData = '';
+        for (const l of lines) {
+          if (l.startsWith('event:')) evName = l.slice(6).trim();
+          if (l.startsWith('data:')) evData += l.slice(5).trim();
+        }
+        if (!evData) continue;
+        try {
+          const payload = JSON.parse(evData);
+          if (evName === 'tool_use') addToolEvent(payload);
+          if (evName === 'assistant') addMessage('assistant', payload.content);
+          if (evName === 'error') addMessage('assistant', `[错误: ${payload.message || JSON.stringify(payload)}]`);
+        } catch { /* ignore parse */ }
+      }
+    }
+  } catch (e) {
+    addMessage('assistant', '[网络错误] ' + e.message);
+  } finally {
+    input.disabled = false;
+    document.getElementById('chat-send').disabled = false;
+    input.focus();
+  }
+}
+
+// Enter 发送
+document.getElementById('chat-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendMessage();
+});
+</script>
+{% endblock %}
