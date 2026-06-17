@@ -1,0 +1,29 @@
+# P2 调度守护配置
+# 参考 docs/superpowers/specs/2026-06-17-p2-scheduling-daemon-design.md
+scheduler:
+  timezone: "Asia/Shanghai"
+  thread_pool_size: 4
+  shutdown_grace_s: 30
+  jobs:
+    batch_post_close:
+      enabled: true
+      timeout_s: 5400        # 90min，含 P3 + P4
+      hour: 15
+      minute: 30
+    batch_deep_research:
+      enabled: false         # 等 P3 接入再 true
+      timeout_s: 5400
+      day_of_week: "sun"
+      hour: 22
+      minute: 0
+    retry_fetch_errors:
+      enabled: true
+      interval_minutes: 5
+      timeout_s: 60
+    health_heartbeat:
+      enabled: true
+      interval_minutes: 5
+      timeout_s: 5
+  retention:
+    events_days: 30
+    job_runs_days: 90
