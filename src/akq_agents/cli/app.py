@@ -131,7 +131,12 @@ def cmd_data_bootstrap(args: argparse.Namespace) -> None:
     lookback_days = args.lookback
     if lookback_days is None:
         lookback_days = data_config.cache.ohlcv_lookback_days
-    repo.bootstrap_history(lookback_days=lookback_days, progress_cb=lambda done, total: print(f"[{done}/{total}] done"))
+    repo.bootstrap_history(
+        lookback_days=lookback_days,
+        progress_cb=lambda done, total, status: print(
+            f"[{done}/{total}] {status}" if status != "ok" else f"[{done}/{total}] done"
+        ),
+    )
     print(f"bootstrap complete: lookback_days={lookback_days}")
     print(repo.quality_report().model_dump_json(indent=2))
 

@@ -136,7 +136,12 @@ class DataRepository:
         return self._calendar.is_trading_day(d)
 
     def refresh_daily(self, d: date) -> RefreshResult:
-        """刷新单日 universe 和 OHLCV 缓存；已成功过则直接命中缓存。"""
+        """刷新单日 universe 和 OHLCV 缓存；已成功过则直接命中缓存。
+
+        Universe 阶段任何异常（``FetchError`` / 网络 / akshare 内部问题）都会被
+        catch 住、写入 ``fetch_errors`` 并返回 ``RefreshResult(failed=...)``，
+        本方法对调用方保证"永不抛出"，便于长跑任务安全续。
+        """
         started = time.monotonic()
         if not self._calendar.is_trading_day(d):
             return RefreshResult(target_date=d, skipped_non_trading_day=True)
@@ -152,7 +157,19 @@ class DataRepository:
                 duration_s=time.monotonic() - started,
             )
 
-        snapshot = self._universe_manager.build_snapshot(d)
+        try:
+            snapshot = self._universe_manager.build_snapshot(d)
+        except Exception as exc:  # noqa: BLE001 — long-running job must not crash on single-day failure
+            reason_code = getattr(exc, "reason_code", "UNKNOWN")
+            message = getattr(exc, "message", None) or str(exc)
+            self._insert_fetch_error(self._now_iso(), None, "universe", reason_code, message)
+            return RefreshResult(
+                target_date=d,
+                requested=0,
+                failed=0,
+                quality_passed=False,
+                duration_s=time.monotonic() - started,
+            )
         self._write_universe(snapshot)
 
         frames: list[pd.DataFrame] = []
@@ -207,7 +224,12 @@ class DataRepository:
         )
 
     def bootstrap_history(self, lookback_days: int, progress_cb=None) -> None:
-        """按近 ``lookback_days`` 个交易日倒序回填，并支持断点续传。"""
+        """按近 ``lookback_days`` 个交易日倒序回填，并支持断点续传。
+
+        单日任何异常（含 ``FetchError`` 与意外错误）都会被 catch 并记入
+        ``fetch_errors``、跳过该日（不写 ``refresh_state``，下次重跑会重试），
+        **绝不中断整个回填进程** —— 长跑任务的可恢复性优先于异常忠实传递。
+        """
         end = date.today()
         start = end - timedelta(days=max(lookback_days * 3, lookback_days))
         trading_days = self._calendar.trading_days_between(start, end)
@@ -217,10 +239,19 @@ class DataRepository:
         total = len(trading_days)
 
         for index, current_day in enumerate(trading_days, start=1):
+            status = "ok"
             if self._refresh_state_rows(current_day) is None:
-                self.refresh_daily(current_day)
+                try:
+                    self.refresh_daily(current_day)
+                except Exception as exc:  # noqa: BLE001 — long-running job must not crash
+                    status = "skipped"
+                    reason_code = getattr(exc, "reason_code", "UNKNOWN")
+                    message = getattr(exc, "message", None) or str(exc)
+                    self._insert_fetch_error(
+                        self._now_iso(), None, "bootstrap_daily", reason_code, message
+                    )
             if progress_cb is not None:
-                progress_cb(index, total)
+                progress_cb(index, total, status)
 
     def quality_report(self) -> DataHealth:
         """汇总最新 refresh 状态、今日覆盖率和错误积压。"""
