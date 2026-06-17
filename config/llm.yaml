@@ -1,0 +1,25 @@
+# P4 LLM Agent 层配置
+# 参考 docs/superpowers/specs/2026-06-17-p4-llm-agent-design.md
+llm:
+  gateway:
+    base_url: "http://127.0.0.1:18931"
+    anthropic_path: "/anthropic/v1/messages"
+    timeout_s: 60
+    max_retries: 2
+  default_model: "Claude-Opus-4.7"
+  analyst:
+    enabled: true
+    model: "Claude-Opus-4.7"
+    max_tokens: 4000
+    temperature: 0.2
+    context_top_holdings: 20
+    context_events_count: 10
+  chat:
+    enabled: true
+    model: "Claude-Opus-4.7"
+    max_tokens: 2000
+    temperature: 0.4
+    max_iterations: 6
+    history_window: 20
+  safety:
+    disclaimer_header: "本报告由 LLM 生成，仅供研究参考，不构成投资建议；系统不执行任何交易指令。"
