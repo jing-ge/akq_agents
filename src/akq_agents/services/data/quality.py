@@ -57,9 +57,17 @@ class QualityGate:
         return True
 
     def _check_close_range(self, df: pd.DataFrame) -> bool:
+        """检查 close 价格主体（>= 99%）落在 [min_close, max_close]。
+
+        允许少量低价股（< min_close，如仙股 0.x）或异常高价股（科创板）存在，
+        关注的是"是否大面积接口错误"（如全是 999.99、全是 0、全是 NaN）。
+        阈值 1% 对应 ``max_null_rate``，保持口径一致。
+        """
         if df.empty or "close" not in df.columns:
             return False
         close = df["close"].dropna()
         if close.empty:
             return False
-        return bool(close.min() >= self.config.min_close and close.max() <= self.config.max_close)
+        in_range = (close >= self.config.min_close) & (close <= self.config.max_close)
+        in_range_rate = float(in_range.mean())
+        return in_range_rate >= (1.0 - self.config.max_null_rate)
