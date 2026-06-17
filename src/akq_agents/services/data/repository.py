@@ -69,6 +69,19 @@ _OHLCV_COLUMNS = ["date", "symbol", "open", "high", "low", "close", "volume", "a
 _OHLCV_FILE_COLUMNS = ["symbol", "open", "high", "low", "close", "volume", "amount"]
 
 
+def open_meta_db(path: Path) -> sqlite3.Connection:
+    """打开 ``meta.db`` 连接并应用 P1 附录 B §6 承诺的 PRAGMA。
+
+    供 P2/P3/P4 等后续阶段共用。WAL 是 db 文件级 sticky 属性、写一次即生效；
+    ``busy_timeout`` 是 connection 级属性、每次连接都必须重新 set。
+    """
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 class DataRepository:
     """统一管理数据缓存的读写、元数据和健康状态。"""
 
@@ -315,7 +328,7 @@ class DataRepository:
         if not self._meta_db_path.exists():
             return DataHealth()
 
-        with sqlite3.connect(self._meta_db_path) as conn:
+        with open_meta_db(self._meta_db_path) as conn:
             row = conn.execute(
                 "SELECT ts FROM refresh_state WHERE status = 'ok' ORDER BY ts DESC LIMIT 1"
             ).fetchone()
@@ -366,7 +379,7 @@ class DataRepository:
         """返回未解决的抓取错误数量。"""
         if not self._meta_db_path.exists():
             return 0
-        with sqlite3.connect(self._meta_db_path) as conn:
+        with open_meta_db(self._meta_db_path) as conn:
             return conn.execute(
                 "SELECT COUNT(*) FROM fetch_errors WHERE resolved = 0"
             ).fetchone()[0]
@@ -375,7 +388,11 @@ class DataRepository:
         self._ohlcv_dir.mkdir(parents=True, exist_ok=True)
         self._universe_dir.mkdir(parents=True, exist_ok=True)
         self._calendar_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self._meta_db_path) as conn:
+        with open_meta_db(self._meta_db_path) as conn:
+            # P1 附录 B §6：强制 WAL + busy_timeout=5000，给多进程并发（daemon 写 / web 读 / LLM tools 读）兜底
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(_FETCH_LOG_SCHEMA)
             conn.execute(_FETCH_ERRORS_SCHEMA)
             conn.execute(_DATA_QUALITY_LOG_SCHEMA)
@@ -385,7 +402,7 @@ class DataRepository:
     def _refresh_state_rows(self, d: date) -> int | None:
         if not self._meta_db_path.exists():
             return None
-        with sqlite3.connect(self._meta_db_path) as conn:
+        with open_meta_db(self._meta_db_path) as conn:
             row = conn.execute(
                 "SELECT rows FROM refresh_state WHERE target_date = ? AND status = 'ok'",
                 (d.isoformat(),),
@@ -449,7 +466,7 @@ class DataRepository:
         status: str,
         message: str | None,
     ) -> None:
-        with sqlite3.connect(self._meta_db_path) as conn:
+        with open_meta_db(self._meta_db_path) as conn:
             conn.execute(
                 "INSERT INTO fetch_log (ts, endpoint, symbol, target_date, status, message) VALUES (?, ?, ?, ?, ?, ?)",
                 (ts, endpoint, symbol, None if target_date is None else target_date.isoformat(), status, message),
@@ -464,7 +481,7 @@ class DataRepository:
         reason_code: str,
         message: str,
     ) -> None:
-        with sqlite3.connect(self._meta_db_path) as conn:
+        with open_meta_db(self._meta_db_path) as conn:
             conn.execute(
                 "INSERT INTO fetch_errors (ts, symbol, endpoint, reason_code, message, retry_count, resolved) VALUES (?, ?, ?, ?, ?, 0, 0)",
                 (ts, symbol, endpoint, reason_code, message),
@@ -472,7 +489,7 @@ class DataRepository:
             conn.commit()
 
     def _insert_data_quality_log(self, target_date: date, passed: bool, checks: dict[str, bool]) -> None:
-        with sqlite3.connect(self._meta_db_path) as conn:
+        with open_meta_db(self._meta_db_path) as conn:
             conn.execute(
                 "INSERT INTO data_quality_log (ts, target_date, passed, checks_json) VALUES (?, ?, ?, ?)",
                 (self._now_iso(), target_date.isoformat(), int(passed), json.dumps(checks, sort_keys=True)),
@@ -480,7 +497,7 @@ class DataRepository:
             conn.commit()
 
     def _upsert_refresh_state(self, target_date: date, status: str, rows: int) -> None:
-        with sqlite3.connect(self._meta_db_path) as conn:
+        with open_meta_db(self._meta_db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO refresh_state (target_date, ts, status, rows) VALUES (?, ?, ?, ?)",
                 (target_date.isoformat(), self._now_iso(), status, rows),

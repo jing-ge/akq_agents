@@ -506,3 +506,8 @@ P2/P3/P4/P5 将依赖以下契约（P1 必须保证）：
 3. `DataHealth` schema 是**稳定的**：P5 Web 控制台将直接渲染该 schema。
 4. `UniverseSnapshot` 包含 `excluded` 字段，Web 控制台可展示每只股票被排除的原因。
 5. `meta.db.fetch_errors` 表结构稳定，P6 告警系统将读取该表。
+6. **`data/meta.db` 在 `DataRepository.__init__` 时强制启用 WAL 模式 + `busy_timeout=5000ms`**：
+   - `PRAGMA journal_mode=WAL`、`PRAGMA synchronous=NORMAL`、`PRAGMA busy_timeout=5000`。
+   - 保证 P2 daemon 写 / P5 web 读 / P4 LLM tools 读 多进程并发场景下读不阻塞写、写有重试窗口。
+   - P2/P3/P4/P5 新增表都写入同一 `data/meta.db`；不另起 db 文件。
+7. **`meta.db` 的 schema 扩展规则**：后续阶段（P2/P3/P4）可以 **追加表**（`CREATE TABLE IF NOT EXISTS`），但 **不可修改 P1 既有表的列**；如需修改既有表，必须回到 P1 spec 走变更流程。

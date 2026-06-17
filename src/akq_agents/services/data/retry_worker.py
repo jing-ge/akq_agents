@@ -16,7 +16,7 @@ from datetime import date
 
 from akq_agents.services.data.akshare_gateway import AKShareGateway
 from akq_agents.services.data.exceptions import FetchError
-from akq_agents.services.data.repository import DataRepository
+from akq_agents.services.data.repository import DataRepository, open_meta_db
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class RetryWorker:
     def run_once(self) -> dict[str, int]:
         """跑一轮扫描+重试，返回统计信息。"""
         stats = {"scanned": 0, "resolved": 0, "still_failing": 0, "given_up": 0}
-        with sqlite3.connect(self._repository._meta_db_path) as conn:
+        with open_meta_db(self._repository._meta_db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = self._list_pending(conn)
             stats["scanned"] = len(rows)

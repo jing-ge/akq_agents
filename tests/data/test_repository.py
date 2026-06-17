@@ -417,3 +417,23 @@ def test_bootstrap_history_bails_out_when_universe_fails(
 
 def tmp_path_from_repo(repository: DataRepository) -> Path:
     return repository._base_dir  # noqa: SLF001
+
+
+def test_meta_db_wal_mode_enabled(repo: tuple) -> None:
+    """P1 附录 B §6 契约：DataRepository._ensure_storage 后 meta.db 进入 WAL 模式 + busy_timeout=5000。
+
+    P2 daemon / P5 web 多进程并发依赖此契约。
+    """
+    repository = repo[0]
+    repository._ensure_storage()  # noqa: SLF001
+    meta_db = repository._meta_db_path  # noqa: SLF001
+    with sqlite3.connect(meta_db) as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert journal_mode.lower() == "wal", f"WAL 未启用，实得 {journal_mode!r}"
+
+    # busy_timeout 是 connection 级；用 open_meta_db 复测
+    from akq_agents.services.data.repository import open_meta_db
+
+    with open_meta_db(meta_db) as conn:
+        timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    assert timeout == 5000, f"busy_timeout 未设置，实得 {timeout!r}"
