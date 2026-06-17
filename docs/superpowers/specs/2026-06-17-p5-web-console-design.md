@@ -1,10 +1,20 @@
-# P5 Web 控制台 — 设计文档
+# P5 Web 控制台 — 设计文档（v2，oracle review 后收敛）
 
 - 项目：akq-agents
 - 阶段：P5（共 P1–P6 六阶段中的第五阶段）
 - 日期：2026-06-17
 - 状态：待 plan
-- 依赖：P1（DataHealth / 缓存）、P2（job_runs / events / daemon_state）、P3（factor_metrics / portfolio_snapshots / attribution）、P4（llm_calls / chat_sessions / LLMOrchestrator）
+- 依赖：P1（DataHealth / 缓存 / WAL）、P2（job_runs / events / daemon_state.json / events.kind 规范）、P3（factor_metrics / portfolio_snapshots / attribution）、P4（llm_calls / chat_messages / LLMOrchestrator.run_chat_turn）
+
+> **v2 收敛说明**（oracle review 后）：
+> - **前端栈降级为 FastAPI + Jinja2 + HTMX + ECharts (CDN)**，砍掉 React/Vite/Tailwind/React Query/TypeScript 全套工程。3-5 天足够，原 10-14 天太重。
+> - **5 页合并为 3 页**：Ops（Dashboard + Jobs 合并）、Research（Portfolio + Factors 合并）、Chat。
+> - **砍掉鉴权层**：localhost-only 已是天然 air gap；启动期硬校验 `bind_host ∈ {127.0.0.1, localhost, ::1}`，不允许 0.0.0.0。
+> - **砍掉 `web stop/status` CLI**：Ctrl+C 即可停；status 没意义。
+> - **砍掉 `/api/docs` Swagger**、`/api/portfolio/history`（YAGNI）。
+> - **明确 `uvicorn --workers 1`**：lru_cache 单例 ServiceContainer 假设单 worker。
+> - **SSE 不流式**：P4 不实现 streaming，P5 直接"等完整响应再 send 一次 SSE done"，不做 token 增量渲染（P4 附录 B §4 已明文承诺）。
+> - **API 全 GET**（除 chat POST）；写业务表的 API 一律不存在。
 
 ---
 
@@ -12,34 +22,38 @@
 
 ### 目标
 
-把分散在 CLI / sqlite / markdown / parquet 里的状态聚合成一个**本地可访问的轻量 Web 控制台**，让单用户能在浏览器里看清"系统跑得怎样、组合长什么样、为什么这么选、跟 LLM 聊几句"：
+把分散在 CLI / sqlite / markdown / parquet 里的状态聚合成一个**本地浏览器可访问的轻量 Web 控制台**：
 
-- 实时仪表盘（数据健康、调度状态、最近事件）。
-- 组合详情页（当日 / 历史；归因图、行业分布、单股因子贡献）。
-- 因子有效性页（每个因子的 IC/IR 走势、status、激活/失能历史）。
-- 任务历史页（job_runs 时间轴、失败下钻、retry 状态）。
-- LLM 聊天页（复用 P4 的 ChatAgent / Orchestrator，浏览器 SSE 流式输出）。
-- 简洁 API（FastAPI）+ 简洁 SPA（React + ECharts）+ 单端口部署。
+- Ops 页：系统状态 + 任务历史 + 实时事件（合并原 Dashboard + Jobs）。
+- Research 页：组合详情 + 因子有效性（合并原 Portfolio + Factors）。
+- Chat 页：用 P4 LLMOrchestrator.run_chat_turn 跑对话。
+- 全 localhost；纯只读消费 P1-P4。
 
 ### 在做什么（P5 范围）
 
-- FastAPI 后端，复用 P1–P4 的服务（不重新实现业务）。
-- 5 个核心 API 命名空间：`/health`、`/jobs`、`/portfolio`、`/factors`、`/chat`。
-- 一个 React 单页应用（5 个页面 + 全局 layout），用 ECharts 出图。
-- WebSocket / SSE：events 推送 + LLM 流式回复（仅 chat 用 SSE，其它页轮询）。
-- 鉴权：**绑定 localhost**，不对外暴露；**单用户**口令（环境变量 `AKQ_WEB_TOKEN`），同源即可。
-- 单端口：FastAPI 直接 mount 静态 SPA 构建产物，`http://127.0.0.1:8765` 出所有内容。
-- CLI：`akq-agents web start | stop | status`。
+- FastAPI 后端，复用 P1-P4 的服务（不重新实现业务）。
+- 3 个核心 API 命名空间：`/ops`、`/research`、`/chat`。
+- Jinja2 模板 + HTMX 局部刷新 + ECharts CDN 出图（3 页面 + 全局 base layout）。
+- SSE：`/api/chat/sessions/{sid}/messages` 仅一个 SSE 端点，非流式，等 P4 返回后一次性 send。
+- 启动期硬校验 bind_host 是 loopback；非 localhost 来源 → 403。
+- 单端口：FastAPI 直接 mount 静态资源 + Jinja，`http://127.0.0.1:8765`。
+- CLI：`akq-agents web start`（仅一条命令）。
 
 ### 不在做什么
 
+- ❌ React / Vite / Tailwind / TypeScript / npm — 不引入前端工程链。
 - ❌ 多用户 / 团队协作 / 权限矩阵 — 单用户假设。
-- ❌ 任何对外网开放 — 仅 127.0.0.1。
-- ❌ 用户在 Web 上修改配置 / 编辑因子代码 — 全只读 + chat。
-- ❌ 自动下单 / 委托 / 交易终端集成 — **永远禁止**（与 P4 一致）。
-- ❌ 移动端独立 App / 响应式深度优化 — 桌面浏览器即可，移动可读但不保美观。
-- ❌ 重型前端构建工具链（Next.js / SSR / Webpack 复杂配置）— Vite + 单 SPA 输出。
-- ❌ 实时分钟级行情图 — 系统压根没分钟级数据。
+- ❌ 鉴权 token / 登录页 — localhost-only 已足够。
+- ❌ 对外网开放（启动期硬校验阻止 0.0.0.0）。
+- ❌ 用户在 Web 上修改配置 / 编辑因子代码。
+- ❌ 自动下单 / 委托 / 交易终端集成（永远禁止，与 P4 一致）。
+- ❌ 移动端独立 App / 响应式深度优化。
+- ❌ 重型前端构建工具链。
+- ❌ 实时分钟级行情图。
+- ❌ Streaming token 增量渲染。
+- ❌ OpenAPI / Swagger UI。
+- ❌ CLI `web stop` / `web status`（Ctrl+C 即可）。
+- ❌ `/api/portfolio/history` 趋势线（YAGNI）。
 
 ---
 
@@ -50,84 +64,86 @@
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │  Browser (http://127.0.0.1:8765)                                 │
-│  - React SPA (Vite 构建产物)                                      │
-│  - 路由：/dashboard /portfolio /factors /jobs /chat              │
-│  - 状态：React Query (5s 轮询) + EventSource (SSE for chat)      │
+│  - Jinja2 渲染的 HTML                                            │
+│  - HTMX：表格 / 卡片 局部刷新（轮询 5s）                          │
+│  - ECharts (CDN)：组合饼图 / IC 折线 / 任务时间轴                 │
+│  - SSE for chat：单端点，等完整响应后 send done                  │
 └────────────┬───────────────────────────────────────────────────┘
-             │ HTTP / SSE (单端口)
+             │ HTTP / SSE (同源单端口)
              ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  FastAPI App  (uvicorn worker=1)                                 │
+│  FastAPI App  (uvicorn --workers 1, 强制)                        │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │  api/                                                      │  │
-│  │  ├─ health.py    GET  /api/health                          │  │
-│  │  ├─ jobs.py      GET  /api/jobs/runs                       │  │
-│  │  │              GET  /api/jobs/events                       │  │
-│  │  ├─ portfolio.py GET  /api/portfolio?date=...               │  │
-│  │  │              GET  /api/portfolio/attribution?date=...    │  │
-│  │  │              GET  /api/portfolio/history?limit=...       │  │
-│  │  ├─ factors.py   GET  /api/factors                          │  │
-│  │  │              GET  /api/factors/{name}/metrics            │  │
-│  │  └─ chat.py      POST /api/chat/sessions                    │  │
-│  │                 GET  /api/chat/sessions                     │  │
-│  │                 POST /api/chat/sessions/{sid}/messages (SSE)│  │
-│  │                 GET  /api/chat/sessions/{sid}/messages       │  │
-│  ├─ deps.py        依赖注入：service container 单例                 │
-│  ├─ auth.py        Bearer token (env AKQ_WEB_TOKEN) + localhost 检查 │
-│  └─ static/        SPA 构建产物挂载                                  │
+│  │  pages/ （Jinja 返回 HTML）                                │  │
+│  │  ├─ GET /                  → redirect /ops                 │  │
+│  │  ├─ GET /ops               → 整页 ops.html                 │  │
+│  │  ├─ GET /research          → 整页 research.html            │  │
+│  │  └─ GET /chat              → 整页 chat.html                │  │
+│  │                                                            │  │
+│  │  api/ （JSON 或 HTMX 局部 HTML 片段）                       │  │
+│  │  ├─ GET  /api/ops/health           （JSON）                 │  │
+│  │  ├─ GET  /api/ops/job-runs         （HTMX 片段 or JSON）    │  │
+│  │  ├─ GET  /api/ops/events           （HTMX 片段 or JSON）    │  │
+│  │  ├─ GET  /api/research/portfolio?date=...                  │  │
+│  │  ├─ GET  /api/research/portfolio/attribution?date=...      │  │
+│  │  ├─ GET  /api/research/factors                             │  │
+│  │  ├─ GET  /api/research/factors/{name}/metrics              │  │
+│  │  ├─ POST /api/chat/sessions                                │  │
+│  │  ├─ GET  /api/chat/sessions                                │  │
+│  │  ├─ POST /api/chat/sessions/{sid}/messages (SSE)            │  │
+│  │  └─ GET  /api/chat/sessions/{sid}/messages                 │  │
+│  ├─ deps.py        @lru_cache ServiceContainer（worker=1 前提）  │  │
+│  ├─ guard.py       startup hook: 校验 bind_host 是 loopback     │  │
+│  ├─ templates/     Jinja2 模板（pages + 片段）                   │  │
+│  └─ static/        ECharts CDN fallback / 一点 css              │  │
 └────────────┬───────────────────────────────────────────────────┘
-             │ 服务调用（进程内，不跨网络）
+             │ 服务调用（进程内）
              ▼
 ┌────────────────────────────────────────────────────────────────┐
 │  现有服务层（P1–P4 复用，零修改）                                  │
 │  - DataRepository (P1)                                            │
-│  - SchedulerStateStore (P2)                                        │
+│  - SchedulerStateStore / DaemonStateFile (P2)                      │
 │  - FactorRegistry / portfolio_snapshots (P3)                       │
-│  - LLMOrchestrator (P4)                                            │
+│  - LLMOrchestrator.run_chat_turn (P4)                              │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 ### 进程模型
 
-**单进程**：`akq-agents web start` 拉起一个 uvicorn worker；该进程 import 所有现有服务（与 daemon 进程**完全独立**，只共享 sqlite/parquet 数据文件）。
+**单进程**：`akq-agents web start` 拉起一个 uvicorn worker（**强制 workers=1**）；该进程 import 所有现有服务（与 daemon 进程**完全独立**，只共享 sqlite/parquet 数据文件）。
 
-- **不与 daemon 共进程**：daemon 是 batch-heavy 长跑，web 是请求-响应；耦合在一个进程里抖动太大。
-- **sqlite WAL 模式**：daemon 写 / web 读并发安全；P1 已开 WAL（如未开则 P5 setup 时开启）。
-- **进程间通讯**：通过 sqlite 表 + parquet 文件，零 IPC。
+- **不与 daemon 共进程**：daemon 是 batch-heavy 长跑，web 是请求-响应。
+- **sqlite WAL**：P1 附录 B §6 已强制承诺 WAL + busy_timeout=5000；P5 不再自己设置。
+- **进程间通讯**：通过 sqlite 表 + parquet 文件 + `data/daemon_state.json`，零 IPC。
 
-### 鉴权与安全
+### 安全（轻量化）
 
 ```python
-# api/auth.py
-async def require_auth(request: Request, authorization: str = Header(None)):
+# guard.py 启动期硬校验
+def assert_loopback_bind(host: str):
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise SystemExit(f"P5: bind_host 必须为 loopback (得到 {host})")
+
+# middleware: 拒绝非本地来源（防止反向代理意外暴露）
+async def require_localhost(request: Request, call_next):
     if request.client.host not in {"127.0.0.1", "localhost", "::1"}:
-        raise HTTPException(403, "non-local request rejected")
-    token_env = os.environ.get("AKQ_WEB_TOKEN")
-    if token_env is None:
-        return   # 未设置时仅 localhost 限制（适合纯本地开发）
-    if authorization != f"Bearer {token_env}":
-        raise HTTPException(401, "invalid token")
+        return JSONResponse({"error": "non-local request rejected"}, status_code=403)
+    return await call_next(request)
 ```
 
-设计决策：
-- 默认 bind `127.0.0.1:8765`，配置层硬白名单（不允许 `0.0.0.0`，启动校验阻止）。
-- 可选 `AKQ_WEB_TOKEN` 提供一层弱口令（人不在电脑前避免猫踩键盘）。
-- 前端读 `localStorage` 存 token；首次进入空 token 时弹简单输入框。
-- 全局拒绝任何"写业务"端点：API 全部 GET，唯一 POST 是 `/api/chat/...`（且只调 P4 read-only tools）。
+> **不做 Bearer token**：单用户本地，"猫踩键盘"风险论证太弱（oracle 认可）。
 
 ### 单端口部署
 
 ```python
-# main.py（启动时）
-app.mount("/", StaticFiles(directory="dist", html=True), name="spa")
+# server.py
+app.add_middleware(BaseHTTPMiddleware, dispatch=require_localhost)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.include_router(pages_router)                  # /, /ops, /research, /chat
 app.include_router(api_router, prefix="/api")
-# /api/* → FastAPI; 其余 → SPA 静态文件
 ```
 
-构建流程：
-- `cd web/ && npm run build` → 输出到 `web/dist/`
-- Python 包打包时把 `web/dist/` 作为 package data 一起带上
-- `akq-agents web start` 启动时定位到该目录
+**静态资源**：ECharts 用 CDN（`https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js`）；fallback 本地副本放 `src/akq_agents/web/static/vendor/echarts.min.js`，CDN 不通时模板 `{% if ECHARTS_LOCAL %}` 切回本地。
 
 ### 配置示例（`config/web.yaml`，新增）
 
@@ -135,133 +151,143 @@ app.include_router(api_router, prefix="/api")
 web:
   bind_host: "127.0.0.1"
   bind_port: 8765
-  cors_allow_localhost_only: true
   poll_intervals_ms:
-    dashboard: 5000
-    job_runs: 5000
-    events: 3000
+    ops_health: 5000        # ops 页 health 卡片
+    ops_jobs: 5000          # ops 页 job_runs 表
+    ops_events: 3000        # ops 页 events 流
   chat:
     sse_keepalive_s: 15
     max_message_chars: 4000
   ui:
     title: "AKQ Agents Console"
-    theme: "auto"            # auto | light | dark
     timezone: "Asia/Shanghai"
+  echarts:
+    use_cdn: true           # false 时切到本地 vendor/echarts.min.js
 ```
 
 ---
 
 ## §3 数据流与时序
 
-### 流程 1：仪表盘（Dashboard）
+### 流程 1：Ops 页（合并 Dashboard + Jobs）
 
 ```
-GET /api/health
+GET /ops
+  → 渲染 ops.html (整页)
+  → 页内 4 个 HTMX 区块每 N 秒轮询：
+       - #health   (5s)  → GET /api/ops/health (JSON 或 HTML 片段)
+       - #jobs     (5s)  → GET /api/ops/job-runs?limit=50
+       - #events   (3s)  → GET /api/ops/events?limit=50&level_min=info
+       - 整体 daemon-online 状态条由 health 端点返回
+
+GET /api/ops/health
   → 聚合：
-       - DataRepository.quality_report()  → DataHealth (P1)
-       - SchedulerStateStore.get_daemon_state() → DaemonState (P2)
-       - 最近 24h events 按 level 统计
+       - DataRepository.quality_report()          → DataHealth (P1)
+       - DaemonStateFile.read() + is_alive()      → daemon 状态
        - 最近一次 batch.post_close 的 job_run 摘要
-  → 返回：
+       - 最近 24h scheduler events 按 level 统计（注意：与 P1.DataHealth.unresolved_errors_24h 字段语义不同）
+  → 返回:
      {
-       "data_health": {...},
-       "daemon": {"status": "running", "uptime_s": 3601, "last_heartbeat": "..."},
+       "data_health": {...},              # P1 DataHealth, 含 unresolved_errors_24h（fetch_errors 维度）
+       "daemon": {"status": "running", "last_heartbeat": "...", "is_alive": true},
        "today_batch": {"status": "ok", "started_at": "...", "duration_ms": ...},
-       "events_24h": {"info": 102, "warning": 3, "error": 0}
-     }
-```
-
-前端 Dashboard 页：
-- 4 个状态卡片 + 1 个事件 sparkline + 数据健康详情表。
-- 5 秒轮询一次 `/api/health`。
-
-### 流程 2：组合详情（Portfolio）
-
-```
-GET /api/portfolio?date=2026-06-17
-  → 读 portfolio_snapshots WHERE as_of_date=? ORDER BY weight DESC
-  → 加 `factor_metrics` 当时的快照（join by version）
-  → 加 attribution.json
-  → 返回：
-     {
-       "as_of_date": "...",
-       "rows": [{symbol, name, weight, prev_weight, score, top_factors:[{name, contribution}]}],
-       "industry_breakdown": [{industry, weight}],
-       "attribution": {...},  # 直接转发 P3 的 schema
-       "turnover": 0.18,
-       "summary": "持仓 50 只，行业暴露 top3 ..."
+       "scheduler_events_24h_by_level": {"info": 102, "warning": 3, "error": 0}
      }
 
-GET /api/portfolio/history?limit=30
-  → 返回近 30 个交易日的 (date, n_holdings, turnover, top_industries)
-  → 用于趋势图
-```
+GET /api/ops/job-runs?limit=50&job_id=*
+  → SchedulerStateStore.list_recent_runs(...)   (P2)
+  → HTMX 模式：返回 jobs_table.html.j2 片段；JSON 模式：返回 list[JobRun]
 
-前端 Portfolio 页：
-- 左侧：日期选择器 + 行业 pie + turnover trend line。
-- 中部：持仓表（可按 weight / score 排序）。
-- 右侧：归因 bar（每个因子贡献）+ 选中股票的因子雷达图。
-
-### 流程 3：因子有效性（Factors）
-
-```
-GET /api/factors
-  → FactorRegistry.list_all() + 最近一次 factor_metrics (各 window)
-  → [{name, version, status, last_ic, last_ir, last_evaluated, direction, lookback}]
-
-GET /api/factors/{name}/metrics?window=60&limit=120
-  → factor_metrics WHERE name=? AND window=? ORDER BY as_of_date DESC LIMIT ?
-  → [{as_of_date, ic, ir, t_stat, decay_2, decay_5, decay_10, status}]
-```
-
-前端 Factors 页：
-- 左侧：因子列表（status 染色）。
-- 右侧选中后：IC 时间序列 + IR 走势 + 衰减曲线（lag-2/5/10）+ 状态变更时间轴。
-
-### 流程 4：任务历史（Jobs）
-
-```
-GET /api/jobs/runs?limit=200&status=*&job_id=*
-  → SchedulerStateStore.list_recent_runs(...)
-
-GET /api/jobs/events?limit=200&since=...&level_min=info
+GET /api/ops/events?limit=50&level_min=info&since=...
   → SchedulerStateStore.list_events(...)
+  → 类似 HTMX 片段 / JSON 模式
 ```
 
-前端 Jobs 页：
-- 上方：job_runs 时间轴 / 表格（status 染色：ok 绿 / failed 红 / crashed 黑）。
-- 下方：events 实时流（3 秒轮询）。
-- 点击任一 run → 弹出 payload_json + 关联 events。
+> **字段命名规范**：`data_unresolved_errors_24h` 来自 P1 fetch_errors，`scheduler_events_24h_by_level` 来自 P2 events 表，**严格区分**避免 UI 混淆。
 
-### 流程 5：LLM 聊天（Chat）
+### 流程 2：Research 页（合并 Portfolio + Factors）
 
 ```
-POST /api/chat/sessions {label?}
-  → LLMStore.new_session() → 返回 session_id
+GET /research
+  → 渲染 research.html (整页) 含日期选择 + 因子下拉
+  → 页内区块：
+       - #portfolio-table   GET /api/research/portfolio?date=...
+       - #attribution-chart GET /api/research/portfolio/attribution?date=...
+       - #factor-list       GET /api/research/factors
+       - #factor-detail     GET /api/research/factors/{name}/metrics?limit=120
+       (HTMX 切换日期 / 因子时局部刷新)
+
+GET /api/research/portfolio?date=2026-06-17
+  → SELECT * FROM portfolio_snapshots WHERE as_of_date=? ORDER BY weight DESC
+  → 直接消费 P3 已写入的字段：name / industry / top_factors_json / prev_weight
+  → 不需要 join P1 universe 或行业表（P3 附录 B §1 承诺）
+  → 返回:
+     {
+       "as_of_date": "2026-06-17",
+       "rows": [{symbol, name, industry, weight, prev_weight, composite_score, top_factors}],
+       "industry_breakdown": [{industry, total_weight}],   # 内存聚合 rows
+       "turnover": 0.18,                                    # = sum(|w - prev|)/2
+       "summary": "..."
+     }
+  特殊路径：
+    - date 早于任何 portfolio_snapshots 记录 → 404 + body {"error": "no_snapshot_for_date"}
+    - date 是未来 → 同上
+
+GET /api/research/portfolio/attribution?date=2026-06-17
+  → 优先从 portfolio_snapshots 内存聚合 portfolio_contribution（与 reports/<date>/attribution.json 同源）
+  → fallback 读 reports/<date>/attribution.json（若 portfolio_snapshots 为空但文件存在）
+
+GET /api/research/factors
+  → FactorRegistry.list_all() + factor_metrics 最近一次（按 factor_version 取最新）
+  → 返回:
+     [{name, factor_version, direction, lookback_days,
+       last_metric: {as_of_date, ic, ir, status} | null}]
+
+GET /api/research/factors/{name}/metrics?limit=120
+  → SELECT * FROM factor_metrics
+     WHERE factor_name=? ORDER BY factor_version DESC, as_of_date DESC LIMIT ?
+  → ECharts 折线图渲染
+  → 注意：因 factor_version 升级会断层，前端按 version 分组显示（不同颜色或副 axis）
+```
+
+### 流程 3：Chat 页
+
+```
+GET /chat
+  → 渲染 chat.html (整页)，左侧 session 列表，右侧消息流
+  → 页加载时：
+       GET /api/chat/sessions  → 已有 session 列表（按 session_id 聚合 chat_messages）
+
+POST /api/chat/sessions  Body: {}
+  → 调 P4 LLMStore 生成一个新 session_id；
+     写入第一条 chat_messages(role="system", content=load_prompt("chat_system"))
+  → 返回 {session_id}
 
 POST /api/chat/sessions/{sid}/messages
-  Body: {content, model?}
+  Body: {"content": "...", "model": "Claude-Opus-4.7"}
   Content-Type: text/event-stream
-  → LLMOrchestrator.run(stream=True)
-  → 把 LLM 流式 token / ToolUse 事件以 SSE 推给前端：
-       event: token  data: {"delta": "..."}
-       event: tool   data: {"name": "...", "args": {...}, "result": {...}}
-       event: done   data: {"message_id": ..., "tokens": ...}
+  → 阻塞调用 P4 LLMOrchestrator.run_chat_turn(...)
+       （**非流式**，等完整响应后再 SSE）
+  → SSE 输出：
+       event: tool_use   data: {"name": "...", "args": {...}, "result": {...}}    # 每个工具一行（按顺序）
+       event: assistant  data: {"content": "..."}                                  # 完整文本一次性发
+       event: done       data: {"message_id": ..., "iterations": N}
+  → 中途异常 → event: error data: {"message": "..."}
+  → 心跳：每 15 秒发 `: keepalive` 注释行
 
-GET /api/chat/sessions/{sid}/messages?limit=50
-  → 历史消息（含 tool 步骤），用于打开页面或恢复会话
+GET /api/chat/sessions/{sid}/messages?limit=200
+  → SELECT * FROM chat_messages WHERE session_id=? ORDER BY ts ASC LIMIT ?
+  → 用于打开页面或恢复会话
 ```
 
-前端 Chat 页：
-- 左侧：session 列表（新建 / 切换 / 关闭）。
-- 中部：消息流（user / assistant / tool 卡片），SSE 增量渲染。
-- 顶部：模型选择器（仅展示 P4 网关 `/healthz` 返回的 models）。
-- 右侧：本次会话已调用工具列表（可点击查看 args/result，便于调试）。
+> **模型选择**：Chat 页右上角的"模型选择器"P5 不实现（v2 P4 仅 Anthropic Claude-Opus-4.7）；模型固定为该模型，前端不暴露切换。
 
-**SSE 实现要点**：
-- 后端循环 `async for chunk in orchestrator.stream(...)`：把 P4 的同步 `run()` 用 generator 包一层；如 P4 暂未实现 stream，则降级到"等完整响应再一次性推"。
-- 心跳：每 15 秒 send `: keepalive` 注释行。
-- 客户端断线后，session 不丢；下次 GET 历史可继续。
+### 流程 4：部分系统宕机时的渲染策略
+
+- **daemon 未启动**：`/api/ops/health` 仍能返回，`daemon.is_alive=false`，`today_batch=null`；ops 页头部条显示红色"调度守护未运行"提示。
+- **P3 没跑过任何 batch**：`portfolio_snapshots` 为空。Research 页选择日期时 → 404 与"暂无组合快照"友好提示。
+- **P4 LLM 网关 down**：Chat 页 POST → SSE event=error；UI 显示"LLM 网关暂时不可用"。
+- **factor_metrics 为空**：Research 因子页 last_metric=null，前端显示 "-"。
 
 ---
 
@@ -273,79 +299,68 @@ GET /api/chat/sessions/{sid}/messages?limit=50
 src/akq_agents/
 ├── web/                              ← 新增子包
 │   ├── __init__.py
-│   ├── server.py                     # uvicorn 启动入口（不直接 import FastAPI app）
-│   ├── app.py                        # FastAPI 实例 + mount static
-│   ├── deps.py                       # service container（一次性构造 P1-P4 服务单例）
-│   ├── auth.py                       # require_auth dependency
+│   ├── server.py                     # uvicorn 启动入口（workers=1 强制 + assert_loopback_bind）
+│   ├── app.py                        # FastAPI 实例 + middleware + 路由挂载
+│   ├── deps.py                       # @lru_cache ServiceContainer (P1–P4 单例)
+│   ├── guard.py                      # assert_loopback_bind + require_localhost middleware
+│   ├── pages.py                      # GET / /ops /research /chat → Jinja 整页
 │   ├── api/
 │   │   ├── __init__.py
-│   │   ├── health.py
-│   │   ├── jobs.py
-│   │   ├── portfolio.py
-│   │   ├── factors.py
-│   │   └── chat.py
+│   │   ├── ops.py                    # /api/ops/health|job-runs|events
+│   │   ├── research.py               # /api/research/portfolio*|factors*
+│   │   └── chat.py                   # /api/chat/sessions* (含 SSE)
 │   ├── schemas/                      # FastAPI 响应 schema（pydantic v2）
-│   │   ├── health.py
-│   │   ├── portfolio.py
-│   │   ├── factors.py
-│   │   ├── jobs.py
+│   │   ├── ops.py
+│   │   ├── research.py
 │   │   └── chat.py
-│   └── static/                       # SPA 构建产物（gitignore，构建期填入）
-├── cli/
-│   └── app.py                        # 新增子命令：web start/status/stop
-
-web/                                  ← 项目根级新增前端代码（不在 python 包内）
-├── package.json
-├── vite.config.ts
-├── index.html
-├── tsconfig.json
-└── src/
-    ├── main.tsx
-    ├── App.tsx
-    ├── routes.tsx
-    ├── api/                          # axios client + types
-    ├── pages/
-    │   ├── Dashboard.tsx
-    │   ├── Portfolio.tsx
-    │   ├── Factors.tsx
-    │   ├── Jobs.tsx
-    │   └── Chat.tsx
-    ├── components/
-    │   ├── StatusCard.tsx
-    │   ├── EventStream.tsx
-    │   ├── IndustryPie.tsx           # ECharts
-    │   ├── ICLineChart.tsx           # ECharts
-    │   ├── AttributionBar.tsx        # ECharts
-    │   ├── JobTimeline.tsx           # ECharts
-    │   └── ChatStream.tsx
-    └── lib/
-        ├── sse.ts                    # SSE client
-        ├── query.ts                  # react-query setup
-        └── auth.ts                   # token storage
+│   ├── templates/                    ← Jinja2
+│   │   ├── base.html.j2              # layout + nav + ECharts CDN script
+│   │   ├── ops.html.j2
+│   │   ├── research.html.j2
+│   │   ├── chat.html.j2
+│   │   └── fragments/                # HTMX 局部片段
+│   │       ├── jobs_table.html.j2
+│   │       ├── events_list.html.j2
+│   │       ├── portfolio_table.html.j2
+│   │       └── factor_list.html.j2
+│   └── static/
+│       ├── app.css                   # 一点点全局样式（< 200 行）
+│       ├── htmx.min.js               # CDN fallback
+│       └── vendor/echarts.min.js     # CDN fallback
+└── cli/
+    └── app.py                        # 新增子命令：web start (仅一条)
 ```
+
+> 不需要 `web/`（项目根级）独立前端目录；不需要 `package.json` / `vite.config.ts` / `tsconfig.json` / `vitest`。
 
 ### 关键 API 响应 Schema（pydantic v2）
 
 ```python
-# schemas/health.py
-class HealthResponse(BaseModel):
-    data_health: DataHealth         # 复用 P1 schema
-    daemon: DaemonStatus            # 复用 P2 schema
+# schemas/ops.py
+class OpsHealthResponse(BaseModel):
+    data_health: DataHealth         # 复用 P1 schema（含 unresolved_errors_24h，fetch_errors 维度）
+    daemon: DaemonStatus            # 复用 P2 schema（is_alive + last_heartbeat）
     today_batch: JobRunSummary | None
-    events_24h: EventsCountByLevel
+    scheduler_events_24h_by_level: dict[str, int]
 
-# schemas/portfolio.py
+# schemas/research.py
 class PortfolioResponse(BaseModel):
     as_of_date: date
-    rows: list[PortfolioRow]
+    rows: list[PortfolioRow]              # 直接 1:1 映射 portfolio_snapshots 字段
     industry_breakdown: list[IndustryWeight]
-    attribution: dict           # P3 的 attribution.json 原样转发
     turnover: float
-    summary: str                # P3 已生成的人话摘要
+    summary: str
+
+class FactorListItem(BaseModel):
+    name: str
+    factor_version: int
+    direction: Literal["long", "short"]
+    lookback_days: int
+    last_metric: FactorMetric | None       # None 表示首次未跑
 
 # schemas/chat.py
 class ChatStreamEvent(BaseModel):
-    type: Literal["token", "tool", "done", "error"]
+    event: Literal["tool_use", "assistant", "done", "error"]
     data: dict
 ```
 
@@ -355,79 +370,74 @@ class ChatStreamEvent(BaseModel):
 # web/deps.py（启动时构造一次，复用）
 @lru_cache(maxsize=1)
 def get_services() -> ServiceContainer:
+    """前提：uvicorn --workers 1。multi-worker 会破坏单例假设。"""
     config = load_all_configs()
     return ServiceContainer(
         repo=DataRepository(...),                  # P1
         sched_store=SchedulerStateStore(...),      # P2
+        daemon_state=DaemonStateFile(...),         # P2
         factor_registry=FactorRegistry(...),       # P3
-        portfolio_store=PortfolioStore(...),       # P3
+        portfolio_store=PortfolioSnapshotStore(...),  # P3
         llm_orchestrator=LLMOrchestrator(...),     # P4
+        llm_store=LLMStore(...),                   # P4
     )
 
-# 每个 endpoint 用 Depends(get_services) 注入
-@router.get("/api/health")
-async def health(svc: ServiceContainer = Depends(get_services), _=Depends(require_auth)):
-    return HealthResponse(...)
+@router.get("/api/ops/health")
+async def health(svc: ServiceContainer = Depends(get_services)):
+    return OpsHealthResponse(...)
 ```
 
-### 前端关键依赖
+### 启动期 guard
 
-```json
-{
-  "dependencies": {
-    "react": "^18",
-    "react-dom": "^18",
-    "react-router-dom": "^6",
-    "@tanstack/react-query": "^5",
-    "echarts": "^5",
-    "echarts-for-react": "^3",
-    "axios": "^1",
-    "tailwindcss": "^3"
-  },
-  "devDependencies": {
-    "vite": "^5",
-    "typescript": "^5",
-    "@vitejs/plugin-react": "^4"
-  }
-}
+```python
+# server.py
+def start(host: str = "127.0.0.1", port: int = 8765):
+    from .guard import assert_loopback_bind
+    assert_loopback_bind(host)
+    import uvicorn
+    uvicorn.run("akq_agents.web.app:app",
+                host=host, port=port,
+                workers=1,           # 硬编码，不暴露配置
+                log_level="info")
 ```
 
-设计决策：
-- **Tailwind**：少写 CSS，集中样式；不引入 antd/MUI（太重）。
-- **ECharts**：图丰富、中文文档好、与 echarts-for-react 集成简单。
-- **React Query**：处理轮询 + 缓存 + loading 状态。
-- **不用 Redux/Zustand**：状态全是服务端来的，React Query 够用。
+### 模板栈
+
+- **Jinja2**：自带的 FastAPI `Jinja2Templates`。
+- **HTMX**：CDN `https://unpkg.com/htmx.org@1.9.x`；本地 fallback `static/htmx.min.js`。一段 `hx-get="/api/ops/events?limit=50" hx-trigger="every 3s" hx-target="#events"` 即可实现轮询。
+- **ECharts**：CDN 同上；fallback 同上。每个图表 < 50 行 inline `<script>`。
+- **SSE**：HTMX 1.9 自带 `hx-sse` 扩展；不行就 vanilla `EventSource` + 简短 JS。
 
 ### 关键边界
 
-- ❌ 不实现 SSR / 服务端渲染。
-- ❌ 不引入 GraphQL / tRPC。
-- ❌ 不做用户管理 / 注册。
-- ❌ web 进程不写业务表（除 `chat_messages` 这一处，且仅在用户主动聊天时写）。
+- ❌ 不实现 SSR 路由 / 静态站点生成。
+- ❌ 不引入 React / Vue / Svelte。
+- ❌ 不引入前端测试工具链（vitest / playwright）。
+- ❌ 不做用户管理 / 注册 / token。
+- ❌ Web 进程不写业务表（chat_messages 由 P4 LLMOrchestrator 写，不算 P5 写）。
 - ❌ 不嵌入富文本编辑器 / Notebook。
 - ❌ 不实现实时 K 线图（无分钟级数据）。
+- ❌ 不支持多 worker（启动期硬编码 workers=1）。
+- ❌ 不暴露模型切换 UI（v2 P4 单模型）。
 
 ### 测试策略
 
 ```
 tests/web/
-├── test_auth.py                # localhost 限制 + token 校验
-├── test_api_health.py          # mock services → 检验 schema
-├── test_api_portfolio.py
-├── test_api_factors.py
-├── test_api_jobs.py
-├── test_api_chat.py            # SSE 流（用 httpx + asyncio）
-└── conftest.py                 # FastAPI TestClient + 假 ServiceContainer
-
-web/src/__tests__/              # 前端单测（vitest + RTL）
-├── components/StatusCard.test.tsx
-├── pages/Dashboard.test.tsx
-└── lib/sse.test.ts
+├── test_guard.py                  # assert_loopback_bind raise on 0.0.0.0
+├── test_localhost_middleware.py   # 非 localhost 来源 → 403
+├── test_api_ops_health.py         # mock services → 检验 schema 字段命名
+├── test_api_ops_jobs.py
+├── test_api_ops_events.py
+├── test_api_research_portfolio.py # 直接消费 portfolio_snapshots，不 join
+├── test_api_research_factors.py   # factor_version 分组返回
+├── test_api_chat_session.py
+├── test_api_chat_sse.py           # SSE 完整事件序列：tool_use → assistant → done
+├── test_pages.py                  # /, /ops, /research, /chat 200 返回 HTML
+└── conftest.py                    # FastAPI TestClient + 假 ServiceContainer
 ```
 
-目标覆盖率：
-- 后端 `web/` ≥ 80%
-- 前端关键组件单测齐全（不强求行覆盖率），人工 UI 验收为主
+目标覆盖率：**后端 `web/` ≥ 80%**；无前端测试。
 
 ---
 
@@ -437,80 +447,81 @@ web/src/__tests__/              # 前端单测（vitest + RTL）
 
 | # | 条件 | 验证方式 |
 |---|---|---|
-| A1 | `akq-agents web start` 后 `curl http://127.0.0.1:8765/api/health` 返回 200 + 完整 JSON | shell |
-| A2 | 浏览器打开 `http://127.0.0.1:8765` 加载 SPA，5 个页面均可路由打开 | 人工 |
-| A3 | 非 localhost 来源访问被 403 | 远程 curl 测试 |
-| A4 | 设置 `AKQ_WEB_TOKEN` 后无 token 请求被 401，正确 token 通过 | curl |
-| A5 | Portfolio 页选择历史日期能展示对应组合 + 归因 + 行业分布 | 人工 |
-| A6 | Factors 页切换因子能看到 IC 走势 + IR 序列 + 衰减曲线 | 人工 |
-| A7 | Jobs 页能看到当日 batch.post_close 时间线 + 点击可看 payload | 人工 |
-| A8 | Chat 页发一条问题能 SSE 流式收到 LLM 回复，且工具调用步骤可见 | 人工 |
-| A9 | daemon 在跑、web 在跑，互不阻塞；web 不修改业务表（仅 chat_messages） | 监控 sqlite 文件锁 |
-| A10 | 仅 GET 端点为业务 endpoint；任何 POST/PUT/DELETE 都属于 /api/chat/* | grep + audit |
+| A1 | `akq-agents web start` 后 `curl http://127.0.0.1:8765/api/ops/health` 返回 200 + 完整 JSON | shell |
+| A2 | 浏览器访问 `http://127.0.0.1:8765` 重定向到 `/ops`；3 个页面（/ops, /research, /chat）均可打开 | 人工 |
+| A3 | 非 localhost 来源访问任一端点被 403 | 远程 curl 测试 |
+| A4 | 启动时 `bind_host=0.0.0.0` 直接 SystemExit 拒启 | 单测 |
+| A5 | Research 页选择有快照的历史日期能展示组合 + 归因 + 行业分布 | 人工 |
+| A6 | Research 页选择无快照的日期得到友好提示（404 + "暂无组合快照"） | 人工 |
+| A7 | Research 因子页切换因子能看到 IC / IR 折线，factor_version 分组显示 | 人工 |
+| A8 | Ops 页能看到当日 batch.post_close 时间线 + 点击可看 payload | 人工 |
+| A9 | Chat 页发一条问题能收到 SSE 完整事件序列：N 个 tool_use → 1 个 assistant → 1 个 done | 人工 + 单测 |
+| A10 | daemon 未启动时 ops 页头部条显示"调度守护未运行"，不崩页 | 人工（停掉 daemon 测） |
+| A11 | API schema：`data_health.unresolved_errors_24h` 与 `scheduler_events_24h_by_level` 不混用 | 单测 |
+| A12 | uvicorn 启动若指定 `--workers 2` 会被启动入口覆盖回 1（或拒启） | 单测 |
+| A13 | 所有业务相关 API 仅 GET；POST 仅限 `/api/chat/*` | grep + 单测 |
+| A14 | Portfolio API 不查 P1 universe 表来拼 name（验证消费 portfolio_snapshots.name 字段） | 单测 mock |
 
 ### B. 质量验收
 
 | # | 条件 | 验证方式 |
 |---|---|---|
 | B1 | `tests/web/` 后端覆盖率 ≥ 80% | `pytest --cov` |
-| B2 | 前端 `vitest run` 全绿 | npm test |
-| B3 | `ruff check src/akq_agents/web/` 零警告 | CI |
-| B4 | 前端 `tsc --noEmit` 零类型错误 | CI |
-| B5 | OpenAPI schema（FastAPI 自动生成 `/api/openapi.json`）可用 | curl |
-| B6 | 鉴权失败时不泄露 stacktrace；只返回简短错误 | 测试 |
+| B2 | `ruff check src/akq_agents/web/` 零警告 | CI |
+| B3 | 鉴权失败 / 异常时不泄露 stacktrace；只返回简短错误 | 单测 |
+| B4 | 无 React / Vite / npm 相关依赖出现在 `requirements.txt` / `pyproject.toml` | 文件检查 |
 
 ### C. 性能验收
 
 | # | 条件 | 验证方式 |
 |---|---|---|
-| C1 | `/api/health` P95 ≤ 200ms | wrk/ab |
-| C2 | `/api/portfolio?date=...` 4000 标的快照下 ≤ 500ms | 实测 |
-| C3 | SPA 首屏 LCP ≤ 2s（本地） | Lighthouse |
-| C4 | chat SSE 首 token 延迟 ≤ 3s（LLM 网关正常时） | 人工掐表 |
+| C1 | `/api/ops/health` P95 ≤ 200ms | wrk/ab |
+| C2 | `/api/research/portfolio?date=...` 500 标的（P3a universe） ≤ 200ms | 实测 |
+| C3 | 整页首屏（含 ECharts 渲染） ≤ 1.5s | 人工掐表 |
+| C4 | SSE 首事件延迟 ≤ 等 P4 LLM 返回的时长 + 200ms | 人工 |
 | C5 | web 进程常驻 RSS ≤ 200MB（不含 LLM 调用峰值） | ps |
 
 ### D. 文档验收
 
 | # | 条件 |
 |---|---|
-| D1 | `docs/web_console.md`：架构、API 列表、鉴权、部署、故障排查、截图 |
-| D2 | `web/README.md`：前端构建/开发指引、组件结构 |
-| D3 | README 增加 `web start` 命令 + 浏览器访问指引 |
-| D4 | OpenAPI 文档可在 `/api/docs` 浏览（FastAPI Swagger UI） |
+| D1 | `docs/web_console.md`：架构、API 列表、安全模型（localhost-only）、部署、故障排查、截图 |
+| D2 | README 增加 `web start` 命令 + 浏览器访问指引 |
+| D3 | 明确记录：HTMX + Jinja + ECharts 选型；无前端工程链 |
 
 ### 里程碑参考
 
-- M5.1 后端骨架（FastAPI app + auth + ServiceContainer + /health endpoint）（1–2 天）
-- M5.2 Portfolio / Factors / Jobs 三组 API + schema + 测试（2–3 天）
-- M5.3 Chat API 含 SSE 流（接 P4 LLMOrchestrator）（1–2 天）
-- M5.4 前端骨架（Vite + Tailwind + Router + 5 页占位 + auth）（1 天）
-- M5.5 Dashboard / Portfolio / Factors 三页（含 ECharts）（2–3 天）
-- M5.6 Jobs / Chat 两页（SSE 流渲染）（1–2 天）
-- M5.7 构建打包 + CLI `web start/stop` + 端到端 smoke（1 天）
-- M5.8 文档、性能压测、UI 打磨（1 天）
+- M5.1 后端骨架（FastAPI app + guard + middleware + ServiceContainer + ops health）（1 天）
+- M5.2 ops / research API + 模板 + HTMX 轮询（1.5 天）
+- M5.3 chat API 含 SSE（接 P4 LLMOrchestrator.run_chat_turn）（1 天）
+- M5.4 ECharts 集成（任务时间轴、组合饼图、IC 折线）（0.5–1 天）
+- M5.5 CLI `web start` + 文档 + 端到端 smoke（0.5–1 天）
 
-**预估总工时：10–14 工作日。**
+**预估总工时：4–5 工作日**（v1 的 10–14 天因换 HTMX 栈、合并页面、砍鉴权/Swagger/CLI/`/api/portfolio/history` 而大幅缩短）。
 
 ### 风险登记
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| sqlite 并发 daemon 写 / web 读冲突 | 卡住或读到中间状态 | 启用 WAL（P1 已开），所有 web 读用短事务 |
-| FastAPI 嵌入 SPA 静态文件路径错位 | 部署失败 | 测试覆盖：dev 模式 / wheel 打包模式两套路径策略 |
-| SSE 在某些代理后掉线（如未来加反向代理） | chat 体验差 | 心跳 + 重连；记录会话使客户端 reload 后能拉历史 |
-| LLM 流接口尚未在 P4 完成 | chat 退化到非流式 | 提供 fallback：等完整响应再 send 一次 SSE done |
-| 鉴权失误暴露到外网 | 安全事故 | 启动期校验 bind_host 必为 loopback；CLI 拒绝任何 0.0.0.0 |
-| ECharts 大数据点渲染卡 | factors 页 250 点 + 多窗口 | 数据预下采样到 ≤ 250 点；横向滚动而非缩放 |
-| 前端构建产物未被 python wheel 包含 | 安装后 404 | pyproject `package-data` 显式包含 `web/static/**` |
+| sqlite 并发 daemon 写 / web 读冲突 | 卡住或读到中间状态 | P1 已承诺 WAL + busy_timeout；web 用短只读事务 |
+| daemon 没启动时 ops 页空数据 | UI 误导 | health 端点返回 `is_alive=false`；模板友好提示 |
+| ECharts CDN 不通（离线 / 内网） | 图表挂 | 本地 vendor fallback + 配置开关 |
+| SSE 在某些代理后掉线 | chat 体验差 | P5 不假设有反向代理；如真加 P6 提供 sticky session |
+| 一旦未来真要多 worker | ServiceContainer 单例失效 | 启动入口硬编码 workers=1，文档警告；多 worker 留 P6 |
+| HTMX 学习曲线 | 上手慢 | 每个轮询不超过 1 个属性；docs/web_console.md 给 cheatsheet |
+| events.kind 飘移使前端筛选崩 | UI 显示混乱 | 复用 P2 附录 C 的 enum；前端不硬编码 kind 字符串 |
 
 ### 越界声明
 
 - ❌ 多用户 / 权限矩阵
-- ❌ 任何对外网暴露
+- ❌ 对外网暴露
 - ❌ Web 上修改配置 / 编辑因子代码 / 触发交易
 - ❌ 移动端 App
 - ❌ 实时分钟级 K 线
-- ❌ 自动告警（P6）
+- ❌ Streaming token 增量渲染
+- ❌ React / Vue / SPA 工程化
+- ❌ OpenAPI / Swagger UI
+- ❌ CLI `web stop` / `web status`
 
 ---
 
@@ -518,18 +529,24 @@ web/src/__tests__/              # 前端单测（vitest + RTL）
 
 P5 是**纯展示层**，严格只读消费：
 
-1. `DataHealth` schema（P1）— 渲染数据健康卡片。
-2. `meta.db.fetch_errors` 表（P1）— Jobs 页"未解决错误"统计。
-3. `daemon_state`、`job_runs`、`events` 表（P2）— Dashboard / Jobs。
-4. `factor_metrics`、`portfolio_snapshots` 表（P3）— Factors / Portfolio。
-5. `attribution.json` schema（P3）— Portfolio 归因。
-6. `LLMOrchestrator.run()` 接口（P4）— Chat 后端调用入口；P5 不另起一套 LLM 链路。
-7. `llm_calls` / `chat_sessions` / `chat_messages` 表（P4）— Chat 页历史。
+1. `DataHealth` schema（P1）— `/api/ops/health` 渲染数据健康卡片。
+2. `meta.db.fetch_errors` 表（P1）— Ops 页通过 `DataHealth.unresolved_errors_24h` 间接展示。
+3. `data/daemon_state.json` 文件（P2）— Ops 页 daemon 在线判定。
+4. `job_runs` 表（P2）— Ops 页任务历史。
+5. `events` 表 + P2 附录 C 的 kind enum（P2）— Ops 页事件流；P5 前端严格按 enum 渲染颜色 / 分类。
+6. `factor_metrics` 表，按 `(factor_name, factor_version, as_of_date)` 取最新（P3）。
+7. `portfolio_snapshots` 表（P3，含 `name` / `industry` / `top_factors_json` 字段）— **P5 直接 SELECT 渲染，不 join 其他表**（P3 附录 B §1 承诺）。
+8. `reports/<date>/attribution.json`（P3）— 作为 `portfolio_snapshots` 的镜像 fallback。
+9. `LLMOrchestrator.run_chat_turn()`（P4）— Chat 后端调用入口；**P5 不另起一套 LLM 链路**。
+10. `chat_messages` 表（P4）— Chat 页历史。
+11. `meta.db` WAL（P1 附录 B §6）— 多进程并发安全。
+12. **`events.kind` 仅消费 P2 附录 C 已枚举的集合**；前端遇到未知 kind → 当作 `info` 处理 + 显示原始字符串。
 
 P5 **不能修改**上述任何表或接口；如发现需求要改，必须回到对应阶段补丁。
 
 ## 附录 B：与 P6 接口承诺
 
-- `/api/health` 响应 schema 稳定 → P6 监控/告警系统直接 scrape。
-- 鉴权策略文档化：P6 容器化时可选注入 token；如要对外开放需在 P6 增加反向代理 + TLS（非 P5 范畴）。
-- 前端构建产物路径稳定（`src/akq_agents/web/static/`）：P6 Dockerfile 不需做额外特化。
+- `/api/ops/health` 响应 schema 稳定 → P6 监控/告警系统直接 scrape。
+- 鉴权策略文档化：P6 容器化时如需对外开放需在 P6 增加反向代理 + TLS（非 P5 范畴）。
+- 模板路径稳定（`src/akq_agents/web/templates/`）：P6 Dockerfile 不需做额外特化。
+- 启动入口 `akq_agents.web.server.start()` 函数签名稳定（P6 可在 systemd unit 中调用）。
