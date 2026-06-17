@@ -30,7 +30,7 @@ ENV/
 .omc/
 
 # Project runtime artifacts (data + state + reports)
-data/
+/data/
 *.db
 *.db-journal
 *.db-wal
