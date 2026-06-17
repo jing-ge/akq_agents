@@ -1,0 +1,22 @@
+data:
+  base_dir: "./data"
+  universe:
+    market: cn
+    include_st: false
+    include_new: false
+    min_listing_days: 180
+    min_price: 1.0
+    max_price: 1000.0
+  akshare:
+    qps: 5
+    max_retries: 3
+    timeout_s: 30
+    backoff_base_s: 0.5
+  cache:
+    ohlcv_lookback_days: 250
+    financials_lookback_quarters: 8
+  quality:
+    min_universe_size: 4000
+    max_null_rate: 0.01
+    min_close: 0.5
+    max_close: 2000.0

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List
 
 
 @dataclass
@@ -11,7 +10,7 @@ class MarketSnapshot:
     close: float
     volume: float
     timestamp: datetime
-    extras: Dict[str, float] = field(default_factory=dict)
+    extras: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,14 +40,14 @@ class PortfolioRecommendation:
     symbol: str
     weight: float
     score: float
-    reasons: List[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
 class DailyAdvice:
     generated_at: datetime
     summary: str
-    watchlist: List[str]
-    buy_candidates: List[str]
-    reduce_candidates: List[str]
-    risk_notes: List[str]
+    watchlist: list[str]
+    buy_candidates: list[str]
+    reduce_candidates: list[str]
+    risk_notes: list[str]

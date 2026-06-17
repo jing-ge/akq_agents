@@ -1,7 +1,17 @@
+"""AKShare 旧版直连 service。
+
+.. deprecated:: P1 数据层
+   本模块在 P1 数据层硬化（``services/data/``）落地后已被取代。
+   新链路：``services.data.AKShareGateway`` + ``DataRepository``。
+   本文件保留为：
+   1) 旧 workflow（``services['market']``）兼容回退；
+   2) 单元测试 mock 入口（:class:`MockAkshareService`）。
+   不要在新代码中直接使用 :class:`AkshareService`。
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Dict, List
 
 import pandas as pd
 
@@ -9,7 +19,7 @@ from akq_agents.models.domain import MarketSnapshot
 
 
 class MockAkshareService:
-    def fetch_market_snapshots(self, symbols: List[str], lookback_days: int = 120) -> List[MarketSnapshot]:
+    def fetch_market_snapshots(self, symbols: list[str], lookback_days: int = 120) -> list[MarketSnapshot]:
         now = datetime.now()
         snapshots = []
         for index, symbol in enumerate(symbols, start=1):
@@ -39,7 +49,7 @@ class MockAkshareService:
 
 
 class AkshareService:
-    def fetch_market_snapshots(self, symbols: List[str], lookback_days: int = 120) -> List[MarketSnapshot]:
+    def fetch_market_snapshots(self, symbols: list[str], lookback_days: int = 120) -> list[MarketSnapshot]:
         try:
             import akshare as ak
         except ImportError as exc:
@@ -67,7 +77,7 @@ class AkshareService:
             low = float(latest.get("low", close))
             turnover_ratio = self._safe_turnover_ratio(amount, close, volume)
             amplitude = 0.0 if close == 0 else (high - low) / close
-            extras: Dict[str, float] = {
+            extras: dict[str, float] = {
                 "momentum_5": self._safe_return(data, 5),
                 "momentum_20": self._safe_return(data, 20),
                 "momentum_60": self._safe_return(data, 60),

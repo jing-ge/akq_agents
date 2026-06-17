@@ -29,7 +29,7 @@
 ## 3. akquant 接入点
 
 建议把真实回测补到：
-- `/Users/fengbojing1/Documents/A/src/akq_agents/services/backtest_service.py:35`
+- `src/akq_agents/services/backtest_service.py`
 
 统一输出：
 - 年化收益

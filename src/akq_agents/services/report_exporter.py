@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from shutil import copyfile
-from typing import Dict, Optional
 
 
 class ReportExporter:
-    def export_latest(self, markdown_path: Optional[str], html_path: Optional[str], export_dir: str) -> Dict[str, str]:
+    def export_latest(self, markdown_path: str | None, html_path: str | None, export_dir: str) -> dict[str, str]:
         destination = Path(export_dir)
         destination.mkdir(parents=True, exist_ok=True)
         exported = {}

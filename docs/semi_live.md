@@ -22,20 +22,20 @@
 ## 自检
 
 ```bash
-PYTHONPATH=/Users/fengbojing1/Documents/A/src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app doctor
+PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app doctor
 ```
 
 ## 单次运行
 
 ```bash
-PYTHONPATH=/Users/fengbojing1/Documents/A/src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app run-once
+PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app run-once
 ```
 
 ## 查询与分析
 
 ```bash
-PYTHONPATH=/Users/fengbojing1/Documents/A/src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app query --section all --limit 5
-PYTHONPATH=/Users/fengbojing1/Documents/A/src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app analyze
+PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app query --section all --limit 5
+PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app analyze
 ```
 
 ## 当前增强
@@ -58,7 +58,7 @@ PYTHONPATH=/Users/fengbojing1/Documents/A/src /opt/anaconda3/envs/akq310/bin/pyt
 - `size_score`
 
 实现位置：
-- `/Users/fengbojing1/Documents/A/src/akq_agents/services/akshare_service.py:1`
+- `src/akq_agents/services/akshare_service.py`
 
 ### akquant 真实适配层
 
@@ -70,7 +70,7 @@ PYTHONPATH=/Users/fengbojing1/Documents/A/src /opt/anaconda3/envs/akq310/bin/pyt
 - `BacktestResult.trades`
 
 实现位置：
-- `/Users/fengbojing1/Documents/A/src/akq_agents/services/backtest_service.py:1`
+- `src/akq_agents/services/backtest_service.py`
 
 ## 下一步建议
 

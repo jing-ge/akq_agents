@@ -27,8 +27,7 @@ ENV/
 .DS_Store
 
 # OMC / Claude session state
-.omc/state/
-.omc/logs/
+.omc/
 
 # Project runtime artifacts (data + state + reports)
 data/

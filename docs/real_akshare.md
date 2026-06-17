@@ -6,7 +6,7 @@
 
 ## 当前实现位置
 
-- `/Users/fengbojing1/Documents/A/src/akq_agents/services/akshare_service.py:1`
+- `src/akq_agents/services/akshare_service.py`
 
 ## 当前已支持
 

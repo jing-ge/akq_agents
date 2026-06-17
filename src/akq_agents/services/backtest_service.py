@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -14,8 +14,8 @@ class MockBacktestService:
         self.slippage = slippage
         self.initial_capital = initial_capital
 
-    def run_factor_backtests(self, factor_scores: Iterable[FactorScore]) -> List[BacktestReport]:
-        grouped: Dict[str, List[float]] = {}
+    def run_factor_backtests(self, factor_scores: Iterable[FactorScore]) -> list[BacktestReport]:
+        grouped: dict[str, list[float]] = {}
         for item in factor_scores:
             grouped.setdefault(item.factor_name, []).append(item.value)
 
@@ -58,8 +58,8 @@ class AkquantBacktestService:
         commission: float,
         slippage: float,
         initial_capital: float,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         strict: bool = False,
     ) -> None:
         self.benchmark = benchmark
@@ -71,7 +71,7 @@ class AkquantBacktestService:
         self.end_date = end_date
         self.strict = strict
 
-    def run_factor_backtests(self, factor_scores: Iterable[FactorScore]) -> List[BacktestReport]:
+    def run_factor_backtests(self, factor_scores: Iterable[FactorScore]) -> list[BacktestReport]:
         factor_scores = list(factor_scores)
         try:
             from akquant.backtest import run_backtest
@@ -111,16 +111,16 @@ class AkquantBacktestService:
         return None
 
     @staticmethod
-    def _group_scores(factor_scores: Iterable[FactorScore]) -> Dict[str, List[FactorScore]]:
-        grouped: Dict[str, List[FactorScore]] = {}
+    def _group_scores(factor_scores: Iterable[FactorScore]) -> dict[str, list[FactorScore]]:
+        grouped: dict[str, list[FactorScore]] = {}
         for item in factor_scores:
             grouped.setdefault(item.factor_name, []).append(item)
         return grouped
 
-    def _build_backtest_frame(self, items: List[FactorScore]) -> pd.DataFrame:
+    def _build_backtest_frame(self, items: list[FactorScore]) -> pd.DataFrame:
         rows = []
         base_start = pd.Timestamp(self.start_date or datetime.now().date()).tz_localize("Asia/Shanghai")
-        for index, item in enumerate(items):
+        for _index, item in enumerate(items):
             score = float(item.value)
             open_price = max(1.0, 100.0 + score * 10)
             close_price = max(1.0, open_price * (1 + score * 0.02))
@@ -200,14 +200,14 @@ class AkquantBacktestService:
             return 0.0
         return float(daily_returns.corr(ranks))
 
-    def _fallback_report_for_factor(self, factor_name: str, items: List[FactorScore], timestamp: datetime) -> BacktestReport:
+    def _fallback_report_for_factor(self, factor_name: str, items: list[FactorScore], timestamp: datetime) -> BacktestReport:
         fallback = self._fallback_reports(items)
         report = fallback[0]
         report.factor_name = factor_name
         report.timestamp = timestamp
         return report
 
-    def _fallback_reports(self, factor_scores: Iterable[FactorScore]) -> List[BacktestReport]:
+    def _fallback_reports(self, factor_scores: Iterable[FactorScore]) -> list[BacktestReport]:
         fallback = MockBacktestService(
             commission=self.commission,
             slippage=self.slippage,

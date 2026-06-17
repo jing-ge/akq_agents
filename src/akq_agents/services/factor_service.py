@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable, List
 
 import pandas as pd
 
@@ -9,7 +9,7 @@ from akq_agents.models.domain import FactorScore, MarketSnapshot
 
 
 class FactorLibrary:
-    def compute_factor_scores(self, snapshots: Iterable[MarketSnapshot]) -> List[FactorScore]:
+    def compute_factor_scores(self, snapshots: Iterable[MarketSnapshot]) -> list[FactorScore]:
         rows = []
         for snapshot in snapshots:
             row = {
@@ -43,7 +43,7 @@ class FactorLibrary:
         frame["trend_score"] = 0.2 * frame["momentum_5"] + 0.5 * frame["momentum_20"] + 0.3 * frame["momentum_60"]
         frame["stability_score"] = -frame["volatility_20"]
 
-        factor_scores: List[FactorScore] = []
+        factor_scores: list[FactorScore] = []
         for _, row in frame.iterrows():
             factor_scores.extend(
                 [

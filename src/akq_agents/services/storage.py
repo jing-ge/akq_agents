@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any
 
 import yaml
 
@@ -11,13 +12,13 @@ class StateStore:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
 
-    def load(self) -> Dict[str, Any]:
+    def load(self) -> dict[str, Any]:
         if not self.path.exists():
             return {}
-        with open(self.path, "r", encoding="utf-8") as file:
+        with open(self.path, encoding="utf-8") as file:
             return yaml.safe_load(file) or {}
 
-    def save(self, state: Dict[str, Any]) -> None:
+    def save(self, state: dict[str, Any]) -> None:
         with open(self.path, "w", encoding="utf-8") as file:
             yaml.safe_dump(state, file, allow_unicode=True, sort_keys=False)
 
@@ -109,12 +110,12 @@ class SQLiteStore:
             connection.executemany(sql, values)
             connection.commit()
 
-    def query(self, sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    def query(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         with self._connect() as connection:
             cursor = connection.execute(sql, params)
             return [dict(row) for row in cursor.fetchall()]
 
-    def latest_backtest_reports(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def latest_backtest_reports(self, limit: int = 10) -> list[dict[str, Any]]:
         return self.query(
             """
             SELECT ts, factor_name, annual_return, sharpe, max_drawdown, win_rate, score
@@ -125,7 +126,7 @@ class SQLiteStore:
             (limit,),
         )
 
-    def latest_portfolio(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def latest_portfolio(self, limit: int = 10) -> list[dict[str, Any]]:
         return self.query(
             """
             SELECT ts, symbol, weight, score, reasons_yaml
@@ -136,7 +137,7 @@ class SQLiteStore:
             (limit,),
         )
 
-    def latest_advice(self) -> List[Dict[str, Any]]:
+    def latest_advice(self) -> list[dict[str, Any]]:
         return self.query(
             """
             SELECT ts, rendered, payload_yaml

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from pprint import pprint
 
 import yaml
@@ -14,16 +15,19 @@ from akq_agents.agents.report_agent import ReportAgent
 from akq_agents.agents.research_agent import ResearchAgent
 from akq_agents.agents.risk_agent import RiskAgent
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
 
 class QuantWorkflow:
-    def __init__(self, config, services, store, sqlite_store):
+    def __init__(self, config, services, store, sqlite_store, reports_dir: Path | None = None):
         self.config = config
         self.services = services
         self.store = store
         self.sqlite_store = sqlite_store
+        reports_path = Path(reports_dir) if reports_dir else _PROJECT_ROOT / "reports"
         self.agents = [
             DataAgent(services["market"], config.universe.symbols, config.universe.lookback_days),
-            FactorAgent(services["factor"]),
+            FactorAgent(services["factor"], repository=services.get("data_repository")),
             BacktestAgent(services["backtest"]),
             ResearchAgent(
                 config.research.top_n_factors,
@@ -39,7 +43,7 @@ class QuantWorkflow:
                 config.risk.min_liquidity_score,
             ),
             AdvisorAgent(services["advisor"]),
-            ReportAgent("/Users/fengbojing1/Documents/A/reports"),
+            ReportAgent(str(reports_path)),
         ]
 
     def run_once(self):

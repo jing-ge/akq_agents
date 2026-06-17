@@ -3,11 +3,10 @@ from __future__ import annotations
 import importlib
 import platform
 import sys
-from typing import Dict, List
 
 
 class EnvironmentDoctor:
-    def check(self) -> Dict[str, object]:
+    def check(self) -> dict[str, object]:
         packages = {}
         for name in ["akshare", "akquant", "pydantic", "pandas", "apscheduler", "yaml"]:
             packages[name] = self._package_status(name)
@@ -18,7 +17,7 @@ class EnvironmentDoctor:
             "recommendations": self._recommendations(packages),
         }
 
-    def _package_status(self, name: str) -> Dict[str, str]:
+    def _package_status(self, name: str) -> dict[str, str]:
         try:
             module = importlib.import_module(name)
             version = getattr(module, "__version__", "unknown")
@@ -26,7 +25,7 @@ class EnvironmentDoctor:
         except Exception:
             return {"status": "missing", "version": "-"}
 
-    def _recommendations(self, packages: Dict[str, Dict[str, str]]) -> List[str]:
+    def _recommendations(self, packages: dict[str, dict[str, str]]) -> list[str]:
         notes = []
         if packages["akshare"]["status"] != "installed":
             notes.append("安装 akshare 以启用真实市场数据")

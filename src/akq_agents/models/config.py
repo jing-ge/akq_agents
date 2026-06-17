@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
 
 import yaml
 from pydantic import BaseModel
@@ -23,7 +22,7 @@ class SystemInfo(BaseModel):
 
 class UniverseConfig(BaseModel):
     market: str = "cn"
-    symbols: List[str]
+    symbols: list[str]
     lookback_days: int = 120
 
 
@@ -49,8 +48,8 @@ class BacktestConfig(BaseModel):
     commission: float = 0.0003
     slippage: float = 0.0005
     initial_capital: float = 1000000
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 class StorageConfig(BaseModel):
@@ -75,7 +74,7 @@ class AppConfig(BaseModel):
     services: ServicesConfig
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "AppConfig":
-        with open(path, "r", encoding="utf-8") as file:
+    def from_yaml(cls, path: str | Path) -> AppConfig:
+        with open(path, encoding="utf-8") as file:
             payload = yaml.safe_load(file)
         return cls.model_validate(payload)
