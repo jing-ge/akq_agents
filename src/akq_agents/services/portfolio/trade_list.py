@@ -157,6 +157,7 @@ class TradeListStore:
 
     def upsert_cohort(self, cohort_date: date, items: list[TradeItem]) -> int:
         now = datetime.now().isoformat(timespec="seconds")
+        new_symbols = {it.symbol for it in items}
         rows = [
             (
                 cohort_date.isoformat(),
@@ -177,27 +178,41 @@ class TradeListStore:
             for it in items
         ]
         with open_meta_db(self._db) as conn:
-            conn.executemany(
-                """
-                INSERT INTO trade_list_cohorts
-                  (cohort_date, symbol, action, current_shares, target_shares,
-                   delta_shares, target_weight, current_price, delta_amount,
-                   reason, industry, composite_score, executed, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(cohort_date, symbol) DO UPDATE SET
-                  action=excluded.action,
-                  current_shares=excluded.current_shares,
-                  target_shares=excluded.target_shares,
-                  delta_shares=excluded.delta_shares,
-                  target_weight=excluded.target_weight,
-                  current_price=excluded.current_price,
-                  delta_amount=excluded.delta_amount,
-                  reason=excluded.reason,
-                  industry=excluded.industry,
-                  composite_score=excluded.composite_score
-                """,
-                rows,
-            )
+            # 先删掉这一天里不在新清单里的 symbol（持仓删除后清空旧 SELL 等）
+            if new_symbols:
+                placeholders = ",".join("?" for _ in new_symbols)
+                conn.execute(
+                    f"DELETE FROM trade_list_cohorts WHERE cohort_date = ? AND symbol NOT IN ({placeholders})",
+                    (cohort_date.isoformat(), *new_symbols),
+                )
+            else:
+                # 完全空：清掉这一天所有的
+                conn.execute(
+                    "DELETE FROM trade_list_cohorts WHERE cohort_date = ?",
+                    (cohort_date.isoformat(),),
+                )
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO trade_list_cohorts
+                      (cohort_date, symbol, action, current_shares, target_shares,
+                       delta_shares, target_weight, current_price, delta_amount,
+                       reason, industry, composite_score, executed, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(cohort_date, symbol) DO UPDATE SET
+                      action=excluded.action,
+                      current_shares=excluded.current_shares,
+                      target_shares=excluded.target_shares,
+                      delta_shares=excluded.delta_shares,
+                      target_weight=excluded.target_weight,
+                      current_price=excluded.current_price,
+                      delta_amount=excluded.delta_amount,
+                      reason=excluded.reason,
+                      industry=excluded.industry,
+                      composite_score=excluded.composite_score
+                    """,
+                    rows,
+                )
             conn.commit()
         return len(rows)
 

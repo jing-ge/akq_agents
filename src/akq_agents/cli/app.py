@@ -375,6 +375,70 @@ def cmd_portfolio_explain(args: argparse.Namespace) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def cmd_trade_list(args: argparse.Namespace) -> None:
+    """打印某日 BUY/SELL/HOLD 交易清单。"""
+    from datetime import date as _date
+
+    from akq_agents.services.portfolio.trade_list import TradeListStore
+
+    data_config = _require_data_config()
+    repo = build_data_repository(data_config)
+    store = TradeListStore(meta_db_path=repo._base_dir / "meta.db")
+    d = _date.today() if args.date is None else _date.fromisoformat(args.date)
+    items = store.list_cohort(d)
+    if not items:
+        dates = store.list_dates(limit=1)
+        if dates:
+            d = _date.fromisoformat(dates[0])
+            items = store.list_cohort(d)
+    n_buy = sum(1 for it in items if it["action"] == "BUY")
+    n_sell = sum(1 for it in items if it["action"] == "SELL")
+    n_hold = sum(1 for it in items if it["action"] == "HOLD")
+    total_buy = sum(it["delta_amount"] for it in items if it["action"] == "BUY")
+    total_sell = sum(abs(it["delta_amount"]) for it in items if it["action"] == "SELL")
+    payload = {
+        "cohort_date": d.isoformat(),
+        "n_buy": n_buy, "n_sell": n_sell, "n_hold": n_hold,
+        "total_buy_amount": round(total_buy, 2),
+        "total_sell_amount": round(total_sell, 2),
+        "tradable": [it for it in items if it["action"] != "HOLD"],
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def cmd_paper_summary(_: argparse.Namespace) -> None:
+    """打印 Paper Trading 前向跟踪汇总。"""
+    from akq_agents.services.portfolio.paper_trading import PaperTradingStore, PaperTradingConfig
+
+    data_config = _require_data_config()
+    repo = build_data_repository(data_config)
+    store = PaperTradingStore(repo._base_dir / "meta.db", PaperTradingConfig())
+    print(json.dumps(store.summary(), ensure_ascii=False, indent=2))
+
+
+def cmd_holdings_list(_: argparse.Namespace) -> None:
+    """打印当前真实持仓。"""
+    from akq_agents.services.portfolio.trade_list import HoldingsStore
+
+    data_config = _require_data_config()
+    repo = build_data_repository(data_config)
+    store = HoldingsStore(meta_db_path=repo._base_dir / "meta.db")
+    print(json.dumps({"holdings": store.list_all()}, ensure_ascii=False, indent=2))
+
+
+def cmd_holdings_set(args: argparse.Namespace) -> None:
+    """设置某只票的真实持仓（CLI 校准入口）。"""
+    from akq_agents.services.portfolio.trade_list import HoldingsStore
+
+    data_config = _require_data_config()
+    repo = build_data_repository(data_config)
+    store = HoldingsStore(meta_db_path=repo._base_dir / "meta.db")
+    store.upsert(args.symbol, float(args.shares),
+                 avg_cost=float(args.cost) if args.cost else None,
+                 note=args.note)
+    print(json.dumps({"status": "ok", "symbol": args.symbol, "shares": float(args.shares)}, ensure_ascii=False))
+
+
 # ---------------- P4 chat / llm commands ----------------
 
 
@@ -549,6 +613,27 @@ def build_parser() -> argparse.ArgumentParser:
     pexplain_p = portfolio_sub.add_parser("explain", help="Show portfolio snapshot for a date")
     pexplain_p.add_argument("--date", default=None, help="YYYY-MM-DD; defaults to today")
     pexplain_p.set_defaults(func=cmd_portfolio_explain)
+
+    # L-5: trade-list / paper / holdings
+    tl_p = subparsers.add_parser("trade-list", help="Show today BUY/SELL/HOLD action list")
+    tl_p.add_argument("--date", default=None, help="YYYY-MM-DD; defaults to latest")
+    tl_p.set_defaults(func=cmd_trade_list)
+
+    paper_p = subparsers.add_parser("paper", help="Paper Trading forward-track summary")
+    paper_sub = paper_p.add_subparsers(dest="paper_command", required=True)
+    psum_p = paper_sub.add_parser("summary", help="Aggregate cohort performance at 30/60/90 days")
+    psum_p.set_defaults(func=cmd_paper_summary)
+
+    hold_p = subparsers.add_parser("holdings", help="Show / set real holdings")
+    hold_sub = hold_p.add_subparsers(dest="holdings_command", required=True)
+    hlist_p = hold_sub.add_parser("list", help="List current real holdings")
+    hlist_p.set_defaults(func=cmd_holdings_list)
+    hset_p = hold_sub.add_parser("set", help="Set / update one holding")
+    hset_p.add_argument("symbol")
+    hset_p.add_argument("shares", type=float)
+    hset_p.add_argument("--cost", default=None, help="avg cost")
+    hset_p.add_argument("--note", default=None)
+    hset_p.set_defaults(func=cmd_holdings_set)
 
     # P4 chat
     chat_p = subparsers.add_parser("chat", help="Start interactive LLM chat REPL")

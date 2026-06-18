@@ -9,7 +9,7 @@
   {% if ctx.echarts_use_cdn %}
   <script src="{{ ctx.echarts_cdn_url }}"></script>
   {% endif %}
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v={{ ctx.boot_ts }}">
 </head>
 <body>
   <nav>
@@ -22,9 +22,39 @@
     <span class="spacer"></span>
     <span class="disclaimer">本控制台仅供研究参考，不构成投资建议；不执行任何交易指令。</span>
   </nav>
+  <div id="data-freshness-bar" class="freshness-bar"></div>
   <main>
     {% block content %}{% endblock %}
   </main>
   {% block scripts %}{% endblock %}
+  <script>
+  // 全局：拉数据新鲜度，每 30s 刷一次
+  async function loadDataFreshness() {
+    try {
+      const r = await fetch('/api/ops/data-freshness');
+      if (!r.ok) return;
+      const d = await r.json();
+      const bar = document.getElementById('data-freshness-bar');
+      if (!bar) return;
+      const fresh = d.all_fresh;
+      const dotColor = fresh ? '#5eead4' : '#fbbf24';
+      bar.innerHTML = `
+        <span class="fresh-dot" style="background:${dotColor}"></span>
+        <span><b>今日:</b> ${d.today}</span>
+        <span class="sep">·</span>
+        <span>行情 <code>${d.ohlcv_latest || '-'}</code></span>
+        <span>组合 <code>${d.portfolio_snapshots_latest || '-'}</code></span>
+        <span>净值 <code>${d.portfolio_nav_latest || '-'}</code></span>
+        <span>清单 <code>${d.trade_list_latest || '-'}</code></span>
+        <span class="sep">·</span>
+        <span>因子 <code>${d.factor_metrics_latest || '-'}</code></span>
+        <span>提案 <code>${d.factor_proposals_count}</code></span>
+        <span>持仓 <code>${d.holdings_count}</code></span>
+      `;
+    } catch {}
+  }
+  window.addEventListener('load', loadDataFreshness);
+  setInterval(loadDataFreshness, 30000);
+  </script>
 </body>
 </html>

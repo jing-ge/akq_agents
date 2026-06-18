@@ -120,7 +120,12 @@ def _page_ctx() -> dict:
         "echarts_cdn_url": (web_cfg.echarts.cdn_url if web_cfg else "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"),
         "echarts_use_cdn": (web_cfg.echarts.use_cdn if web_cfg else True),
         "poll_intervals_ms": (web_cfg.poll_intervals_ms.model_dump() if web_cfg else {"ops_health": 5000, "ops_jobs": 5000, "ops_events": 3000}),
+        "boot_ts": _BOOT_TS,
     }
+
+
+# 进程级 boot 时间戳，用于 /static/*.css?v=... 强制刷新缓存
+_BOOT_TS = str(int(__import__("time").time()))
 
 
 # uvicorn 直接调用的入口

@@ -1661,3 +1661,31 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
 }
 .logs-floating:hover { color: var(--accent); border-color: var(--accent); opacity: 1; }
 
+
+/* L-3: 数据新鲜度状态栏（nav 下方） */
+.freshness-bar {
+  display: flex; gap: 14px; align-items: center;
+  padding: 6px 24px; font-size: 11.5px;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.5);
+  border-bottom: 1px solid rgba(94, 234, 212, 0.08);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  min-height: 30px;
+}
+.freshness-bar code {
+  color: #cbd5e1;
+  background: rgba(94,234,212,0.06);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.freshness-bar .fresh-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 6px currentColor;
+}
+.freshness-bar .sep {
+  color: #475569;
+  font-weight: 600;
+}

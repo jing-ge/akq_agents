@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date as _date
 from typing import Any
 
@@ -9,7 +10,90 @@ from fastapi import APIRouter, HTTPException
 
 from akq_agents.web.deps import get_services
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _recompute_today_trade_list() -> dict[str, Any]:
+    """holdings 改后立即重算今日 trade_list（基于最新 portfolio_snapshot）。
+
+    返回：{recomputed: bool, n_items: int, error: str | None}
+    """
+    svc = get_services()
+    workflow = svc.workflow
+    if workflow is None:
+        return {"recomputed": False, "error": "workflow not ready"}
+    services = workflow.services
+    snap_store = services.get("portfolio_snapshot_store")
+    holdings_store = services.get("holdings_store")
+    tl_store = services.get("trade_list_store")
+    tl_cfg = services.get("trade_list_config")
+    repo = services.get("data_repository")
+    ind_store = services.get("industry_map_store")
+
+    if not all([snap_store, holdings_store, tl_store, tl_cfg, repo]):
+        return {"recomputed": False, "error": "missing services"}
+
+    # 找最新有 snapshot 的日期
+    snapshot_dates = snap_store.list_dates(limit=1)
+    if not snapshot_dates:
+        return {"recomputed": False, "error": "no snapshots"}
+    target_date = _date.fromisoformat(snapshot_dates[0])
+
+    # 读 snapshot → 权重 + 上一日权重
+    rows = snap_store.read_snapshot(target_date)
+    if not rows:
+        return {"recomputed": False, "error": "no snapshot for today"}
+    weights = {r.symbol: float(r.weight) for r in rows}
+    composite = {r.symbol: float(r.composite_score or 0.0) for r in rows}
+    # prev: 用 snapshot 表里上一日
+    prev_weights_series = snap_store.read_prev_weights(target_date)
+    prev_weights = {str(s): float(w) for s, w in prev_weights_series.items()} if not prev_weights_series.empty else {}
+
+    # 拿当日 close（从 ohlcv parquet 查 weights 里的 symbol + holdings 里的 symbol）
+    holdings_dict = holdings_store.as_dict()
+    all_syms = set(weights.keys()) | set(holdings_dict.keys())
+    import pyarrow.dataset as ds
+    from datetime import timedelta
+    ohlcv_dir = getattr(repo, "_ohlcv_dir", None)
+    today_close: dict[str, float] = {}
+    if ohlcv_dir and ohlcv_dir.exists() and all_syms:
+        try:
+            start = (target_date - timedelta(days=7)).isoformat()
+            end = target_date.isoformat()
+            dataset = ds.dataset(ohlcv_dir, format="parquet", partitioning="hive")
+            table = dataset.to_table(
+                filter=(ds.field("date") >= start)
+                       & (ds.field("date") <= end)
+                       & ds.field("symbol").isin(list(all_syms)),
+                columns=["date", "symbol", "close"],
+            )
+            df = table.to_pandas()
+            if not df.empty:
+                df = df.sort_values(["symbol", "date"])
+                latest = df.groupby("symbol").tail(1)
+                for _, r in latest.iterrows():
+                    today_close[str(r["symbol"])] = float(r["close"])
+        except Exception as exc:
+            logger.warning("close lookup in recompute failed: %s", exc)
+
+    # 行业映射
+    industry_name_map = ind_store.load_names() if ind_store else {}
+
+    from akq_agents.services.portfolio.trade_list import generate_trade_list
+
+    items = generate_trade_list(
+        cohort_date=target_date,
+        target_weights=weights,
+        current_close=today_close,
+        holdings=holdings_dict,
+        composite_scores=composite,
+        industry_map=industry_name_map,
+        yesterday_weights=prev_weights,
+        cfg=tl_cfg,
+    )
+    tl_store.upsert_cohort(target_date, items)
+    return {"recomputed": True, "cohort_date": target_date.isoformat(), "n_items": len(items)}
 
 
 @router.get("/holdings")
@@ -27,7 +111,7 @@ async def list_holdings() -> dict[str, Any]:
 
 @router.put("/holdings/{symbol}")
 async def upsert_holding(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """手动校准持仓：shares / avg_cost / note。"""
+    """手动校准持仓：shares / avg_cost / note。修改后立即重算今日 trade_list。"""
     svc = get_services()
     workflow = svc.workflow
     store = workflow.services.get("holdings_store") if workflow else None
@@ -39,19 +123,33 @@ async def upsert_holding(symbol: str, payload: dict[str, Any]) -> dict[str, Any]
         avg_cost = float(avg_cost)
     note = payload.get("note")
     store.upsert(symbol, shares, avg_cost=avg_cost, note=note)
-    return {"status": "ok", "symbol": symbol, "shares": shares}
+
+    # L-1: 持仓改了 → 重算今日 trade_list
+    recompute_result = _recompute_today_trade_list()
+
+    return {"status": "ok", "symbol": symbol, "shares": shares, "recompute": recompute_result}
 
 
 @router.delete("/holdings/{symbol}")
 async def delete_holding(symbol: str) -> dict[str, Any]:
-    """删除一只持仓（等价于 shares=0）。"""
+    """删除一只持仓（等价于 shares=0）。修改后立即重算今日 trade_list。"""
     svc = get_services()
     workflow = svc.workflow
     store = workflow.services.get("holdings_store") if workflow else None
     if store is None:
         raise HTTPException(503, "holdings_store not ready")
     store.upsert(symbol, 0.0)
-    return {"status": "ok"}
+    recompute_result = _recompute_today_trade_list()
+    return {"status": "ok", "recompute": recompute_result}
+
+
+@router.post("/holdings/recompute")
+async def recompute_trade_list_manual() -> dict[str, Any]:
+    """手动触发 trade_list 重算（用于调试 / 用户主动刷新）。"""
+    result = _recompute_today_trade_list()
+    if not result.get("recomputed"):
+        raise HTTPException(503, result.get("error", "unknown"))
+    return result
 
 
 @router.get("/today-list")

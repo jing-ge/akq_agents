@@ -593,6 +593,64 @@ def build_attribute_nav_drop(services: dict[str, Any]) -> ToolSpec:
     )
 
 
+# ============================================================
+# L-4: 暴露 trade_list 和 paper_trading 让 chat 能问
+# ============================================================
+
+
+def build_get_today_trade_list(services: dict[str, Any]) -> ToolSpec:
+    """返回当前 holdings 推算出的今日 BUY/SELL/HOLD 清单。"""
+    tl_store = services["trade_list_store"]
+
+    def handler(_args: dict[str, Any]) -> dict[str, Any]:
+        dates = tl_store.list_dates(limit=1)
+        if not dates:
+            return {"error": "NO_TRADE_LIST"}
+        from datetime import date as _date
+
+        target = _date.fromisoformat(dates[0])
+        items = tl_store.list_cohort(target)
+        n_buy = sum(1 for it in items if it["action"] == "BUY")
+        n_sell = sum(1 for it in items if it["action"] == "SELL")
+        n_hold = sum(1 for it in items if it["action"] == "HOLD")
+        total_buy = sum(it["delta_amount"] for it in items if it["action"] == "BUY")
+        total_sell = sum(abs(it["delta_amount"]) for it in items if it["action"] == "SELL")
+        # 只返回非 HOLD 的前 30 条（HOLD 占大多数）
+        tradable = [
+            {k: v for k, v in it.items() if k != "executed"}
+            for it in items if it["action"] != "HOLD"
+        ][:30]
+        return {
+            "cohort_date": target.isoformat(),
+            "n_buy": n_buy, "n_sell": n_sell, "n_hold": n_hold,
+            "total_buy_amount": total_buy,
+            "total_sell_amount": total_sell,
+            "tradable": tradable,
+        }
+
+    return ToolSpec(
+        name="get_today_trade_list",
+        description="返回根据当前真实持仓推算的今日交易清单：BUY/SELL/HOLD + 具体股数 + 金额 + 中文原因。用于「今天我该买什么？」",
+        json_schema={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
+
+
+def build_get_paper_track_summary(services: dict[str, Any]) -> ToolSpec:
+    """前向跟踪：30/60/90 天后系统推荐组合的真实表现（含超额 vs 沪深300）。"""
+    paper = services["paper_trading_store"]
+
+    def handler(_args: dict[str, Any]) -> dict[str, Any]:
+        return paper.summary()
+
+    return ToolSpec(
+        name="get_paper_track_summary",
+        description="返回前向跟踪 paper trading 的汇总：所有 cohort 在 30/60/90 天后的平均收益 + 胜率 + 超额 vs 沪深300。用于「过去推荐的组合 90 天后真的赚了多少？」",
+        json_schema={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
+
+
 def register_default_tools(registry: ToolRegistry, services: dict[str, Any]) -> ToolRegistry:
     """注册 P4 v2 的 4 个默认工具 + M5 的 3 个新工具。
 
@@ -625,4 +683,8 @@ def register_default_tools(registry: ToolRegistry, services: dict[str, Any]) -> 
         registry.register(build_run_factor_discovery(services))
     if "factor_evaluator" in services:
         registry.register(build_factor_decay_check(services))   # P1-3
+    if "trade_list_store" in services:
+        registry.register(build_get_today_trade_list(services))  # L-4
+    if "paper_trading_store" in services:
+        registry.register(build_get_paper_track_summary(services))  # L-4
     return registry

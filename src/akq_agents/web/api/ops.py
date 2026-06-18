@@ -20,6 +20,13 @@ async def health() -> dict[str, Any]:
     if svc.repo is not None:
         try:
             data_health = svc.repo.quality_report().model_dump(mode="json")
+            # L-7: coverage > 100% 时（spot 接口含新股 > universe）夹到 1.0 + 标注
+            if data_health and "ohlcv_coverage_today" in data_health:
+                cov = data_health["ohlcv_coverage_today"]
+                if cov is not None and cov > 1.0:
+                    data_health["ohlcv_coverage_today_raw"] = cov
+                    data_health["ohlcv_coverage_today"] = 1.0
+                    data_health["coverage_note"] = "今日 spot 拉取数 > universe（含未入池新股）"
         except Exception as exc:  # noqa: BLE001
             data_health = {"error": str(exc)[:200]}
 
@@ -147,6 +154,56 @@ async def job_run_detail(job_id: str, partition: str) -> dict[str, Any]:
         "steps": steps,
         "n_steps": len(steps),
     }
+
+
+@router.get("/data-freshness")
+async def data_freshness() -> dict[str, Any]:
+    """L-3: 一次性返回各核心表的最新数据日，让 UI 顶部能展示「系统状态」。"""
+    from datetime import date as _date
+    svc: ServiceContainer = get_services()
+    if svc.repo is None or svc.workflow is None:
+        return {"error": "not_ready"}
+    services = svc.workflow.services
+
+    def _max(table: str, col: str) -> str | None:
+        try:
+            from akq_agents.services.data.repository import open_meta_db
+            with open_meta_db(svc.repo._base_dir / "meta.db") as conn:
+                row = conn.execute(f"SELECT MAX({col}) FROM {table}").fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
+
+    today_str = _date.today().isoformat()
+    def stale(d: str | None) -> bool:
+        return d is None or d < today_str
+
+    out = {
+        "today": today_str,
+        "ohlcv_latest": _max("refresh_state", "target_date"),
+        "portfolio_snapshots_latest": _max("portfolio_snapshots", "as_of_date"),
+        "portfolio_nav_latest": _max("portfolio_nav", "as_of_date"),
+        "trade_list_latest": _max("trade_list_cohorts", "cohort_date"),
+        "paper_trades_latest": _max("paper_trades", "cohort_date"),
+        "paper_perf_latest": _max("paper_track_perf", "as_of_date"),
+        "factor_metrics_latest": _max("factor_metrics", "as_of_date"),
+        "factor_proposals_count": _count_table(svc.repo, "factor_proposals"),
+        "holdings_count": _count_table(svc.repo, "holdings"),
+    }
+    out["all_fresh"] = all(not stale(out[k]) for k in [
+        "ohlcv_latest", "portfolio_snapshots_latest", "trade_list_latest",
+    ])
+    return out
+
+
+def _count_table(repo, table: str) -> int:
+    from akq_agents.services.data.repository import open_meta_db
+    try:
+        with open_meta_db(repo._base_dir / "meta.db") as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
 
 
 @router.get("/logs")
