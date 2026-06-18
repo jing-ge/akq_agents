@@ -110,3 +110,83 @@ async def events(
         ],
         "n": len(rows),
     }
+
+
+# ============================================================
+# M11: 任务详情 + 子步骤 + 日志
+# ============================================================
+
+
+@router.get("/job-runs/{job_id}/{partition}/detail")
+async def job_run_detail(job_id: str, partition: str) -> dict[str, Any]:
+    """某 job 某 partition 的详细执行轨迹（含 job_steps 子步骤）。"""
+    svc: ServiceContainer = get_services()
+    if svc.sched_store is None:
+        return {"error": "no_state_store"}
+    run = svc.sched_store.get_job_run(job_id, partition)
+    if run is None:
+        return {"error": "not_found", "job_id": job_id, "partition": partition}
+
+    # 读 job_steps
+    steps = []
+    if svc.repo is not None:
+        from akq_agents.orchestrator.step_recorder import StepReader
+
+        reader = StepReader(svc.repo._base_dir / "meta.db")
+        steps = reader.list_steps(job_id, partition)
+
+    return {
+        "job_id": job_id,
+        "partition": partition,
+        "status": run.status,
+        "reason_code": run.reason_code,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "duration_ms": run.duration_ms,
+        "payload": json.loads(run.payload_json) if run.payload_json else None,
+        "steps": steps,
+        "n_steps": len(steps),
+    }
+
+
+@router.get("/logs")
+async def get_logs(
+    source: str = Query(default="daemon", regex="^(daemon|web|akquant_backtest)$"),
+    lines: int = Query(default=200, ge=10, le=2000),
+    grep: str | None = Query(default=None, max_length=200),
+) -> dict[str, Any]:
+    """读物理日志文件尾部 N 行，可选 grep 过滤。"""
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[4]
+    log_path = {
+        "daemon": project_root / "data" / "daemon.log",
+        "web": project_root / "data" / "web.log",
+        "akquant_backtest": project_root / "data" / "bootstrap.log",
+    }.get(source)
+    if log_path is None or not log_path.exists():
+        return {"source": source, "lines": [], "exists": False}
+
+    try:
+        # 简单 tail：读最后 ~200KB 然后切行
+        with open(log_path, "rb") as f:
+            f.seek(0, 2)
+            file_size = f.tell()
+            read_size = min(file_size, 200 * 1024)
+            f.seek(file_size - read_size)
+            chunk = f.read().decode("utf-8", errors="replace")
+        all_lines = chunk.splitlines()
+    except Exception as exc:  # noqa: BLE001
+        return {"source": source, "error": str(exc)[:200], "lines": []}
+
+    if grep:
+        all_lines = [ln for ln in all_lines if grep.lower() in ln.lower()]
+    tail = all_lines[-lines:]
+    return {
+        "source": source,
+        "path": str(log_path),
+        "file_size": file_size,
+        "total_lines_returned": len(tail),
+        "lines": tail,
+        "exists": True,
+    }

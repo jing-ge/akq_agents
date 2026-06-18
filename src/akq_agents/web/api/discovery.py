@@ -43,6 +43,105 @@ async def list_proposals(
     return {"counts": svc.proposal_store.counts(), "rows": out, "n": len(out)}
 
 
+@router.get("/proposals/{factor_name}/trace")
+async def proposal_trace(factor_name: str) -> dict[str, Any]:
+    """某个因子的完整推理详情：recipe + 评估指标 + 历史 metrics + 决策路径。"""
+    svc: ServiceContainer = get_services()
+    if svc.proposal_store is None:
+        return {"error": "no_proposal_store"}
+
+    # 读 proposal 主记录
+    rows = svc.proposal_store.list_recent(limit=500)
+    target = next((r for r in rows if r.factor_name == factor_name), None)
+    if target is None:
+        return {"error": "not_found", "factor_name": factor_name}
+
+    recipe = json.loads(target.recipe_json)
+    # 用易懂语言重写 recipe
+    op_cn = {
+        "pct_change": "百分比变化", "rolling_mean": "滚动均值",
+        "rolling_std": "滚动标准差", "zscore": "Z 分数",
+        "rsi": "RSI 指标", "rolling_skew": "滚动偏度",
+        "ts_max_norm": "归一化最大值", "ts_min_norm": "归一化最小值",
+    }
+    base_cn = {"close": "收盘价", "volume": "成交量", "amount": "成交额",
+               "high_low_range": "最高-最低价差", "vwap": "成交均价"}
+    dir_cn = {"long": "做多（值大持有）", "short": "做空（值小持有）"}
+    plain = f"对 {base_cn.get(recipe['base'], recipe['base'])} 做 {op_cn.get(recipe['op'], recipe['op'])}，窗口 {recipe['window']} 天，方向 {dir_cn.get(recipe['direction'], recipe['direction'])}"
+
+    # 决策路径解读
+    decisions = []
+    if target.ic_mean is not None:
+        decisions.append({
+            "step": "IS（样本内）评估",
+            "result": f"IC={target.ic_mean:.4f}, IR={target.ir:.3f}" if target.ir else f"IC={target.ic_mean:.4f}",
+            "pass": abs(target.ic_mean) >= 0.015 and (target.ir is None or abs(target.ir) >= 0.30),
+            "threshold": "|IC|≥0.015 且 |IR|≥0.30",
+        })
+    if target.max_abs_corr is not None:
+        decisions.append({
+            "step": "相关性筛查",
+            "result": f"与已有因子最大相关性 = {target.max_abs_corr:.3f}",
+            "pass": target.max_abs_corr <= 0.7,
+            "threshold": "max|corr| ≤ 0.7",
+        })
+    if target.shadow_started_at:
+        decisions.append({
+            "step": "进入 Shadow（OOS 观察）",
+            "result": f"开始时间: {target.shadow_started_at}",
+            "pass": True,
+        })
+    if target.oos_observations is not None and target.oos_observations > 0:
+        passed = target.oos_observations >= 20 and target.oos_ir is not None and abs(target.oos_ir) >= 0.15
+        decisions.append({
+            "step": "OOS（样本外）验证",
+            "result": f"观察 {target.oos_observations} 个交易日，OOS IR = {target.oos_ir:.3f}" if target.oos_ir else f"观察 {target.oos_observations} 天，OOS IR 未达标",
+            "pass": passed,
+            "threshold": "≥20 天观察 且 |OOS IR| ≥ 0.15",
+        })
+
+    # 历史 metrics（如果是已注册因子，会有 factor_metrics 历史）
+    metrics_history = []
+    if svc.factor_evaluator is not None:
+        try:
+            metrics_history = [
+                {
+                    "as_of_date": m.as_of_date,
+                    "ic_mean": m.ic_mean,
+                    "ir": m.ir,
+                    "t_stat": m.t_stat,
+                    "status": m.status,
+                    "reason": m.reason,
+                }
+                for m in svc.factor_evaluator.list_history(factor_name, limit=60)
+            ]
+        except Exception:
+            metrics_history = []
+
+    return {
+        "factor_name": factor_name,
+        "status": target.status,
+        "recipe": recipe,
+        "plain_description": plain,
+        "decisions": decisions,
+        "metrics": {
+            "ic_mean": target.ic_mean,
+            "ic_std": target.ic_std,
+            "ir": target.ir,
+            "t_stat": target.t_stat,
+            "max_abs_corr": target.max_abs_corr,
+            "oos_observations": target.oos_observations,
+            "oos_ir": target.oos_ir,
+        },
+        "reason": target.reason,
+        "created_at": target.created_at,
+        "evaluated_at": target.evaluated_at,
+        "shadow_started_at": target.shadow_started_at,
+        "metrics_history": metrics_history,
+        "n_history": len(metrics_history),
+    }
+
+
 @router.get("/nav")
 async def get_nav() -> dict[str, Any]:
     """读取组合净值曲线（扣费后） + benchmark 对比 + 汇总指标。"""

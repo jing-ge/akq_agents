@@ -64,12 +64,20 @@ class QuantWorkflow:
         agents.append(ReportAgent(str(reports_path)))
         self.agents = agents
 
-    def run_once(self):
+    def run_once(self, *, recorder=None):
+        """跑一次完整链路。可选传入 StepRecorder 把每个 agent 步骤落到 job_steps 表。"""
         state = self.store.load()
         context = AgentContext(state=state)
         outputs = {}
         for agent in self.agents:
-            outputs[agent.name] = agent.run(context)
+            if recorder is not None:
+                with recorder.step(agent.name) as step_ctx:
+                    out = agent.run(context)
+                    outputs[agent.name] = out
+                    # 提取 agent 输出的简要摘要写到 step payload
+                    step_ctx.set_payload(_summarize_agent_output(agent.name, out, context))
+            else:
+                outputs[agent.name] = agent.run(context)
         self.store.save(context.state)
         self._persist_state(context.state)
         return outputs
@@ -138,3 +146,42 @@ class QuantWorkflow:
         pprint(outputs["advisor-agent"]["rendered"])
         pprint(outputs["report-agent"]["report_path"])
         return outputs
+
+
+def _summarize_agent_output(name: str, output, context: AgentContext) -> dict:
+    """把 agent.run 的返回 + context 状态压缩成可读的 step payload。"""
+    payload: dict = {"agent": name}
+    if isinstance(output, dict):
+        for k, v in output.items():
+            # 数值 / 字符串直接放；复杂结构只放长度信息
+            if isinstance(v, (int, float, bool, str)) or v is None:
+                payload[k] = v
+            elif isinstance(v, list):
+                payload[f"{k}_n"] = len(v)
+                if v and isinstance(v[0], dict):
+                    payload[f"{k}_sample"] = v[0]  # 只保 1 个样本
+            elif isinstance(v, dict):
+                payload[f"{k}_keys"] = list(v.keys())[:10]
+
+    # 补充关键 context.state 信息
+    state = context.state
+    if name == "data-agent":
+        snaps = state.get("market_snapshots") or []
+        payload["snapshots_count"] = len(snaps)
+        payload["data_source"] = state.get("data_agent_status", "?")
+    elif name == "factor-agent":
+        scores = state.get("factor_scores") or []
+        payload["factor_scores_count"] = len(scores)
+    elif name == "portfolio-agent":
+        port = state.get("portfolio") or []
+        payload["portfolio_size"] = len(port)
+        payload["turnover"] = state.get("portfolio_turnover")
+        payload["risk_filter_excluded"] = state.get("risk_filter_excluded")
+    elif name == "advisor-agent":
+        advice = state.get("daily_advice") or {}
+        payload["buy"] = advice.get("buy_candidates", [])[:5]
+        payload["reduce"] = advice.get("reduce_candidates", [])[:5]
+        payload["risk_notes_count"] = len(advice.get("risk_notes", []))
+    elif name == "report-agent":
+        payload["report_path"] = (output or {}).get("report_path") if isinstance(output, dict) else None
+    return payload

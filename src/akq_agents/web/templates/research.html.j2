@@ -108,6 +108,20 @@
   </div>
   <div id="proposals-table" class="small"></div>
 </div>
+
+<!-- M11: 因子推理详情 Modal -->
+<div id="proposal-modal" class="modal-backdrop hidden" onclick="closeProposalModalOnBackdrop(event)">
+  <div class="modal-window" role="dialog" aria-modal="true" aria-labelledby="proposal-modal-title">
+    <div class="modal-head">
+      <span class="title" id="proposal-modal-title">…</span>
+      <span class="badge b-unknown" id="proposal-modal-badge"><span class="text">…</span></span>
+      <button class="close-btn" onclick="closeProposalModal()" title="关闭（ESC）">×</button>
+    </div>
+    <div class="modal-body" id="proposal-modal-body">
+      <div class="loading-skeleton">读取因子推理详情…</div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -553,7 +567,7 @@ async function loadProposals() {
           <span class="lbl">${r.oos_observations}/${OOS_TARGET}d</span>
         </span>`;
       }
-      return `<tr class="${rowClass}">
+      return `<tr class="${rowClass} is-clickable" onclick="openProposalModal('${r.factor_name}')" title="点击查看推理详情（IS / 相关性 / OOS 决策路径）">
       <td><code>${r.factor_name}</code></td>
       <td><span class="status-${statusColor}">${statusText}</span>${oosText}</td>
       <td>${r.ir != null ? r.ir.toFixed(3) : '—'}</td>
@@ -579,5 +593,182 @@ async function runDiscovery() {
     await loadProposals();
   } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
 }
+
+// ============================================================
+// M11：因子推理详情 Modal
+// ============================================================
+const PROP_STATUS_CN = {
+  accepted: '已采纳', shadow: '观察中', rejected: '已淘汰',
+  pending: '待评估', demoted: '未通过 OOS',
+};
+const PROP_BADGE_CLS = {
+  accepted: 'b-accepted', shadow: 'b-shadow', rejected: 'b-rejected',
+  pending: 'b-pending', demoted: 'b-demoted',
+};
+let _traceChart = null;
+
+function escapeHtmlR(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function openProposalModal(factorName) {
+  const modal = document.getElementById('proposal-modal');
+  const titleEl = document.getElementById('proposal-modal-title');
+  const badgeEl = document.getElementById('proposal-modal-badge');
+  const bodyEl = document.getElementById('proposal-modal-body');
+  titleEl.textContent = factorName;
+  badgeEl.className = 'badge b-unknown';
+  badgeEl.querySelector('.text').textContent = '加载中…';
+  bodyEl.innerHTML = '<div class="loading-skeleton">读取因子推理详情…</div>';
+  modal.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  try {
+    const r = await fetch(`/api/research/proposals/${encodeURIComponent(factorName)}/trace`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderTraceModal(d, titleEl, badgeEl, bodyEl);
+  } catch (e) {
+    bodyEl.innerHTML = `<div class="empty-state"><span class="em">!</span><div class="em-title">加载失败</div><div class="em-hint">${escapeHtmlR(e.message || e)}</div></div>`;
+  }
+}
+
+function renderTraceModal(d, titleEl, badgeEl, bodyEl) {
+  const statusCn = PROP_STATUS_CN[d.status] || d.status;
+  const badgeCls = PROP_BADGE_CLS[d.status] || 'b-unknown';
+  titleEl.textContent = d.factor_name;
+  badgeEl.className = 'badge ' + badgeCls;
+  badgeEl.querySelector('.text').textContent = statusCn;
+
+  // 决策路径
+  const decisions = d.decisions || [];
+  const decisionsHtml = decisions.length
+    ? `<div class="trace-timeline">${decisions.map(renderDecision).join('')}</div>`
+    : '<div class="small" style="color:var(--fg-dim)">尚无决策路径记录</div>';
+
+  // 核心指标
+  const m = d.metrics || {};
+  const num = (v, dec=3) => v == null ? '—' : Number(v).toFixed(dec);
+  const cls = (v, good=0) => v == null ? 'dim' : (v >= good ? 'pos' : 'neg');
+  const metricCards = [
+    { lbl: 'IC（信息系数）', val: num(m.ic_mean, 4), cls: cls(m.ic_mean) },
+    { lbl: 'IR（信息比率）', val: num(m.ir, 3), cls: cls(m.ir) },
+    { lbl: 't 统计量', val: num(m.t_stat, 2), cls: 'dim' },
+    { lbl: 'IC 波动率', val: num(m.ic_std, 4), cls: 'dim' },
+    { lbl: '最大相关性', val: num(m.max_abs_corr, 3), cls: 'dim' },
+    { lbl: 'OOS IR', val: num(m.oos_ir, 3), cls: cls(m.oos_ir) },
+    { lbl: 'OOS 观察天数', val: m.oos_observations != null ? m.oos_observations + ' 天' : '—', cls: 'dim' },
+  ].map(c => `<div class="m"><div class="lbl">${c.lbl}</div><div class="val ${c.cls}">${c.val}</div></div>`).join('');
+
+  // 历史曲线占位
+  const hasHistory = d.metrics_history && d.metrics_history.length >= 2;
+  const historyHtml = hasHistory
+    ? `<div id="trace-history-chart" class="trace-history"></div>`
+    : '<div class="small" style="color:var(--fg-dim)">暂无历史评估数据（需要 ≥2 条 factor_metrics 记录才能画 IR 时序）</div>';
+
+  // 配方
+  const recipeJson = escapeHtmlR(JSON.stringify(d.recipe || {}, null, 2));
+
+  bodyEl.innerHTML = `
+    <div class="modal-section">
+      <h3>配方 / Recipe</h3>
+      <div class="plain">${escapeHtmlR(d.plain_description || '—')}</div>
+      <details><summary>原始 recipe JSON</summary><pre>${recipeJson}</pre></details>
+    </div>
+
+    <div class="modal-section">
+      <h3>决策路径 / Decisions</h3>
+      ${decisionsHtml}
+      ${d.reason ? `<div class="small" style="color:var(--fg-mute);margin-top:4px;">评估结论：<code>${escapeHtmlR(d.reason)}</code></div>` : ''}
+    </div>
+
+    <div class="modal-section">
+      <h3>核心指标 / Metrics</h3>
+      <div class="metric-grid">${metricCards}</div>
+    </div>
+
+    <div class="modal-section">
+      <h3>历史评估 / Metrics History</h3>
+      ${historyHtml}
+    </div>
+  `;
+
+  // 销毁前一个 chart
+  if (_traceChart) { try { _traceChart.dispose(); } catch (e) {} _traceChart = null; }
+  if (hasHistory && typeof echarts !== 'undefined') {
+    // 后端按 limit desc 返，转正序
+    const rows = d.metrics_history.slice().reverse();
+    _traceChart = echarts.init(document.getElementById('trace-history-chart'));
+    _traceChart.setOption({
+      backgroundColor: 'transparent',
+      textStyle: { color: '#aab2c5', fontFamily: 'inherit' },
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: 'rgba(17,20,27,0.95)',
+        borderColor: '#2e3648',
+        textStyle: { color: '#e6e9f0' },
+      },
+      legend: { textStyle: { color: '#aab2c5', fontSize: 11 }, right: 8, top: 0 },
+      grid: { left: 44, right: 18, top: 26, bottom: 24 },
+      xAxis: {
+        type: 'category',
+        data: rows.map(r => r.as_of_date),
+        axisLine: { lineStyle: { color: '#2e3648' } },
+        axisLabel: { color: '#6b748a', fontSize: 10 },
+      },
+      yAxis: {
+        type: 'value', scale: true,
+        axisLine: { show: false },
+        axisLabel: { color: '#6b748a', fontSize: 10 },
+        splitLine: { lineStyle: { color: '#232936', type: 'dashed' } },
+      },
+      series: [
+        { name: 'IR', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#5eead4', width: 2 }, itemStyle: { color: '#5eead4' },
+          areaStyle: { color: 'rgba(94,234,212,0.10)' },
+          data: rows.map(r => r.ir) },
+        { name: 'IC', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#60a5fa', width: 1.5, type: 'dashed' }, itemStyle: { color: '#60a5fa' },
+          data: rows.map(r => r.ic_mean) },
+      ],
+    });
+  }
+}
+
+function renderDecision(dec) {
+  const pass = dec.pass === true;
+  const fail = dec.pass === false;
+  const cls = pass ? 'pass' : (fail ? 'fail' : 'info');
+  const icon = pass ? '✅' : (fail ? '❌' : 'ℹ');
+  return `
+    <div class="trace-step ${cls}">
+      <div class="icon ${cls}">${icon}</div>
+      <div class="body">
+        <div class="step-name">${escapeHtmlR(dec.step || '')}</div>
+        <div class="step-result">${escapeHtmlR(dec.result || '')}</div>
+      </div>
+      ${dec.threshold ? `<div class="threshold">${escapeHtmlR(dec.threshold)}</div>` : '<div></div>'}
+    </div>
+  `;
+}
+
+function closeProposalModal() {
+  const modal = document.getElementById('proposal-modal');
+  modal.classList.add('hidden');
+  document.body.style.overflow = '';
+  if (_traceChart) { try { _traceChart.dispose(); } catch (e) {} _traceChart = null; }
+}
+function closeProposalModalOnBackdrop(evt) {
+  if (evt.target && evt.target.id === 'proposal-modal') closeProposalModal();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    const m = document.getElementById('proposal-modal');
+    if (m && !m.classList.contains('hidden')) closeProposalModal();
+  }
+});
 </script>
 {% endblock %}

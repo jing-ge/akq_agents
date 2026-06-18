@@ -196,19 +196,130 @@ function renderJobs(runs) {
       <th>状态</th>
       <th>耗时</th>
       <th>开始时间</th>
+      <th></th>
     </tr></thead><tbody>
     ${runs.map(r => {
       const cn = tCn(STATUS_CN, r.status, r.status);
       const jobCn = tCn(JOB_CN, r.job_id, '');
+      // attr-safe key for partitions containing ':' etc.
+      const jobAttr = encodeURIComponent(r.job_id);
+      const partAttr = encodeURIComponent(r.partition);
       return `<tr>
       <td><code>${r.job_id}</code>${jobCn ? ' <span class="small">'+ jobCn +'</span>' : ''}</td>
       <td>${r.partition}</td>
       <td><span class="status-${r.status}">${cn}</span>${r.reason_code ? ' <code>' + r.reason_code + '</code>' : ''}</td>
       <td>${r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) + ' 秒' : '—'}</td>
       <td class="small">${r.started_at || '—'}</td>
+      <td><button class="job-detail-btn" data-job="${jobAttr}" data-part="${partAttr}" onclick="expandJob(this)" title="展开/收起该任务的子步骤详情">📋 详情</button></td>
     </tr>`;
     }).join('')}
   </tbody></table>`;
+}
+
+// ====== M11: Job 详情展开 ======
+// 缓存：'jobId|partition' -> detailJson（避免每次都打 API）
+const _jobDetailCache = new Map();
+
+async function expandJob(btn) {
+  const jobId = decodeURIComponent(btn.dataset.job);
+  const partition = decodeURIComponent(btn.dataset.part);
+  const row = btn.closest('tr');
+  const next = row.nextElementSibling;
+  // 已展开 → 收起
+  if (next && next.classList.contains('job-detail-row')) {
+    next.remove();
+    btn.classList.remove('is-open');
+    btn.textContent = '📋 详情';
+    return;
+  }
+  btn.classList.add('is-open');
+  btn.textContent = '▾ 收起';
+  // 插入一个空行先显示 loading
+  const detailRow = document.createElement('tr');
+  detailRow.className = 'job-detail-row';
+  const colCount = row.children.length;
+  detailRow.innerHTML = `<td colspan="${colCount}"><div class="jd-loading">⏳ 加载子步骤…</div></td>`;
+  row.parentNode.insertBefore(detailRow, row.nextSibling);
+
+  const cacheKey = jobId + '|' + partition;
+  try {
+    let d = _jobDetailCache.get(cacheKey);
+    if (!d) {
+      const url = `/api/ops/job-runs/${encodeURIComponent(jobId)}/${encodeURIComponent(partition)}/detail`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      d = await r.json();
+      if (d.error) throw new Error(d.error);
+      _jobDetailCache.set(cacheKey, d);
+    }
+    detailRow.firstElementChild.innerHTML = renderJobDetail(d);
+  } catch (e) {
+    detailRow.firstElementChild.innerHTML = `<div class="jd-empty">加载失败：${e.message || e}</div>`;
+  }
+}
+
+function renderJobDetail(d) {
+  const statusCn = tCn(STATUS_CN, d.status, d.status);
+  const dur = d.duration_ms != null ? (d.duration_ms / 1000).toFixed(2) + ' 秒' : '—';
+  const payloadBlock = d.payload
+    ? `<div class="jd-payload-summary">payload：${escapeHtml(JSON.stringify(d.payload, null, 2))}</div>`
+    : '';
+  const stepsHtml = (d.steps && d.steps.length)
+    ? `<div class="jd-steps">${d.steps.map(renderStep).join('')}</div>`
+    : `<div class="jd-empty">该任务没有记录子步骤（job_steps 为空）。可能是旧版本任务，或任务未使用 StepRecorder。</div>`;
+  return `
+    <div class="jd-head">
+      <span class="jd-title">${escapeHtml(d.job_id)} <span class="small">@ ${escapeHtml(d.partition)}</span></span>
+      <span class="small">状态：<span class="status-${d.status}">${statusCn}</span></span>
+      <span class="small">耗时：${dur}</span>
+      <span class="small">子步骤：${(d.steps || []).length} 个</span>
+    </div>
+    ${payloadBlock}
+    ${stepsHtml}
+  `;
+}
+
+function renderStep(s) {
+  const statusCls = 'is-' + (s.status || 'unknown');
+  const statusCn = tCn(STATUS_CN, s.status, s.status);
+  const dur = s.duration_ms != null ? s.duration_ms + ' ms' : '—';
+  const startedShort = (s.started_at || '').slice(11, 19) || '—';
+  const hasPayload = s.payload && Object.keys(s.payload).length > 0;
+  const payloadId = `jdp-${s.id}`;
+  const payloadJson = hasPayload ? escapeHtml(JSON.stringify(s.payload, null, 2)) : '';
+  const errorBlock = s.error
+    ? `<div class="jd-payload" style="border-color:var(--err); color:var(--err);">错误：${escapeHtml(s.error)}</div>`
+    : '';
+  return `
+    <div class="jd-step ${statusCls}">
+      <span class="seq">#${s.seq}</span>
+      <span class="name">${escapeHtml(s.name || '')}</span>
+      <span class="status-${s.status}">${statusCn}</span>
+      <span class="dur">${dur}</span>
+      ${hasPayload
+        ? `<button class="toggle" onclick="togglePayload('${payloadId}', this)">▸ 查看输出</button>`
+        : `<span class="ts">${startedShort}</span>`}
+      ${hasPayload ? `<pre id="${payloadId}" class="jd-payload hidden">${payloadJson}</pre>` : ''}
+      ${errorBlock}
+    </div>
+  `;
+}
+
+function togglePayload(id, btn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const opening = el.classList.contains('hidden');
+  el.classList.toggle('hidden');
+  btn.textContent = opening ? '▾ 收起输出' : '▸ 查看输出';
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 htmx.on('#events-list', 'htmx:afterRequest', e => {

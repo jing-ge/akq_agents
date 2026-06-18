@@ -54,7 +54,9 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
     services 至少需提供 ``workflow``：现有 QuantWorkflow 实例。
     """
     workflow = services["workflow"]
-    outputs = workflow.run_once()
+    # M11: 用 StepRecorder 把 agent 子步骤落到 job_steps 表
+    recorder = _make_recorder(services)
+    outputs = workflow.run_once(recorder=recorder) if recorder else workflow.run_once()
     # 汇总摘要（不要塞太大对象到 events.payload）
     advice = outputs.get("advisor-agent", {}) if isinstance(outputs, dict) else {}
     portfolio = outputs.get("portfolio-agent", {}) if isinstance(outputs, dict) else {}
@@ -63,6 +65,20 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
         "advice_rendered_chars": len(advice.get("rendered", "")) if isinstance(advice, dict) else 0,
         "portfolio_n": portfolio.get("portfolio_size", 0) if isinstance(portfolio, dict) else 0,
     }
+
+
+def _make_recorder(services: dict[str, Any]):
+    """从 services 构造 StepRecorder。失败时返回 None（不阻塞 batch 主流程）。"""
+    try:
+        repo = services.get("data_repository")
+        if repo is None:
+            return None
+        from akq_agents.orchestrator.step_recorder import StepRecorder
+
+        meta_db = repo._base_dir / "meta.db"
+        return StepRecorder(meta_db, parent_job_id=JOB_ID, parent_partition=date.today().isoformat())
+    except Exception:
+        return None
 
 
 def run_once_now(runner: JobRunner, services: dict[str, Any], cfg: SchedulerConfig) -> None:

@@ -1,0 +1,185 @@
+{% extends "base.html.j2" %}
+{% block title %}Logs{% endblock %}
+
+{% block content %}
+<h1>实时日志 <span class="small" style="font-weight:400">Logs</span></h1>
+<p class="page-intro">
+  实时滚动查看 <b>daemon（后台守护进程）</b>、<b>web（FastAPI 控制台）</b>、<b>akquant_backtest（回测引擎 bootstrap）</b>
+  三类物理日志文件的尾部。
+  默认每 3 秒拉一次，新增行会有一闪而过的高亮。
+  支持 grep 过滤、行数选择、暂停 / 继续、一键滚到底部。
+</p>
+
+<div class="card">
+  <div class="logs-toolbar" id="logs-toolbar">
+    <label>日志源：
+      <select id="log-source">
+        <option value="daemon">daemon（后台守护进程）</option>
+        <option value="web">web（控制台 FastAPI）</option>
+        <option value="akquant_backtest">akquant_backtest（回测引擎）</option>
+      </select>
+    </label>
+    <label>grep 过滤：
+      <input type="text" id="log-grep" placeholder="只看包含…的行（区分大小写不敏感）"
+             onkeydown="if(event.key==='Enter'){ refreshLogs(true); }">
+    </label>
+    <label>行数：
+      <select id="log-lines">
+        <option value="100">100</option>
+        <option value="200" selected>200</option>
+        <option value="500">500</option>
+        <option value="1000">1000</option>
+      </select>
+    </label>
+    <button class="primary" onclick="refreshLogs(true)" title="立即重新拉取一次">⟳ 刷新</button>
+    <button id="log-pause-btn" onclick="togglePause()" title="暂停 / 继续自动刷新（默认每 3 秒）">⏸ 暂停</button>
+    <button onclick="scrollLogsToBottom()" title="滚到日志底部">⬇ 滚到底</button>
+    <span class="sep"></span>
+    <span class="meta" id="log-meta"><span class="live-dot"></span>未加载</span>
+  </div>
+
+  <div id="logs-viewer" class="logs-viewer" tabindex="0">
+    <div class="logs-empty">加载中…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ============================================================
+// /logs — 实时滚动日志（轮询 /api/ops/logs）
+// ============================================================
+const LOG_POLL_MS = 3000;
+let _logTimer = null;
+let _logPaused = false;
+let _lastSig = '';        // 最近一次响应签名，用于 diff 出新增行
+let _lastLineCount = 0;
+let _logAutoStick = true; // 用户滚到底部时自动跟随
+
+function escapeHtmlL(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function classifyLogLine(line) {
+  // 在前 ~120 个字符里识别等级关键词
+  const head = line.slice(0, 160).toUpperCase();
+  if (/\b(ERROR|CRITICAL|FATAL|TRACEBACK|EXCEPTION)\b/.test(head)) return 'lv-error';
+  if (/\b(WARN|WARNING)\b/.test(head)) return 'lv-warn';
+  if (/\b(INFO)\b/.test(head)) return 'lv-info';
+  if (/\b(DEBUG|TRACE)\b/.test(head)) return 'lv-debug';
+  return '';
+}
+
+function buildLogHtml(lines, startNo, freshFromIdx) {
+  if (!lines.length) {
+    return '<div class="logs-empty">（日志文件为空 / grep 没有匹配）</div>';
+  }
+  return lines.map((line, i) => {
+    const cls = classifyLogLine(line);
+    const fresh = (freshFromIdx != null && i >= freshFromIdx) ? ' is-fresh' : '';
+    const no = (startNo + i).toString().padStart(4, ' ');
+    return `<div class="log-line ${cls}${fresh}"><span class="lno">${no}</span><span class="msg">${escapeHtmlL(line)}</span></div>`;
+  }).join('');
+}
+
+async function refreshLogs(force) {
+  const viewer = document.getElementById('logs-viewer');
+  const meta = document.getElementById('log-meta');
+  const source = document.getElementById('log-source').value;
+  const lines = document.getElementById('log-lines').value;
+  const grep = document.getElementById('log-grep').value.trim();
+  const url = `/api/ops/logs?source=${encodeURIComponent(source)}&lines=${encodeURIComponent(lines)}`
+            + (grep ? `&grep=${encodeURIComponent(grep)}` : '');
+
+  // 拉取前先记录当前滚动状态
+  const wasAtBottom = (viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 40;
+
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (d.exists === false) {
+      viewer.innerHTML = `<div class="logs-empty">日志文件不存在：<code>${escapeHtmlL(d.path || source)}</code>。后台没启动过或路径不正确。</div>`;
+      meta.innerHTML = `<span class="live-dot"></span>${source} · 文件不存在`;
+      return;
+    }
+    const arr = d.lines || [];
+    // 用最后一行 + 行数当签名，简单 diff 新增
+    const sig = arr.length + '|' + (arr.length ? arr[arr.length - 1].slice(0, 200) : '');
+    if (!force && sig === _lastSig) {
+      // 没变 — 只刷状态
+      const ts = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      meta.innerHTML = `<span class="live-dot"></span>${source} · ${arr.length} 行 · ${pad(ts.getHours())}:${pad(ts.getMinutes())}:${pad(ts.getSeconds())}（无新）`;
+      return;
+    }
+    // 估算 freshFromIdx：当行数大于上次时，认为后面的是新增（粗略）
+    let freshFromIdx = null;
+    if (!force && _lastLineCount > 0 && arr.length > _lastLineCount && arr.length - _lastLineCount < arr.length) {
+      freshFromIdx = Math.max(0, arr.length - (arr.length - _lastLineCount));
+    }
+    _lastSig = sig;
+    _lastLineCount = arr.length;
+    const fileSizeKb = d.file_size ? (d.file_size / 1024).toFixed(1) + ' KB' : '—';
+    viewer.innerHTML = buildLogHtml(arr, 1, freshFromIdx);
+    if (wasAtBottom || _logAutoStick || force) {
+      viewer.scrollTop = viewer.scrollHeight;
+    }
+    const ts = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    meta.innerHTML = `<span class="live-dot"></span>${source} · ${arr.length} 行 · ${fileSizeKb} · ${pad(ts.getHours())}:${pad(ts.getMinutes())}:${pad(ts.getSeconds())}`;
+  } catch (e) {
+    meta.innerHTML = `<span class="live-dot"></span>${source} · 加载失败：${escapeHtmlL(e.message || e)}`;
+  }
+}
+
+function togglePause() {
+  _logPaused = !_logPaused;
+  const btn = document.getElementById('log-pause-btn');
+  const toolbar = document.getElementById('logs-toolbar');
+  if (_logPaused) {
+    if (_logTimer) { clearInterval(_logTimer); _logTimer = null; }
+    btn.textContent = '▶ 继续';
+    btn.classList.add('warn');
+    toolbar.classList.add('is-paused');
+  } else {
+    btn.textContent = '⏸ 暂停';
+    btn.classList.remove('warn');
+    toolbar.classList.remove('is-paused');
+    refreshLogs(true);
+    _logTimer = setInterval(() => refreshLogs(false), LOG_POLL_MS);
+  }
+}
+
+function scrollLogsToBottom() {
+  const viewer = document.getElementById('logs-viewer');
+  viewer.scrollTop = viewer.scrollHeight;
+  _logAutoStick = true;
+}
+
+// 用户向上滚 → 停止自动跟随；滚到底 → 恢复
+function bindScrollWatch() {
+  const viewer = document.getElementById('logs-viewer');
+  viewer.addEventListener('scroll', () => {
+    const atBottom = (viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 40;
+    _logAutoStick = atBottom;
+  });
+}
+
+window.addEventListener('load', () => {
+  bindScrollWatch();
+  // 切换 source / lines 立即刷新
+  document.getElementById('log-source').addEventListener('change', () => { _lastSig = ''; _lastLineCount = 0; refreshLogs(true); });
+  document.getElementById('log-lines').addEventListener('change', () => { _lastSig = ''; _lastLineCount = 0; refreshLogs(true); });
+  refreshLogs(true);
+  _logTimer = setInterval(() => refreshLogs(false), LOG_POLL_MS);
+});
+
+window.addEventListener('beforeunload', () => {
+  if (_logTimer) clearInterval(_logTimer);
+});
+</script>
+{% endblock %}

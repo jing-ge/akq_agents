@@ -104,8 +104,22 @@ async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
     if name == "batch.post_close":
         if svc.workflow is None:
             raise HTTPException(503, "workflow not ready")
+        # M11: 加上 step recorder 让 UI 能看见子步骤
+        recorder = None
         try:
-            outputs = svc.workflow.run_once()
+            from akq_agents.orchestrator.step_recorder import StepRecorder
+            from datetime import date as _date
+            repo = svc.workflow.services.get("data_repository")
+            if repo is not None:
+                recorder = StepRecorder(
+                    repo._base_dir / "meta.db",
+                    parent_job_id="batch.post_close",
+                    parent_partition=_date.today().isoformat(),
+                )
+        except Exception:
+            recorder = None
+        try:
+            outputs = svc.workflow.run_once(recorder=recorder) if recorder else svc.workflow.run_once()
         except Exception as exc:  # noqa: BLE001
             logger.exception("trigger batch.post_close failed")
             raise HTTPException(500, str(exc)[:300]) from exc

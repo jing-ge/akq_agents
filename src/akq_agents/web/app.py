@@ -99,6 +99,13 @@ def create_app() -> FastAPI:
             context={"page": "data", "ctx": _page_ctx()},
         )
 
+    @app.get("/logs", response_class=HTMLResponse, include_in_schema=False)
+    async def page_logs(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request, name="logs.html.j2",
+            context={"page": "logs", "ctx": _page_ctx()},
+        )
+
     return app
 
 
