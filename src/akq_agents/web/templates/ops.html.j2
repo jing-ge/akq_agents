@@ -43,7 +43,7 @@
 <div class="card">
   <h2>系统健康度 <span class="small">每 {{ (ctx.poll_intervals_ms.ops_health / 1000)|int }} 秒自动刷新</span></h2>
   <div id="health-cards" hx-get="/api/ops/health" hx-trigger="load, every {{ (ctx.poll_intervals_ms.ops_health / 1000)|int }}s" hx-swap="innerHTML">
-    <p class="small">加载中…</p>
+    <div class="loading-skeleton">读取系统健康度…</div>
   </div>
 </div>
 
@@ -51,13 +51,13 @@
   <div class="card">
     <h2>最近任务运行 <span class="small">每 {{ (ctx.poll_intervals_ms.ops_jobs / 1000)|int }} 秒刷新</span></h2>
     <div id="jobs-table" hx-get="/api/ops/job-runs?limit=20" hx-trigger="load, every {{ (ctx.poll_intervals_ms.ops_jobs / 1000)|int }}s" hx-swap="innerHTML">
-      <p class="small">加载中…</p>
+      <div class="loading-skeleton">读取最近任务…</div>
     </div>
   </div>
   <div class="card">
     <h2>事件流 <span class="small">每 {{ (ctx.poll_intervals_ms.ops_events / 1000)|int }} 秒刷新</span></h2>
     <div id="events-list" hx-get="/api/ops/events?limit=20" hx-trigger="load, every {{ (ctx.poll_intervals_ms.ops_events / 1000)|int }}s" hx-swap="innerHTML">
-      <p class="small">加载中…</p>
+      <div class="loading-skeleton">读取事件流…</div>
     </div>
   </div>
 </div>
@@ -189,7 +189,7 @@ htmx.on('#jobs-table', 'htmx:afterRequest', e => {
   } catch { e.target.innerHTML = '<p>解析失败</p>'; }
 });
 function renderJobs(runs) {
-  if (!runs || !runs.length) return '<p class="small">暂无任务运行记录</p>';
+  if (!runs || !runs.length) return '<div class="empty-state"><span class="em">▢</span><div class="em-title">暂无任务运行记录</div><div class="em-hint">后台 daemon 启动后会定时跑「盘后批处理」「因子发现」等任务，跑完会出现在这里。也可以点上方按钮立即触发一次。</div></div>';
   return `<table><thead><tr>
       <th><abbr title="任务标识，例如 batch.post_close = 盘后批处理">任务 / Job</abbr></th>
       <th><abbr title="任务的分区，通常是日期（YYYY-MM-DD）">分区</abbr></th>
@@ -219,7 +219,7 @@ htmx.on('#events-list', 'htmx:afterRequest', e => {
   } catch { e.target.innerHTML = '<p>解析失败</p>'; }
 });
 function renderEvents(events) {
-  if (!events || !events.length) return '<p class="small">暂无事件</p>';
+  if (!events || !events.length) return '<div class="empty-state"><span class="em">▢</span><div class="em-title">暂无事件</div><div class="em-hint">系统正常运行时会产生 info / warning / error 事件，会自动汇总在这里。</div></div>';
   return `<table><thead><tr>
       <th>时间</th>
       <th><abbr title="info=信息 / warning=警告 / error=错误">级别</abbr></th>

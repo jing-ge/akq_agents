@@ -116,7 +116,7 @@ async function loadPortfolio() {
   const summary = document.getElementById('portfolio-summary');
   const tableEl = document.getElementById('portfolio-table');
   summary.textContent = '加载中…';
-  tableEl.innerHTML = '';
+  tableEl.innerHTML = '<div class="loading-skeleton">读取组合快照…</div>';
   try {
     const r = await fetch(`/api/research/portfolio?date=${date}`);
     if (r.status === 404) { summary.textContent = '该日期暂无组合快照'; return; }
@@ -151,12 +151,28 @@ function renderIndustryChart(items) {
   if (typeof echarts === 'undefined') return;
   const el = document.getElementById('industry-chart');
   const chart = echarts.init(el);
+  const palette = ['#5eead4','#60a5fa','#34d399','#fbbf24','#f87171','#a78bfa','#fb923c','#22d3ee','#f472b6','#84cc16','#94a3b8'];
   chart.setOption({
-    title: { text: '行业分布' },
-    tooltip: {},
+    backgroundColor: 'transparent',
+    textStyle: { color: '#aab2c5', fontFamily: 'inherit' },
+    title: { text: '行业分布', left: 14, top: 10, textStyle: { color: '#e6e9f0', fontSize: 13, fontWeight: 600 } },
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: 'rgba(17,20,27,0.95)',
+      borderColor: '#2e3648',
+      textStyle: { color: '#e6e9f0' },
+      formatter: p => `${p.name}<br/><b>${(p.value*100).toFixed(2)}%</b>（${p.percent}%）`,
+    },
+    color: palette,
+    legend: { type: 'scroll', orient: 'vertical', right: 8, top: 'middle', textStyle: { color: '#aab2c5', fontSize: 11 } },
     series: [{
       type: 'pie',
-      radius: '60%',
+      radius: ['38%', '62%'],
+      center: ['38%', '54%'],
+      avoidLabelOverlap: true,
+      itemStyle: { borderColor: '#11141b', borderWidth: 2 },
+      label: { color: '#aab2c5', fontSize: 11 },
+      labelLine: { lineStyle: { color: '#2e3648' } },
       data: items.map(i => ({ name: i.industry || '未分类', value: i.total_weight })),
     }],
   });
@@ -171,11 +187,38 @@ async function loadAttribution(date) {
     if (typeof echarts === 'undefined') return;
     const chart = echarts.init(document.getElementById('attribution-chart'));
     chart.setOption({
-      title: { text: '因子贡献（前 20 名）' },
-      tooltip: { trigger: 'axis' },
-      xAxis: { type: 'category', data: items.map(i => i[0]), axisLabel: { rotate: 30 } },
-      yAxis: { type: 'value' },
-      series: [{ type: 'bar', data: items.map(i => i[1]) }],
+      backgroundColor: 'transparent',
+      textStyle: { color: '#aab2c5', fontFamily: 'inherit' },
+      title: { text: '因子贡献（前 20 名）', left: 14, top: 10, textStyle: { color: '#e6e9f0', fontSize: 13, fontWeight: 600 } },
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: 'rgba(17,20,27,0.95)',
+        borderColor: '#2e3648',
+        textStyle: { color: '#e6e9f0' },
+        axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(94,234,212,0.06)' } },
+      },
+      grid: { left: 50, right: 20, top: 44, bottom: 64 },
+      xAxis: {
+        type: 'category',
+        data: items.map(i => i[0]),
+        axisLabel: { rotate: 30, color: '#6b748a', fontSize: 10 },
+        axisLine: { lineStyle: { color: '#2e3648' } },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { color: '#6b748a', fontSize: 10 },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: '#232936', type: 'dashed' } },
+      },
+      series: [{
+        type: 'bar',
+        data: items.map(i => ({
+          value: i[1],
+          itemStyle: { color: i[1] >= 0 ? '#5eead4' : '#f87171' },
+        })),
+        barWidth: '60%',
+        itemStyle: { borderRadius: [3, 3, 0, 0] },
+      }],
     });
   } catch (e) { /* ignore */ }
 }
@@ -184,7 +227,7 @@ async function loadFactor() {
   const name = document.getElementById('factor-name').value;
   if (!name) return;
   const tableEl = document.getElementById('factor-table');
-  tableEl.innerHTML = '加载中…';
+  tableEl.innerHTML = '<div class="loading-skeleton">读取因子表现…</div>';
   try {
     const r = await fetch(`/api/research/factors/${name}/metrics?limit=120`);
     if (!r.ok) { tableEl.innerHTML = '加载失败'; return; }
@@ -206,16 +249,40 @@ async function loadFactor() {
       groups[k].ics.push(m.ic_mean);
     });
     const series = [];
+    const palette = ['#5eead4', '#60a5fa', '#fbbf24', '#a78bfa', '#34d399', '#fb923c'];
+    let ci = 0;
     Object.entries(groups).forEach(([k, g]) => {
-      series.push({ name: `IR（信息比率）${k}`, type: 'line', data: g.irs });
-      series.push({ name: `IC（信息系数）${k}`, type: 'line', data: g.ics });
+      const c1 = palette[ci % palette.length]; ci++;
+      const c2 = palette[ci % palette.length]; ci++;
+      series.push({ name: `IR（信息比率）${k}`, type: 'line', smooth: true, showSymbol: false,
+                    lineStyle: { color: c1, width: 2 }, itemStyle: { color: c1 }, data: g.irs });
+      series.push({ name: `IC（信息系数）${k}`, type: 'line', smooth: true, showSymbol: false,
+                    lineStyle: { color: c2, width: 1.5, type: 'dashed' }, itemStyle: { color: c2 }, data: g.ics });
     });
     chart.setOption({
-      title: { text: `${name} 的 IC / IR 曲线` },
-      tooltip: { trigger: 'axis' },
-      legend: {},
-      xAxis: { type: 'category', data: d.metrics.map(m => m.as_of_date).reverse() },
-      yAxis: { type: 'value' },
+      backgroundColor: 'transparent',
+      textStyle: { color: '#aab2c5', fontFamily: 'inherit' },
+      title: { text: `${name} 的 IC / IR 曲线`, left: 14, top: 10, textStyle: { color: '#e6e9f0', fontSize: 13, fontWeight: 600 } },
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: 'rgba(17,20,27,0.95)',
+        borderColor: '#2e3648',
+        textStyle: { color: '#e6e9f0' },
+      },
+      legend: { textStyle: { color: '#aab2c5' }, right: 10, top: 8 },
+      grid: { left: 50, right: 24, top: 44, bottom: 32 },
+      xAxis: {
+        type: 'category',
+        data: d.metrics.map(m => m.as_of_date).reverse(),
+        axisLabel: { color: '#6b748a', fontSize: 10 },
+        axisLine: { lineStyle: { color: '#2e3648' } },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { color: '#6b748a', fontSize: 10 },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: '#232936', type: 'dashed' } },
+      },
       series: series,
     });
   } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
@@ -250,29 +317,98 @@ async function loadNav() {
     const s = d.summary || {};
     const fmt = (v, suffix='%', mult=100) => v == null ? '-' : (v * mult).toFixed(2) + suffix;
     statsEl.innerHTML = `
-      <div style="display:flex; gap:20px; flex-wrap:wrap; padding:8px 0;">
-        <span><b>累计收益（扣费）</b>：<span class="${(s.total_return_net||0)>=0?'metric-good':'metric-bad'}">${fmt(s.total_return_net)}</span></span>
-        <span><b>年化</b>：${fmt(s.annualized_return_net)}</span>
-        <span><b>夏普</b>：${s.sharpe_net != null ? s.sharpe_net.toFixed(2) : '-'}</span>
-        <span><b>最大回撤</b>：<span class="metric-bad">${fmt(s.max_drawdown)}</span></span>
-        <span><b>沪深300累计</b>：${fmt(s.benchmark_total_return)}</span>
-        <span><b>超额</b>：<span class="${(s.excess_return||0)>=0?'metric-good':'metric-bad'}">${fmt(s.excess_return)}</span></span>
-        <span><b>总成本</b>：${fmt(s.total_cost)}</span>
-        <span><b>平均换手</b>：${fmt(s.avg_turnover_per_rebalance)}</span>
+      <div class="kpi-strip">
+        <div class="kpi"><span class="lbl">累计收益（扣费）</span><span class="val ${(s.total_return_net||0)>=0?'metric-good':'metric-bad'}">${fmt(s.total_return_net)}</span></div>
+        <div class="kpi"><span class="lbl">年化收益</span><span class="val">${fmt(s.annualized_return_net)}</span></div>
+        <div class="kpi"><span class="lbl">夏普比率</span><span class="val">${s.sharpe_net != null ? s.sharpe_net.toFixed(2) : '—'}</span></div>
+        <div class="kpi"><span class="lbl">最大回撤</span><span class="val metric-bad">${fmt(s.max_drawdown)}</span></div>
+        <div class="kpi"><span class="lbl">沪深300 累计</span><span class="val">${fmt(s.benchmark_total_return)}</span></div>
+        <div class="kpi"><span class="lbl">超额收益</span><span class="val ${(s.excess_return||0)>=0?'metric-good':'metric-bad'}">${fmt(s.excess_return)}</span></div>
+        <div class="kpi"><span class="lbl">累计成本</span><span class="val">${fmt(s.total_cost)}</span></div>
+        <div class="kpi"><span class="lbl">平均换手</span><span class="val">${fmt(s.avg_turnover_per_rebalance)}</span></div>
       </div>
     `;
     if (typeof echarts === 'undefined') return;
     const chart = echarts.init(chartEl);
     const dates = d.nav.map(p => p.date);
+    const navNet = d.nav.map(p => p.nav_net);
+    const benchNav = d.nav.map(p => p.benchmark_nav);
+    // 计算从 peak 起的回撤（用于阴影区）：相对于历史最高净值的偏离
+    let peak = -Infinity;
+    const ddArea = navNet.map(v => {
+      if (v == null) return null;
+      peak = Math.max(peak, v);
+      return peak > 0 ? (v - peak) : null;  // 负数或 0
+    });
+    // 标记最大回撤位置
+    let mddIdx = 0, mddVal = 0;
+    ddArea.forEach((v, i) => { if (v != null && v < mddVal) { mddVal = v; mddIdx = i; } });
     chart.setOption({
-      tooltip: { trigger: 'axis' },
-      legend: { data: ['组合（扣费）', '沪深300'] },
-      xAxis: { type: 'category', data: dates },
-      yAxis: { type: 'value', scale: true },
-      grid: { left: 50, right: 20, top: 30, bottom: 30 },
+      backgroundColor: 'transparent',
+      textStyle: { color: '#aab2c5', fontFamily: 'inherit' },
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: 'rgba(17,20,27,0.95)',
+        borderColor: '#2e3648',
+        textStyle: { color: '#e6e9f0', fontSize: 12 },
+        axisPointer: { lineStyle: { color: '#5eead4', opacity: 0.5 } },
+      },
+      legend: {
+        data: ['组合（扣费）', '沪深300', '回撤区'],
+        textStyle: { color: '#aab2c5' },
+        right: 10, top: 0,
+      },
+      xAxis: {
+        type: 'category', data: dates,
+        axisLine: { lineStyle: { color: '#2e3648' } },
+        axisLabel: { color: '#6b748a', fontSize: 10 },
+        splitLine: { show: false },
+      },
+      yAxis: [{
+        type: 'value', scale: true,
+        axisLine: { show: false },
+        axisLabel: { color: '#6b748a', fontSize: 10 },
+        splitLine: { lineStyle: { color: '#232936', type: 'dashed' } },
+      }, {
+        type: 'value', position: 'right', show: false, min: -1, max: 0,
+      }],
+      grid: { left: 56, right: 28, top: 36, bottom: 36 },
       series: [
-        { name: '组合（扣费）', type: 'line', smooth: true, data: d.nav.map(p => p.nav_net) },
-        { name: '沪深300', type: 'line', smooth: true, data: d.nav.map(p => p.benchmark_nav) },
+        {
+          name: '组合（扣费）', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#5eead4', width: 2 },
+          itemStyle: { color: '#5eead4' },
+          areaStyle: {
+            color: {
+              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: 'rgba(94,234,212,0.22)' },
+                { offset: 1, color: 'rgba(94,234,212,0)' },
+              ],
+            },
+          },
+          data: navNet,
+          markPoint: mddIdx > 0 ? {
+            symbol: 'pin', symbolSize: 36,
+            itemStyle: { color: 'rgba(248,113,113,0.85)' },
+            label: { color: '#fff', fontSize: 10 },
+            data: [{ coord: [mddIdx, navNet[mddIdx]], value: '最大回撤' }],
+          } : undefined,
+        },
+        {
+          name: '沪深300', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#60a5fa', width: 1.5, type: 'dashed' },
+          itemStyle: { color: '#60a5fa' },
+          data: benchNav,
+        },
+        {
+          name: '回撤区', type: 'line', yAxisIndex: 1, smooth: true, showSymbol: false,
+          lineStyle: { width: 0 },
+          areaStyle: { color: 'rgba(248,113,113,0.10)', origin: 'start' },
+          itemStyle: { color: 'rgba(248,113,113,0.4)' },
+          data: ddArea,
+          z: -1,
+        },
       ],
     });
   } catch (e) { summaryEl.textContent = '错误: ' + e.message; }
@@ -294,16 +430,16 @@ async function loadProposals() {
   const url = '/api/research/proposals?limit=50' + (status ? '&status=' + status : '');
   const tableEl = document.getElementById('proposals-table');
   const countsEl = document.getElementById('proposal-counts');
-  tableEl.innerHTML = '加载中…';
+  tableEl.innerHTML = '<div class="loading-skeleton">读取候选因子流水…</div>';
   try {
     const r = await fetch(url);
-    if (!r.ok) { tableEl.innerHTML = '加载失败'; return; }
+    if (!r.ok) { tableEl.innerHTML = '<div class="empty-state"><span class="em">!</span><div class="em-title">加载失败</div></div>'; return; }
     const d = await r.json();
     const counts = d.counts || {};
     const cnMap = { accepted: '已采纳', shadow: '观察中', rejected: '已淘汰', pending: '待评估', demoted: '未通过 OOS' };
     countsEl.textContent = ' ［' + Object.entries(counts).map(([k,v]) => `${cnMap[k]||k}=${v}`).join(' ／ ') + '］';
     if (!d.rows || !d.rows.length) {
-      tableEl.innerHTML = '<p class="small">还没有候选因子。点击右上「立即跑一轮发现」开始让 AI 自动产生新因子……</p>';
+      tableEl.innerHTML = '<div class="empty-state"><span class="em">∅</span><div class="em-title">还没有候选因子</div><div class="em-hint">点击右上「立即跑一轮发现」让 AI 自动生成 20 个新因子配方，大约 30~120 秒后会出现在这里。</div></div>';
       return;
     }
     tableEl.innerHTML = `<table><thead><tr>
@@ -327,9 +463,16 @@ async function loadProposals() {
                        (r.status === 'rejected' || r.status === 'demoted' ? 'row-rejected' : ''));
       const statusColor = r.status === 'accepted' ? 'ok' :
                           (r.status === 'shadow' ? 'warning' : 'error');
-      const oosText = r.status === 'shadow' && r.oos_observations != null
-        ? ` <span class="small" style="color:#888">(OOS: ${r.oos_observations}天)</span>`
-        : '';
+      // shadow 状态的 OOS 进度条（假设 21 天为通过门槛）
+      const OOS_TARGET = 21;
+      let oosText = '';
+      if (r.status === 'shadow' && r.oos_observations != null) {
+        const pct = Math.min(100, (r.oos_observations / OOS_TARGET) * 100);
+        oosText = ` <span class="oos-progress" title="OOS 验证进度：${r.oos_observations} / ${OOS_TARGET} 天">
+          <span class="bar"><i style="width:${pct.toFixed(0)}%"></i></span>
+          <span class="lbl">${r.oos_observations}/${OOS_TARGET}d</span>
+        </span>`;
+      }
       return `<tr class="${rowClass}">
       <td><code>${r.factor_name}</code></td>
       <td><span class="status-${statusColor}">${statusText}</span>${oosText}</td>
@@ -348,7 +491,7 @@ async function loadProposals() {
 
 async function runDiscovery() {
   const tableEl = document.getElementById('proposals-table');
-  tableEl.innerHTML = '<p class="small">⏳ 正在让 AI 生成 20 个新因子并回测，预计 30~120 秒，请稍候……</p>';
+  tableEl.innerHTML = '<div class="loading-skeleton">正在让 AI 生成 20 个新因子并回测，预计 30~120 秒，请稍候…</div>';
   try {
     const r = await fetch('/api/control/jobs/factor.discovery/trigger?n_candidates=20', { method: 'POST' });
     const d = await r.json();

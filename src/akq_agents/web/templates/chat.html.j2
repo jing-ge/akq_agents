@@ -17,13 +17,13 @@
     <div id="sessions-list" style="margin-top: 12px;">
       {% if sessions %}
         {% for s in sessions %}
-        <div onclick="loadSession('{{ s.session_id }}')" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 4px; background: var(--bg-2); border: 1px solid var(--line);">
+        <div data-session-id="{{ s.session_id }}" onclick="loadSession('{{ s.session_id }}')">
           <code>{{ s.session_id }}</code>
           <div class="small">{{ s.last_ts }} ｜ 共 {{ s.message_count }} 条消息</div>
         </div>
         {% endfor %}
       {% else %}
-        <p class="small">暂无历史会话，点上方「新建会话」开始。</p>
+        <div class="empty-state"><span class="em">∅</span><div class="em-title">暂无历史会话</div><div class="em-hint">点上方「新建会话」开始跟 AI 对话。</div></div>
       {% endif %}
     </div>
   </div>
@@ -31,7 +31,9 @@
   <!-- Conversation -->
   <div class="card">
     <h2 id="session-title">尚未选择会话</h2>
-    <div id="chat-window" class="chat-window"></div>
+    <div id="chat-window" class="chat-window">
+      <div class="empty-state" id="chat-empty"><span class="em">›_</span><div class="em-title">尚未选择会话</div><div class="em-hint">点左侧「+ 新建会话」开始，或选择一条历史会话查看。可以直接用大白话问，例如「今天的组合里有哪些股票？」</div></div>
+    </div>
     <div class="chat-input">
       <input id="chat-input" type="text" placeholder="输入你的问题，按 Enter 发送…" />
       <button id="chat-send" onclick="sendMessage()" class="primary" disabled>发送</button>
@@ -52,19 +54,35 @@ async function newSession() {
   document.getElementById('session-title').textContent = '会话 #' + currentSession;
   document.getElementById('chat-window').innerHTML = '';
   document.getElementById('chat-send').disabled = false;
+  highlightSession(null);
+  document.getElementById('chat-input').focus();
 }
 
 async function loadSession(sid) {
   currentSession = sid;
   document.getElementById('session-title').textContent = '会话 #' + sid;
   document.getElementById('chat-send').disabled = false;
-  const r = await fetch(`/api/chat/sessions/${sid}/messages?limit=200`);
-  if (!r.ok) return;
-  const d = await r.json();
+  highlightSession(sid);
   const win = document.getElementById('chat-window');
+  win.innerHTML = '<div class="loading-skeleton">读取历史消息…</div>';
+  const r = await fetch(`/api/chat/sessions/${sid}/messages?limit=200`);
+  if (!r.ok) { win.innerHTML = '<div class="empty-state"><span class="em">!</span><div class="em-title">加载失败</div></div>'; return; }
+  const d = await r.json();
   win.innerHTML = '';
   d.messages.forEach(m => addMessage(m.role, m.content, m.tool_name));
   win.scrollTop = win.scrollHeight;
+}
+
+function highlightSession(sid) {
+  document.querySelectorAll('#sessions-list > div[data-session-id]').forEach(el => {
+    if (el.getAttribute('data-session-id') === sid) {
+      el.style.borderColor = 'var(--accent)';
+      el.style.background = 'var(--accent-soft)';
+    } else {
+      el.style.borderColor = '';
+      el.style.background = '';
+    }
+  });
 }
 
 function addMessage(role, content, toolName) {
@@ -79,6 +97,39 @@ function addMessage(role, content, toolName) {
   }
   win.appendChild(div);
   win.scrollTop = win.scrollHeight;
+  return div;
+}
+
+// 打字机渐进：把完整 content 按字符喂给已有的 div
+function addAssistantTyped(content) {
+  const win = document.getElementById('chat-window');
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant streaming';
+  div.textContent = '';
+  win.appendChild(div);
+  win.scrollTop = win.scrollHeight;
+
+  const text = content || '';
+  // 速度：短文本快，长文本平滑（最长 1.2s 显示完）
+  const total = text.length;
+  const targetMs = Math.min(1200, Math.max(220, total * 12));
+  const startedAt = performance.now();
+  function tick(now) {
+    const elapsed = now - startedAt;
+    const pct = Math.min(1, elapsed / targetMs);
+    // 缓动 easeOutQuad
+    const eased = 1 - (1 - pct) * (1 - pct);
+    const chars = Math.floor(total * eased);
+    div.textContent = text.slice(0, chars);
+    win.scrollTop = win.scrollHeight;
+    if (pct < 1) {
+      requestAnimationFrame(tick);
+    } else {
+      div.textContent = text;
+      div.classList.remove('streaming');
+    }
+  }
+  requestAnimationFrame(tick);
 }
 
 function addToolEvent(payload) {
@@ -95,6 +146,9 @@ async function sendMessage() {
   const input = document.getElementById('chat-input');
   const content = input.value.trim();
   if (!content) return;
+  // 移除空状态占位（如果还在）
+  const empty = document.getElementById('chat-empty');
+  if (empty) empty.remove();
   addMessage('user', content);
   input.value = '';
   input.disabled = true;
@@ -133,7 +187,7 @@ async function sendMessage() {
         try {
           const payload = JSON.parse(evData);
           if (evName === 'tool_use') addToolEvent(payload);
-          if (evName === 'assistant') addMessage('assistant', payload.content);
+          if (evName === 'assistant') addAssistantTyped(payload.content);
           if (evName === 'error') addMessage('assistant', `[错误: ${payload.message || JSON.stringify(payload)}]`);
         } catch { /* ignore parse */ }
       }
