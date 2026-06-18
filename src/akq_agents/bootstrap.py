@@ -33,6 +33,8 @@ from akq_agents.services.data.retry_worker import RetryWorker
 from akq_agents.services.data.universe import UniverseManager
 from akq_agents.services.factor_service import FactorLibrary
 from akq_agents.services.factors import FactorEngine, build_default_registry
+from akq_agents.services.factors.discovery import DiscoveryEngine, restore_accepted_factors
+from akq_agents.services.factors.proposal_store import FactorProposalStore
 from akq_agents.services.llm import (
     GatewayLLMClient,
     LLMGatewayConfig,
@@ -101,11 +103,14 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
         # P3 portfolio pipeline 组件（仅 data 层就绪时注入）
         base_dir = repo._base_dir
         meta_db_path = base_dir / "meta.db"
-        services["factor_registry"] = build_default_registry()
+        registry = build_default_registry()
+        services["factor_registry"] = registry
         services["factor_engine"] = FactorEngine()
-        services["factor_evaluator"] = FactorEvaluator(meta_db_path=meta_db_path, window=60)
+        evaluator = FactorEvaluator(meta_db_path=meta_db_path, window=30)
+        registry.attach_evaluator(evaluator)
+        services["factor_evaluator"] = evaluator
         services["preprocessor"] = Preprocessor()
-        services["composite_scorer"] = CompositeScorer()
+        services["composite_scorer"] = CompositeScorer(weighting="ir", evaluator=evaluator)
         services["portfolio_optimizer"] = PortfolioOptimizer(
             OptimizerConfig(top_n=50, max_single_weight=0.05)
         )
@@ -114,6 +119,21 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
 
         # P2 scheduler 表（chat tool query_events 需要）
         services["scheduler_state_store"] = SchedulerStateStore(meta_db_path)
+
+        # M2：因子发现引擎 + proposal store + 启动期恢复 accepted 因子
+        proposal_store = FactorProposalStore(meta_db_path)
+        services["factor_proposal_store"] = proposal_store
+        restored = restore_accepted_factors(registry, proposal_store)
+        if restored:
+            import logging as _logging
+
+            _logging.getLogger(__name__).info("restored %d accepted factors from proposal_store", restored)
+        services["discovery_engine"] = DiscoveryEngine(
+            repository=repo,
+            registry=registry,
+            evaluator=evaluator,
+            proposal_store=proposal_store,
+        )
 
         # P4 LLM 组件（仅在 data_repo 就绪时装配；缺 llm.yaml 也用默认配置）
         llm_cfg = load_llm_config()
@@ -190,7 +210,39 @@ def build_workflow(config_path: Path = CONFIG_PATH):
     state_store = StateStore(config.storage.state_file)
     sqlite_store = SQLiteStore(config.storage.sqlite_path)
     services = build_services(config, data_config=data_config)
+
+    # 让 calendar 一次性 bootstrap：优先在线 AKShare，失败 fallback 用本地 parquet 分区
+    repo = services.get("data_repository")
+    if repo is not None:
+        _bootstrap_calendar_safely(repo)
+
     return QuantWorkflow(config, services, state_store, sqlite_store), config
+
+
+def _bootstrap_calendar_safely(repo) -> None:
+    """优先在线 bootstrap；失败 fallback 用本地 ohlcv 分区目录推交易日。"""
+    try:
+        repo._calendar.bootstrap(lambda: repo._gateway.fetch_trading_dates())
+        return
+    except Exception:
+        pass  # 离线/限频 → fallback
+
+    # fallback：扫描 data/parquet/ohlcv/date=YYYY-MM-DD/
+    from datetime import date as _date
+
+    ohlcv_root = getattr(repo, "_ohlcv_dir", None)
+    days: list[_date] = []
+    if ohlcv_root is not None and ohlcv_root.exists():
+        for p in ohlcv_root.glob("date=*"):
+            try:
+                days.append(_date.fromisoformat(p.name.split("=", 1)[1]))
+            except Exception:
+                continue
+    if not days:
+        # 实在没有本地数据，再尝试一次（让上层看到真实错误）
+        repo._calendar.bootstrap(lambda: repo._gateway.fetch_trading_dates())
+        return
+    repo._calendar.bootstrap(lambda: days)
 
 
 def build_daemon(
@@ -208,8 +260,7 @@ def build_daemon(
     scheduler_cfg = load_scheduler_config()
 
     repo: DataRepository = workflow.services["data_repository"]  # type: ignore[assignment]
-    # 让 calendar 一次性 bootstrap（避免首次 is_trading_day 触发 akshare 调用阻塞）
-    repo._calendar.bootstrap(lambda: repo._gateway.fetch_trading_dates())
+    # calendar 已在 build_workflow 阶段安全 bootstrap；此处不再重复
 
     base_dir = repo._base_dir
     meta_db_path = base_dir / "meta.db"

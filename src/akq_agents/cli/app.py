@@ -301,6 +301,47 @@ def cmd_factors_inspect(args: argparse.Namespace) -> None:
     print(json.dumps(rows, ensure_ascii=False, indent=2))
 
 
+def cmd_factors_discover(args: argparse.Namespace) -> None:
+    """手动跑一轮因子自动发现。"""
+    from akq_agents.bootstrap import build_workflow
+
+    workflow, _ = build_workflow()
+    services = workflow.services
+    engine = services.get("discovery_engine")
+    if engine is None:
+        print(json.dumps({"error": "discovery_engine not available; data layer required"}))
+        return
+    stats = engine.run_batch(n_candidates=args.n)
+    print(json.dumps(stats.as_dict(), ensure_ascii=False, indent=2))
+
+
+def cmd_factors_proposals(args: argparse.Namespace) -> None:
+    """列出因子提案流水。"""
+    from akq_agents.bootstrap import build_workflow
+
+    workflow, _ = build_workflow()
+    store = workflow.services.get("factor_proposal_store")
+    if store is None:
+        print(json.dumps({"error": "factor_proposal_store not available"}))
+        return
+    rows = store.list_recent(limit=args.limit, status=args.status)
+    out = [
+        {
+            "factor_name": r.factor_name,
+            "status": r.status,
+            "ir": r.ir,
+            "ic_mean": r.ic_mean,
+            "t_stat": r.t_stat,
+            "max_abs_corr": r.max_abs_corr,
+            "reason": r.reason,
+            "recipe": json.loads(r.recipe_json),
+            "evaluated_at": r.evaluated_at,
+        }
+        for r in rows
+    ]
+    print(json.dumps({"counts": store.counts(), "rows": out}, ensure_ascii=False, indent=2))
+
+
 def cmd_portfolio_explain(args: argparse.Namespace) -> None:
     """打印某日组合快照。"""
     from datetime import date as _date
@@ -491,6 +532,15 @@ def build_parser() -> argparse.ArgumentParser:
     finspect_p.add_argument("name")
     finspect_p.add_argument("--limit", type=int, default=30)
     finspect_p.set_defaults(func=cmd_factors_inspect)
+
+    fdisc_p = factors_sub.add_parser("discover", help="Run one batch of auto factor discovery")
+    fdisc_p.add_argument("-n", type=int, default=20, help="Number of candidates to sample")
+    fdisc_p.set_defaults(func=cmd_factors_discover)
+
+    fprop_p = factors_sub.add_parser("proposals", help="List recent factor proposals (auto-discovered)")
+    fprop_p.add_argument("--limit", type=int, default=30)
+    fprop_p.add_argument("--status", default=None, choices=[None, "accepted", "rejected", "pending"])
+    fprop_p.set_defaults(func=cmd_factors_proposals)
 
     # P3 portfolio subcommands
     portfolio_parser = subparsers.add_parser("portfolio", help="P3 portfolio snapshot commands")

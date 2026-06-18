@@ -15,10 +15,13 @@ class RiskAgent(BaseAgent):
     def run(self, context: AgentContext):
         portfolio = context.state.get("portfolio", [])[: self.max_portfolio_size]
         factor_scores = context.state.get("factor_scores", [])
+        # 兼容历史 "liquidity" 与 P3 "amount_20" / "log_amount_20" 命名
+        liquidity_names = {"liquidity", "amount_20", "log_amount_20"}
         liquidity_by_symbol = {}
         for item in factor_scores:
-            if item["factor_name"] == "liquidity":
-                liquidity_by_symbol[item["symbol"]] = item["value"]
+            if item["factor_name"] in liquidity_names:
+                # 保留首个命中的命名，后续不覆盖（优先 liquidity，其次 amount_20）
+                liquidity_by_symbol.setdefault(item["symbol"], item["value"])
 
         filtered = []
         risk_notes = []

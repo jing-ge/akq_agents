@@ -51,8 +51,13 @@ class FactorRegistry:
     注册时强校验 ``name`` 唯一 + ``factor_version >= 1``。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, evaluator: object | None = None) -> None:
         self._factors: dict[str, Factor] = {}
+        self._evaluator = evaluator
+
+    def attach_evaluator(self, evaluator: object) -> None:
+        """供 bootstrap 注入 evaluator 用于 list_active 失能判定。"""
+        self._evaluator = evaluator
 
     def register(self, factor: Factor) -> None:
         if not getattr(factor, "name", None):
@@ -76,13 +81,22 @@ class FactorRegistry:
         return list(self._factors.values())
 
     def list_active(self, as_of_date: date) -> list[Factor]:
-        """P3a：直接返回 list_all（不读 metrics）。
+        """按最近一次 metric.status 过滤；inactive 的因子不参与组合合成。
 
-        P3b 起：读 ``factor_metrics`` 最近一次 status='active' 子集；若 metrics 为空 →
-        退化为 list_all + 写 ``factor.metric.bootstrap`` event。
+        没有 evaluator 或没有 metric 时退化为 list_all（避免新因子被永远屏蔽）。
         """
         _ = as_of_date
-        return self.list_all()
+        if self._evaluator is None:
+            return self.list_all()
+        active: list[Factor] = []
+        for f in self._factors.values():
+            try:
+                m = self._evaluator.get_latest(f.name, f.factor_version)  # type: ignore[attr-defined]
+            except Exception:
+                m = None
+            if m is None or getattr(m, "status", "active") != "inactive":
+                active.append(f)
+        return active
 
     def factor_directions(self) -> dict[str, str]:
         """快速查每个因子的 direction（用于 Preprocessor 反号）。"""

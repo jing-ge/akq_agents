@@ -8,7 +8,7 @@
   <!-- Portfolio -->
   <div class="card">
     <h2>组合</h2>
-    <div style="margin-bottom: 12px;">
+    <div class="toolbar" style="margin-bottom: 12px;">
       <label>日期：
         <select id="portfolio-date">
           {% for d in snapshot_dates %}
@@ -26,7 +26,7 @@
   <!-- Factors -->
   <div class="card">
     <h2>因子</h2>
-    <div style="margin-bottom: 12px;">
+    <div class="toolbar" style="margin-bottom: 12px;">
       <label>因子：
         <select id="factor-name">
           {% for f in factors %}
@@ -44,6 +44,25 @@
 <div class="card">
   <h2>归因 - 因子贡献</h2>
   <div id="attribution-chart" class="chart"></div>
+</div>
+
+<!-- M2 自动因子发现流水 -->
+<div class="card">
+  <h2>自动发现因子流水
+    <span class="small" id="proposal-counts"></span>
+  </h2>
+  <div class="toolbar" style="margin-bottom:12px;">
+    <label>状态：
+      <select id="proposal-status">
+        <option value="">全部</option>
+        <option value="accepted">已接收</option>
+        <option value="rejected">已拒绝</option>
+      </select>
+    </label>
+    <button class="primary" onclick="loadProposals()">刷新</button>
+    <button onclick="runDiscovery()">立即跑一轮 (20)</button>
+  </div>
+  <div id="proposals-table" class="small"></div>
 </div>
 {% endblock %}
 
@@ -160,6 +179,46 @@ window.addEventListener('load', () => {
   if (dateSel.value) loadPortfolio();
   const factorSel = document.getElementById('factor-name');
   if (factorSel.value) loadFactor();
+  loadProposals();
 });
+
+async function loadProposals() {
+  const status = document.getElementById('proposal-status').value;
+  const url = '/api/research/proposals?limit=50' + (status ? '&status=' + status : '');
+  const tableEl = document.getElementById('proposals-table');
+  const countsEl = document.getElementById('proposal-counts');
+  tableEl.innerHTML = '加载中...';
+  try {
+    const r = await fetch(url);
+    if (!r.ok) { tableEl.innerHTML = '加载失败'; return; }
+    const d = await r.json();
+    countsEl.textContent = ' [' + Object.entries(d.counts || {}).map(([k,v]) => `${k}=${v}`).join(' / ') + ']';
+    if (!d.rows || !d.rows.length) { tableEl.innerHTML = '<p class="small">暂无候选；点"立即跑一轮"开始。</p>'; return; }
+    tableEl.innerHTML = `<table><thead><tr>
+      <th>name</th><th>status</th><th>IR</th><th>IC</th><th>t</th><th>max|corr|</th><th>reason</th><th>recipe</th><th>evaluated_at</th>
+    </tr></thead><tbody>${d.rows.map(r => `<tr class="row-${r.status === 'accepted' ? 'accepted' : 'rejected'}">
+      <td><code>${r.factor_name}</code></td>
+      <td><span class="status-${r.status === 'accepted' ? 'ok' : 'error'}">${r.status}</span></td>
+      <td>${r.ir != null ? r.ir.toFixed(3) : '-'}</td>
+      <td>${r.ic_mean != null ? r.ic_mean.toFixed(4) : '-'}</td>
+      <td>${r.t_stat != null ? r.t_stat.toFixed(2) : '-'}</td>
+      <td>${r.max_abs_corr != null ? r.max_abs_corr.toFixed(2) : '-'}</td>
+      <td>${r.reason || '-'}</td>
+      <td class="small">${r.recipe.op}(${r.recipe.base}, w=${r.recipe.window}, ${r.recipe.direction})</td>
+      <td class="small">${r.evaluated_at || r.created_at}</td>
+    </tr>`).join('')}</tbody></table>`;
+  } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
+}
+
+async function runDiscovery() {
+  const tableEl = document.getElementById('proposals-table');
+  tableEl.innerHTML = '正在跑一轮发现（可能 30~120 秒）...';
+  try {
+    const r = await fetch('/api/control/jobs/factor.discovery/trigger?n_candidates=20', { method: 'POST' });
+    const d = await r.json();
+    console.log('discovery result', d);
+    await loadProposals();
+  } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
+}
 </script>
 {% endblock %}

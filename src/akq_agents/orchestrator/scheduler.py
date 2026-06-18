@@ -30,6 +30,7 @@ from akq_agents.orchestrator.job_runner import JobRunner
 from akq_agents.orchestrator.jobs import (
     batch_deep_research,
     batch_post_close,
+    factor_discovery,
     health_heartbeat,
     retry_fetch_errors,
 )
@@ -216,4 +217,5 @@ class QuantDaemon:
         batch_post_close.register(self._scheduler, self._runner, self._cfg, self._services)
         batch_deep_research.register(self._scheduler, self._runner, self._cfg, self._services)
         retry_fetch_errors.register(self._scheduler, self._runner, self._cfg, self._services)
+        factor_discovery.register(self._scheduler, self._runner, self._cfg, self._services)
         health_heartbeat.register(self._scheduler, self._cfg, self._daemon_state_file)

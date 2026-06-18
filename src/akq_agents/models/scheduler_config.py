@@ -31,6 +31,15 @@ class IntervalJobConfig(BaseModel):
     timeout_s: int = 60
 
 
+class FactorDiscoveryConfig(BaseModel):
+    """因子自动发现 job（interval 触发，含每次抽样数量）。"""
+
+    enabled: bool = True
+    interval_minutes: int = 60
+    timeout_s: int = 900
+    n_candidates_per_run: int = 20
+
+
 class SchedulerJobsConfig(BaseModel):
     batch_post_close: BatchJobConfig = Field(default_factory=BatchJobConfig)
     batch_deep_research: BatchJobConfig = Field(
@@ -44,6 +53,7 @@ class SchedulerJobsConfig(BaseModel):
     health_heartbeat: IntervalJobConfig = Field(
         default_factory=lambda: IntervalJobConfig(interval_minutes=5, timeout_s=5)
     )
+    factor_discovery: FactorDiscoveryConfig = Field(default_factory=FactorDiscoveryConfig)
 
 
 class RetentionConfig(BaseModel):

@@ -27,7 +27,12 @@ class QuantWorkflow:
         self.sqlite_store = sqlite_store
         reports_path = Path(reports_dir) if reports_dir else _PROJECT_ROOT / "reports"
         agents: list = [
-            DataAgent(services["market"], config.universe.symbols, config.universe.lookback_days),
+            DataAgent(
+                services["market"],
+                config.universe.symbols,
+                config.universe.lookback_days,
+                repository=services.get("data_repository"),
+            ),
             FactorAgent(services["factor"], repository=services.get("data_repository")),
             BacktestAgent(services["backtest"]),
             ResearchAgent(

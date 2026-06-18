@@ -24,6 +24,9 @@ class ServiceContainer:
     llm_store: Any = None
     llm_config: Any = None
     web_config: Any = None
+    discovery_engine: Any = None
+    proposal_store: Any = None
+    workflow: Any = None
 
 
 _container_override: ServiceContainer | None = None
@@ -70,4 +73,7 @@ def _build_default() -> ServiceContainer:
         llm_store=services.get("llm_store"),
         llm_config=services.get("llm_config"),
         web_config=load_web_config(),
+        discovery_engine=services.get("discovery_engine"),
+        proposal_store=services.get("factor_proposal_store"),
+        workflow=workflow,
     )

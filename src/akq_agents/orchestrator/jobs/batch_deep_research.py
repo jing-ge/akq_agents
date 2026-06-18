@@ -67,6 +67,27 @@ def _has_required_services(services: dict[str, Any]) -> bool:
     return all(k in services for k in {"data_repository", "factor_registry", "factor_evaluator"})
 
 
+def _loose_read_ohlcv(repo, symbols, start, end):
+    """绕过 calendar 严格校验，直接读 parquet 区间。"""
+    import pandas as pd
+    import pyarrow.dataset as ds
+
+    ohlcv_root = getattr(repo, "_ohlcv_dir", None)
+    if ohlcv_root is None or not ohlcv_root.exists():
+        return pd.DataFrame()
+    dataset = ds.dataset(ohlcv_root, format="parquet", partitioning="hive")
+    table = dataset.to_table(
+        filter=(ds.field("date") >= start.isoformat())
+        & (ds.field("date") <= end.isoformat())
+        & ds.field("symbol").isin(list(symbols)),
+    )
+    frame = table.to_pandas()
+    if frame.empty:
+        return frame
+    frame["date"] = pd.to_datetime(frame["date"]).dt.date
+    return frame.sort_values(["symbol", "date"]).reset_index(drop=True)
+
+
 def _do(services: dict[str, Any]) -> dict[str, Any]:
     """实际业务：对每个 factor 做 rolling IC 评估并写表。"""
     import pandas as pd
@@ -86,8 +107,11 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
     max_lookback = max((f.lookback_days for f in registry.list_all()), default=80)
     window = evaluator._window if hasattr(evaluator, "_window") else 60
     history_days = max_lookback + window + 10
-    start = today - timedelta(days=history_days * 2)  # 保险倍数，过滤交易日后才够
-    ohlcv = repo.get_ohlcv(full_symbols, start, today)
+    start = today - timedelta(days=history_days * 2)
+    # 用宽容读：缺哪天就缺哪天（PortfolioAgent 同款）
+    ohlcv = _loose_read_ohlcv(repo, full_symbols, start, today)
+    if ohlcv.empty:
+        return {"factors_evaluated": 0, "window": window, "reason": "no_data"}
     portfolio_universe = build_portfolio_universe(
         full_universe_symbols=full_symbols, ohlcv=ohlcv, top_n=500, window=20
     )
@@ -103,7 +127,8 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
         # 按日跑因子计算（rolling）。简化做法：每个 as_of_date 用 sub_ohlcv[date <= d] 子集
         factor_history_rows: dict = {}
         for d in close.index:
-            sub = sub_ohlcv[sub_ohlcv["date"] <= d.date()]
+            d_date = d.date() if hasattr(d, "date") else d
+            sub = sub_ohlcv[sub_ohlcv["date"] <= d_date]
             if len(sub) < factor.lookback_days:
                 continue
             s = factor.compute(sub)

@@ -11,6 +11,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from akq_agents.web.api.chat import router as chat_router
+from akq_agents.web.api.control import router as control_router
+from akq_agents.web.api.discovery import router as discovery_router
 from akq_agents.web.api.ops import router as ops_router
 from akq_agents.web.api.research import router as research_router
 from akq_agents.web.deps import get_services
@@ -35,7 +37,9 @@ def create_app() -> FastAPI:
     # api routers
     app.include_router(ops_router, prefix="/api/ops", tags=["ops"])
     app.include_router(research_router, prefix="/api/research", tags=["research"])
+    app.include_router(discovery_router, prefix="/api/research", tags=["discovery"])
     app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
+    app.include_router(control_router, prefix="/api/control", tags=["control"])
 
     # pages
     @app.get("/", include_in_schema=False)

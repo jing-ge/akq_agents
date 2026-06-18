@@ -4,6 +4,22 @@
 {% block content %}
 <h1>Ops 仪表盘</h1>
 
+<!-- 控制面板 -->
+<div class="card">
+  <h2>后台控制</h2>
+  <div class="toolbar">
+    <span class="group-label">Daemon</span>
+    <button onclick="doAction(this,'/api/control/daemon/start','POST')">启动 daemon</button>
+    <button onclick="doAction(this,'/api/control/daemon/stop','POST')">停止 daemon</button>
+    <span class="sep"></span>
+    <span class="group-label">Jobs</span>
+    <button onclick="doAction(this,'/api/control/jobs/batch.post_close/trigger','POST')">触发盘后批处理</button>
+    <button class="primary" onclick="doAction(this,'/api/control/jobs/factor.discovery/trigger?n_candidates=20','POST')">跑一轮因子发现 (20)</button>
+    <button onclick="doAction(this,'/api/control/jobs/batch.deep_research/trigger','POST')">重算因子 IC/IR</button>
+  </div>
+  <pre id="control-output" class="console-output"></pre>
+</div>
+
 <!-- Health cards：5s 轮询 -->
 <div class="card">
   <div id="health-cards" hx-get="/api/ops/health" hx-trigger="load, every {{ (ctx.poll_intervals_ms.ops_health / 1000)|int }}s" hx-swap="innerHTML">
@@ -29,6 +45,27 @@
 
 {% block scripts %}
 <script>
+async function doAction(btn, url, method) {
+  // 兼容旧签名 doAction(url, method)
+  if (typeof btn === 'string') { method = url; url = btn; btn = null; }
+  const out = document.getElementById('control-output');
+  out.className = 'console-output is-busy';
+  out.textContent = '> ' + method + ' ' + url + ' ...\n';
+  if (btn) { btn.classList.add('is-loading'); btn.disabled = true; }
+  try {
+    const r = await fetch(url, { method });
+    const txt = await r.text();
+    let pretty = txt;
+    try { pretty = JSON.stringify(JSON.parse(txt), null, 2); } catch {}
+    out.className = 'console-output ' + (r.ok ? 'is-ok' : 'is-err');
+    out.textContent += '\n[' + r.status + ']\n' + pretty;
+  } catch (err) {
+    out.className = 'console-output is-err';
+    out.textContent += '\nfetch error: ' + err;
+  } finally {
+    if (btn) { btn.classList.remove('is-loading'); btn.disabled = false; }
+  }
+}
 // 把 /api/ops/health 的 JSON 渲染成卡片
 htmx.on('#health-cards', 'htmx:afterRequest', e => {
   if (!e.detail.xhr || e.detail.xhr.status !== 200) return;

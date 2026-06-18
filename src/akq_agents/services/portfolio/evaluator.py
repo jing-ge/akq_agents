@@ -150,6 +150,13 @@ class FactorEvaluator:
             ic_std = float(ic_clean.std(ddof=1))
             ir = ic_mean / ic_std if ic_std > 0 else None
             t_stat = ir * np.sqrt(len(ic_clean)) if ir is not None else None
+            # M3：基于 IR 判定 active/inactive；阈值与 DiscoveryThresholds 同步（0.25）。
+            # 这里只看 |IR|，方向已在 Preprocessor 阶段处理。
+            status = "active"
+            reason: str | None = None
+            if ir is None or abs(ir) < 0.15:
+                status = "inactive"
+                reason = "low_ir"
             metric = FactorMetric(
                 factor_name=factor.name,
                 factor_version=factor.factor_version,
@@ -159,8 +166,8 @@ class FactorEvaluator:
                 ic_std=ic_std,
                 ir=ir,
                 t_stat=t_stat,
-                status="active",  # P3a 永远 active
-                reason=None,
+                status=status,
+                reason=reason,
             )
         self._upsert(metric)
         return metric

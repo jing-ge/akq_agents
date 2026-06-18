@@ -116,8 +116,15 @@ class PortfolioAgent(BaseAgent):
         try:
             ohlcv = repo.get_ohlcv(full_universe.symbols, start, today)
         except DataNotReady as exc:
-            logger.warning("portfolio: ohlcv not ready: %s", list(exc.missing.keys())[:5])
-            return {"status": "skipped", "reason": "ohlcv_not_ready", "portfolio_size": 0}
+            # 严格读要求每日齐全；缓存里有些 symbol 历史缺失属正常。
+            # 改走宽容路径：直接扫 parquet 区间，缺什么用什么，下游因子按 lookback 自然过滤。
+            logger.info(
+                "portfolio: strict get_ohlcv missing %d symbols, fall back to loose read",
+                len(exc.missing),
+            )
+            ohlcv = self._loose_read_ohlcv(repo, full_universe.symbols, start, today)
+            if ohlcv.empty:
+                return {"status": "skipped", "reason": "ohlcv_not_ready", "portfolio_size": 0}
 
         # Step 3: top 500 by amount_20
         from akq_agents.services.portfolio.combined_universe import build_portfolio_universe
@@ -187,6 +194,26 @@ class PortfolioAgent(BaseAgent):
             "turnover": turnover,
             "as_of_date": today.isoformat(),
         }
+
+    @staticmethod
+    def _loose_read_ohlcv(repo, symbols, start: date, end: date) -> pd.DataFrame:
+        """绕过 calendar 严格校验，直接读 parquet 区间，缺哪天就缺哪天。"""
+        import pyarrow.dataset as ds
+
+        ohlcv_root = getattr(repo, "_ohlcv_dir", None)
+        if ohlcv_root is None or not ohlcv_root.exists():
+            return pd.DataFrame()
+        dataset = ds.dataset(ohlcv_root, format="parquet", partitioning="hive")
+        table = dataset.to_table(
+            filter=(ds.field("date") >= start.isoformat())
+            & (ds.field("date") <= end.isoformat())
+            & ds.field("symbol").isin(list(symbols)),
+        )
+        frame = table.to_pandas()
+        if frame.empty:
+            return frame
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        return frame.sort_values(["symbol", "date"]).reset_index(drop=True)
 
     @staticmethod
     def _compute_turnover(weights: pd.Series, prev_weights: pd.Series) -> float:

@@ -28,10 +28,13 @@ research:
   min_ic: -1.0
 
 risk:
-  max_single_weight: 0.4
-  min_single_weight: 0.05
-  max_portfolio_size: 5
-  min_liquidity_score: 1.0
+  max_single_weight: 0.10
+  min_single_weight: 0.005
+  max_portfolio_size: 50
+  # P3 路径下 amount_20 已 zscore，阈值用 -1.5（剔除最差的尾部）；
+  # 旧 factor_library 下 liquidity_score = volume/1e6，阈值随便；
+  # RiskAgent 兼容两种命名，统一用更宽松值，避免空组合。
+  min_liquidity_score: -1.5
 
 backtest:
   engine: akquant
