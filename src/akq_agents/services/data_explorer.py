@@ -199,6 +199,8 @@ _CATALOG: list[ApiSpec] = [
         desc="季度 GDP 同比增速。",
         params=[],
         display_hint="chart_line",
+        chart_x="日期",
+        chart_y=["今值", "预测值", "前值"],
         head=120,
     ),
     ApiSpec(

@@ -37,7 +37,7 @@
 
     <div class="card" id="data-result-card" style="display:none">
       <h2>查询结果 <span class="small" id="result-meta"></span></h2>
-      <div id="data-chart" class="chart" style="height:380px; display:none"></div>
+      <div id="data-chart" class="chart" style="height:420px; display:none"></div>
       <div id="calendar-legend" style="display:none; gap:18px; margin:8px 0 12px 0; font-size:12px; color:#94a3b8;">
         <span><i style="display:inline-block;width:10px;height:10px;background:#5eead4;border-radius:2px;vertical-align:middle;margin-right:6px"></i>交易日</span>
         <span><i style="display:inline-block;width:10px;height:10px;background:#fbbf24;border-radius:2px;vertical-align:middle;margin-right:6px"></i>法定假日</span>
@@ -177,8 +177,8 @@ function renderResult(data) {
     (data.display_hint === 'calendar' && typeof echarts !== 'undefined');
   chartEl.style.display = willChart ? '' : 'none';
   // 日历视图需要更高（一年 ~5 行 × 14px + padding ≈ 220px，但配 monthLabel 通常需要 240+）
-  // line / kline 用 380px
-  chartEl.style.height = (data.display_hint === 'calendar') ? '260px' : '380px';
+  // line / kline 用 420px
+  chartEl.style.height = (data.display_hint === 'calendar') ? '260px' : '420px';
   // 销毁旧 chart 实例（避免重复 init 失败 / 残留）
   if (typeof echarts !== 'undefined') {
     const old = echarts.getInstanceByDom(chartEl);
@@ -240,7 +240,7 @@ function renderKline(el, data) {
 
 function renderLine(el, data) {
   const x = data.chart_x || guessXCol(data.columns);
-  const ys = (data.chart_y && data.chart_y.length) ? data.chart_y : guessYCols(data.columns, x);
+  const ys = (data.chart_y && data.chart_y.length) ? data.chart_y : guessYCols(data.columns, x, data.rows);
   const dates = data.rows.map(r => r[x]);
   const chart = echarts.init(el);
   const series = ys.map(y => ({
@@ -252,7 +252,7 @@ function renderLine(el, data) {
     color: ['#5eead4', '#60a5fa', '#fbbf24', '#f87171', '#a78bfa'],
     tooltip: { trigger: 'axis' },
     legend: { data: ys, textStyle:{color:'#cbd5e1'} },
-    grid: { left: 60, right: 20, top: 40, bottom: 50 },
+    grid: { left: 60, right: 20, top: 40, bottom: 60 },
     xAxis: { type: 'category', data: dates, axisLine:{lineStyle:{color:'#334155'}}, axisLabel:{color:'#94a3b8'} },
     yAxis: { type: 'value', scale: true, splitLine:{lineStyle:{color:'#1e293b',type:'dashed'}}, axisLabel:{color:'#94a3b8'} },
     dataZoom: [
@@ -261,6 +261,7 @@ function renderLine(el, data) {
     ],
     series,
   });
+  bindChartResize(chart);
 }
 
 function guessXCol(cols) {
@@ -268,10 +269,17 @@ function guessXCol(cols) {
   for (const c of candidates) if (cols.includes(c)) return c;
   return cols[0];
 }
-function guessYCols(cols, x) {
-  // 取 1-3 个数值列（非 x 非 symbol/code 类）
-  const blacklist = new Set([x, 'symbol', 'code', 'name', '代码', '名称', '股票代码']);
-  return cols.filter(c => !blacklist.has(c)).slice(0, 3);
+function guessYCols(cols, x, rows) {
+  // 取 1-3 个数值列（非 x 非 symbol/code/name 类，且首行 parseFloat 不是 NaN）
+  const blacklist = new Set([x, 'symbol', 'code', 'name', '代码', '名称', '股票代码', '商品']);
+  const sample = (rows && rows.length) ? rows[0] : null;
+  const numeric = (c) => {
+    if (!sample) return true;  // 没样本就放过
+    const v = sample[c];
+    if (v === null || v === undefined || v === '') return false;
+    return !isNaN(parseFloat(v));
+  };
+  return cols.filter(c => !blacklist.has(c) && numeric(c)).slice(0, 3);
 }
 
 function renderTable(cols, rows) {
@@ -401,7 +409,7 @@ function bindChartResize(chart) {
 <style>
 /* Data Explorer 页面专属布局 */
 .data-explorer { display: grid; grid-template-columns: 280px 1fr; gap: 18px; margin-top: 18px; }
-.data-sidebar { padding: 16px; max-height: 80vh; overflow-y: auto; position: sticky; top: 12px; align-self: start; }
+.data-sidebar { padding: 16px; max-height: calc(100vh - 140px); overflow-y: auto; position: sticky; top: 12px; align-self: start; }
 .data-sidebar h2 { margin-top: 0; padding-bottom: 8px; }
 .data-main { display: flex; flex-direction: column; gap: 18px; }
 .catalog-group { margin-bottom: 12px; }
