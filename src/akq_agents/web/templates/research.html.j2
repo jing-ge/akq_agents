@@ -8,7 +8,9 @@
   <b>组合</b>=今日 AI 推荐的股票篮子（含权重 / 评分 / 行业分布）；
   <b>因子</b>=每个因子在历史上的预测能力曲线（IC / IR）；
   <b>归因</b>=今日组合靠哪些因子赚的分；
-  <b>自动发现</b>=Agent 24 小时不断生成的新因子配方，绿色=表现达标已采纳，红色=未达标已淘汰。
+  <b>自动发现</b>=Agent 24 小时不断生成的新因子配方。绿色 <b class="status-ok">已采纳</b> 进组合；
+  黄色 <b style="color:#fbbf24">观察中</b>（shadow）正在 OOS 验证；
+  红色 <b class="status-error">已淘汰</b>。
 </p>
 
 <div class="grid grid-2">
@@ -48,6 +50,18 @@
   </div>
 </div>
 
+<!-- M7-A: 组合净值曲线（扣费后 vs 沪深300） -->
+<div class="card">
+  <h2>组合净值回测 <span class="small">扣除手续费 / 滑点后的累计净值曲线 vs 沪深300</span></h2>
+  <div class="toolbar">
+    <button onclick="loadNav()" class="primary">刷新</button>
+    <button onclick="rebuildNav()" class="warn">重新计算</button>
+    <span id="nav-summary" class="small"></span>
+  </div>
+  <div id="nav-chart" class="chart" style="height:300px"></div>
+  <div id="nav-stats" class="small"></div>
+</div>
+
 <div class="card">
   <h2>因子归因 <span class="small">今日组合的收益预期由哪些因子贡献</span></h2>
   <div id="attribution-chart" class="chart"></div>
@@ -66,7 +80,9 @@
       <select id="proposal-status">
         <option value="">全部</option>
         <option value="accepted">已采纳</option>
+        <option value="shadow">观察中</option>
         <option value="rejected">已淘汰</option>
+        <option value="demoted">未通过 OOS</option>
       </select>
     </label>
     <button class="primary" onclick="loadProposals()">刷新列表</button>
@@ -212,7 +228,66 @@ window.addEventListener('load', () => {
   const factorSel = document.getElementById('factor-name');
   if (factorSel.value) loadFactor();
   loadProposals();
+  loadNav();
 });
+
+async function loadNav() {
+  const chartEl = document.getElementById('nav-chart');
+  const summaryEl = document.getElementById('nav-summary');
+  const statsEl = document.getElementById('nav-stats');
+  summaryEl.textContent = '加载中...';
+  try {
+    const r = await fetch('/api/research/nav');
+    if (!r.ok) { summaryEl.textContent = '加载失败'; return; }
+    const d = await r.json();
+    if (!d.nav || !d.nav.length) {
+      summaryEl.textContent = '暂无净值数据';
+      statsEl.innerHTML = '<p class="small">' + ((d.summary && d.summary.reason) || '需要先在历史 portfolio_snapshots 表里有 2+ 个日期，扣费净值才能算出曲线。') + '</p>';
+      return;
+    }
+    summaryEl.textContent = `${d.nav.length} 个交易日`;
+    // 汇总卡片
+    const s = d.summary || {};
+    const fmt = (v, suffix='%', mult=100) => v == null ? '-' : (v * mult).toFixed(2) + suffix;
+    statsEl.innerHTML = `
+      <div style="display:flex; gap:20px; flex-wrap:wrap; padding:8px 0;">
+        <span><b>累计收益（扣费）</b>：<span class="${(s.total_return_net||0)>=0?'metric-good':'metric-bad'}">${fmt(s.total_return_net)}</span></span>
+        <span><b>年化</b>：${fmt(s.annualized_return_net)}</span>
+        <span><b>夏普</b>：${s.sharpe_net != null ? s.sharpe_net.toFixed(2) : '-'}</span>
+        <span><b>最大回撤</b>：<span class="metric-bad">${fmt(s.max_drawdown)}</span></span>
+        <span><b>沪深300累计</b>：${fmt(s.benchmark_total_return)}</span>
+        <span><b>超额</b>：<span class="${(s.excess_return||0)>=0?'metric-good':'metric-bad'}">${fmt(s.excess_return)}</span></span>
+        <span><b>总成本</b>：${fmt(s.total_cost)}</span>
+        <span><b>平均换手</b>：${fmt(s.avg_turnover_per_rebalance)}</span>
+      </div>
+    `;
+    if (typeof echarts === 'undefined') return;
+    const chart = echarts.init(chartEl);
+    const dates = d.nav.map(p => p.date);
+    chart.setOption({
+      tooltip: { trigger: 'axis' },
+      legend: { data: ['组合（扣费）', '沪深300'] },
+      xAxis: { type: 'category', data: dates },
+      yAxis: { type: 'value', scale: true },
+      grid: { left: 50, right: 20, top: 30, bottom: 30 },
+      series: [
+        { name: '组合（扣费）', type: 'line', smooth: true, data: d.nav.map(p => p.nav_net) },
+        { name: '沪深300', type: 'line', smooth: true, data: d.nav.map(p => p.benchmark_nav) },
+      ],
+    });
+  } catch (e) { summaryEl.textContent = '错误: ' + e.message; }
+}
+
+async function rebuildNav() {
+  const summaryEl = document.getElementById('nav-summary');
+  summaryEl.textContent = '重新计算中（可能需要 5-30 秒）...';
+  try {
+    const r = await fetch('/api/research/nav/rebuild', { method: 'POST' });
+    const d = await r.json();
+    console.log('rebuild result', d);
+    await loadNav();
+  } catch (e) { summaryEl.textContent = '错误: ' + e.message; }
+}
 
 async function loadProposals() {
   const status = document.getElementById('proposal-status').value;
@@ -225,7 +300,7 @@ async function loadProposals() {
     if (!r.ok) { tableEl.innerHTML = '加载失败'; return; }
     const d = await r.json();
     const counts = d.counts || {};
-    const cnMap = { accepted: '已采纳', rejected: '已淘汰', pending: '待评估' };
+    const cnMap = { accepted: '已采纳', shadow: '观察中', rejected: '已淘汰', pending: '待评估', demoted: '未通过 OOS' };
     countsEl.textContent = ' ［' + Object.entries(counts).map(([k,v]) => `${cnMap[k]||k}=${v}`).join(' ／ ') + '］';
     if (!d.rows || !d.rows.length) {
       tableEl.innerHTML = '<p class="small">还没有候选因子。点击右上「立即跑一轮发现」开始让 AI 自动产生新因子……</p>';
@@ -246,10 +321,18 @@ async function loadProposals() {
       const opCn  = cnOf(OP_CN,  recipe.op);
       const baseCn = cnOf(BASE_CN, recipe.base);
       const dirCn = cnOf(DIR_CN, recipe.direction);
-      const statusText = r.status === 'accepted' ? '已采纳' : (r.status === 'rejected' ? '已淘汰' : r.status);
-      return `<tr class="row-${r.status === 'accepted' ? 'accepted' : 'rejected'}">
+      const statusText = cnMap[r.status] || r.status;
+      const rowClass = r.status === 'accepted' ? 'row-accepted' :
+                       (r.status === 'shadow' ? 'row-pending' :
+                       (r.status === 'rejected' || r.status === 'demoted' ? 'row-rejected' : ''));
+      const statusColor = r.status === 'accepted' ? 'ok' :
+                          (r.status === 'shadow' ? 'warning' : 'error');
+      const oosText = r.status === 'shadow' && r.oos_observations != null
+        ? ` <span class="small" style="color:#888">(OOS: ${r.oos_observations}天)</span>`
+        : '';
+      return `<tr class="${rowClass}">
       <td><code>${r.factor_name}</code></td>
-      <td><span class="status-${r.status === 'accepted' ? 'ok' : 'error'}">${statusText}</span></td>
+      <td><span class="status-${statusColor}">${statusText}</span>${oosText}</td>
       <td>${r.ir != null ? r.ir.toFixed(3) : '—'}</td>
       <td>${r.ic_mean != null ? r.ic_mean.toFixed(4) : '—'}</td>
       <td>${r.t_stat != null ? r.t_stat.toFixed(2) : '—'}</td>

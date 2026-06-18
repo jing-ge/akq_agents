@@ -25,15 +25,19 @@ CREATE TABLE IF NOT EXISTS factor_proposals (
   factor_name TEXT NOT NULL UNIQUE,
   recipe_json TEXT NOT NULL,
   direction TEXT NOT NULL,
-  status TEXT NOT NULL,          -- accepted | rejected | pending
+  status TEXT NOT NULL,          -- accepted | shadow | rejected | pending | demoted
   ic_mean REAL,
   ic_std REAL,
   ir REAL,
   t_stat REAL,
-  max_abs_corr REAL,             -- 与已 accepted 因子的最大绝对相关系数
+  max_abs_corr REAL,             -- 与已 active 因子的最大绝对相关系数
   reason TEXT,                   -- 拒绝原因或 'ok'
   created_at TEXT NOT NULL,
-  evaluated_at TEXT
+  evaluated_at TEXT,
+  -- M7-C 新增字段（往后兼容；旧记录默认 NULL）
+  shadow_started_at TEXT,        -- 进入 shadow 的时间
+  oos_observations INTEGER,      -- OOS 观察的交易日数（>=N 才 promote）
+  oos_ir REAL                    -- OOS 期间的 IR
 );
 """
 
@@ -57,6 +61,9 @@ class FactorProposal:
     reason: str | None
     created_at: str
     evaluated_at: str | None
+    shadow_started_at: str | None = None
+    oos_observations: int | None = None
+    oos_ir: float | None = None
 
 
 class FactorProposalStore:
@@ -68,6 +75,16 @@ class FactorProposalStore:
         with open_meta_db(self._db) as conn:
             conn.execute(_SCHEMA)
             conn.execute(_INDEX)
+            # M7-C 增量加列（老库兼容）
+            cur = conn.execute("PRAGMA table_info(factor_proposals)")
+            existing_cols = {row[1] for row in cur.fetchall()}
+            for col, ddl in [
+                ("shadow_started_at", "ALTER TABLE factor_proposals ADD COLUMN shadow_started_at TEXT"),
+                ("oos_observations", "ALTER TABLE factor_proposals ADD COLUMN oos_observations INTEGER"),
+                ("oos_ir", "ALTER TABLE factor_proposals ADD COLUMN oos_ir REAL"),
+            ]:
+                if col not in existing_cols:
+                    conn.execute(ddl)
             conn.commit()
 
     def exists(self, factor_name: str) -> bool:
@@ -85,8 +102,8 @@ class FactorProposalStore:
                 INSERT INTO factor_proposals
                   (factor_name, recipe_json, direction, status,
                    ic_mean, ic_std, ir, t_stat, max_abs_corr, reason,
-                   created_at, evaluated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(factor_name) DO UPDATE SET
                   status=excluded.status,
                   ic_mean=excluded.ic_mean,
@@ -95,7 +112,10 @@ class FactorProposalStore:
                   t_stat=excluded.t_stat,
                   max_abs_corr=excluded.max_abs_corr,
                   reason=excluded.reason,
-                  evaluated_at=excluded.evaluated_at
+                  evaluated_at=excluded.evaluated_at,
+                  shadow_started_at=COALESCE(excluded.shadow_started_at, factor_proposals.shadow_started_at),
+                  oos_observations=excluded.oos_observations,
+                  oos_ir=excluded.oos_ir
                 """,
                 (
                     proposal.factor_name,
@@ -110,20 +130,39 @@ class FactorProposalStore:
                     proposal.reason,
                     proposal.created_at,
                     proposal.evaluated_at,
+                    proposal.shadow_started_at,
+                    proposal.oos_observations,
+                    proposal.oos_ir,
                 ),
             )
             conn.commit()
 
     def list_accepted(self) -> list[FactorProposal]:
+        """已晋升 / shadow 的因子（status in (accepted, shadow)）—— 都进内存 registry。"""
         with open_meta_db(self._db) as conn:
             rows = conn.execute(
                 """
                 SELECT factor_name, recipe_json, direction, status,
                        ic_mean, ic_std, ir, t_stat, max_abs_corr, reason,
-                       created_at, evaluated_at
+                       created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir
                 FROM factor_proposals
-                WHERE status = 'accepted'
+                WHERE status IN ('accepted', 'shadow')
                 ORDER BY evaluated_at DESC
+                """
+            ).fetchall()
+        return [FactorProposal(*r) for r in rows]
+
+    def list_shadow(self) -> list[FactorProposal]:
+        """正在 OOS 观察的 shadow 因子（每轮 discovery 复评、N 天后 promote）。"""
+        with open_meta_db(self._db) as conn:
+            rows = conn.execute(
+                """
+                SELECT factor_name, recipe_json, direction, status,
+                       ic_mean, ic_std, ir, t_stat, max_abs_corr, reason,
+                       created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir
+                FROM factor_proposals
+                WHERE status = 'shadow'
+                ORDER BY shadow_started_at ASC
                 """
             ).fetchall()
         return [FactorProposal(*r) for r in rows]
@@ -135,7 +174,7 @@ class FactorProposalStore:
                     """
                     SELECT factor_name, recipe_json, direction, status,
                            ic_mean, ic_std, ir, t_stat, max_abs_corr, reason,
-                           created_at, evaluated_at
+                           created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir
                     FROM factor_proposals
                     ORDER BY created_at DESC LIMIT ?
                     """,
@@ -146,7 +185,7 @@ class FactorProposalStore:
                     """
                     SELECT factor_name, recipe_json, direction, status,
                            ic_mean, ic_std, ir, t_stat, max_abs_corr, reason,
-                           created_at, evaluated_at
+                           created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir
                     FROM factor_proposals
                     WHERE status = ?
                     ORDER BY created_at DESC LIMIT ?

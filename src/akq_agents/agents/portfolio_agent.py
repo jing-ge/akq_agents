@@ -135,6 +135,24 @@ class PortfolioAgent(BaseAgent):
             top_n=500,
             window=20,
         )
+
+        # M7-B: 硬风控过滤（新股 / 停牌 / 极价 / 低流动性）
+        risk_filter = self._services.get("risk_filter")
+        if risk_filter is not None:
+            sub_ohlcv_for_filter = ohlcv[ohlcv["symbol"].isin(list(portfolio_universe))]
+            rf_result = risk_filter.apply(
+                candidate_symbols=portfolio_universe,
+                ohlcv=sub_ohlcv_for_filter,
+                as_of_date=today,
+            )
+            if rf_result.excluded:
+                logger.info(
+                    "risk_filter excluded %d/%d symbols. by_reason=%s",
+                    len(rf_result.excluded), len(portfolio_universe),
+                    rf_result.excluded_count_by_reason,
+                )
+            portfolio_universe = rf_result.kept
+            context.state["risk_filter_excluded"] = rf_result.excluded_count_by_reason
         if not portfolio_universe:
             return {"status": "skipped", "reason": "empty_portfolio_universe", "portfolio_size": 0}
 
@@ -176,6 +194,14 @@ class PortfolioAgent(BaseAgent):
             name_map={},  # P3a 暂无 name 映射（P1 universe 暂无 name 字段；可后续接入）
             industry_map={},  # P3a 不接入行业映射（推迟到 P3b）
         )
+
+        # M7-A: 写完 snapshot 后增量重算 NAV（若 backtester 已装配）
+        backtester = self._services.get("portfolio_backtester")
+        if backtester is not None:
+            try:
+                backtester.rebuild_full_history()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("portfolio_backtester rebuild failed: %s", exc)
 
         # Compute turnover
         turnover = self._compute_turnover(weights, prev_weights)

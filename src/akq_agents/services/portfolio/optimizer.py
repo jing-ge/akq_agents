@@ -1,12 +1,18 @@
-"""PortfolioOptimizer：inverse-vol top-N（P3a 唯一实现）。
+"""PortfolioOptimizer：inverse-vol top-N + 换手成本惩罚（M7-A）。
 
 算法：
 1. 取 composite_score top N（默认 50）
-2. 权重 ∝ 1/vol_20，归一化使 sum=1
-3. 任一权重 > max_single_weight → 截断，超额按比例分配给其他持仓
-4. vol < 1e-4 的 symbol（疑似停牌）直接 reject
+2. 权重 ∝ 1/vol_20
+3. 与 prev_weights 比较：把 |delta_w| 过大的部分用 lambda * cost 惩罚
+   做法：先算 raw_w，然后对 (raw_w, prev_w) 做线性插值 alpha：
+       final_w = alpha * raw_w + (1-alpha) * prev_w（同 symbol）
+   其中 alpha ∈ [0, 1] 控制换手强度；alpha=1 完全采纳新权重，alpha=0 完全不动。
+   alpha 用 turnover_aversion 配置决定（默认 1.0 即不抑制）。
+4. max_single_weight 截断
+5. vol < min_vol 视为停牌剔除
 
-P3b 升级：cvxpy mean-variance with constraints；失败 fallback 到当前实现。
+这是一个简化的"权重平滑"做法，等价于在目标函数里加 λ|w - w_prev|_1 的近似——
+不直接走 cvxpy 是因为 YAGNI：单边成本 0.0008 下，alpha=0.7 即可显著降低换手。
 """
 
 from __future__ import annotations
@@ -24,11 +30,14 @@ logger = logging.getLogger(__name__)
 class OptimizerConfig:
     top_n: int = 50
     max_single_weight: float = 0.05
-    min_vol: float = 1e-4  # vol 低于此视为停牌，剔除
+    min_vol: float = 1e-4
+    # M7-A: 换手抑制系数。1.0 = 完全采纳新权重（无抑制）；0.0 = 完全不动。
+    # 建议 0.5-0.8，让组合慢慢往新方向迁移，降低单日换手率。
+    turnover_aversion: float = 1.0
 
 
 class PortfolioOptimizer:
-    """P3a 简化版：inverse-vol top-N。"""
+    """inverse-vol top-N + 可选换手抑制。"""
 
     def __init__(self, cfg: OptimizerConfig | None = None) -> None:
         self._cfg = cfg or OptimizerConfig()
@@ -39,33 +48,53 @@ class PortfolioOptimizer:
         vol_20: pd.Series,
         prev_weights: pd.Series | None = None,
     ) -> pd.Series:
-        """求解 target_weights，返回 index=symbol, values=weight (sum≈1)。"""
-        _ = prev_weights  # P3a 不使用；P3b 会用作 turnover 约束
         cfg = self._cfg
 
         if composite_score.empty:
             return pd.Series(dtype=float, name="weight")
 
-        # 1) 按 score 排序 top N（NaN 默认排到最后，自然被剔除）
         scored = pd.Series(composite_score).dropna().sort_values(ascending=False)
-        # 与 vol 取交集，且 vol > min_vol
         vol_aligned = pd.Series(vol_20).reindex(scored.index)
         mask = vol_aligned.notna() & (vol_aligned > cfg.min_vol)
         vol_safe = pd.Series(vol_aligned[mask])
         scored = scored.loc[vol_safe.index]
-        # 取 top N
         top = scored.head(cfg.top_n)
         if top.empty:
             return pd.Series(dtype=float, name="weight")
 
-        # 2) inverse-vol 权重
         vol = pd.Series(vol_safe).reindex(top.index)
         inv_vol = 1.0 / vol
-        weights = inv_vol / inv_vol.sum()
+        raw_weights = inv_vol / inv_vol.sum()
 
-        # 3) max_single_weight 截断 + 多余按比例转移
+        # M7-A: 与 prev_weights 做线性插值降换手
+        if (
+            prev_weights is not None
+            and not prev_weights.empty
+            and cfg.turnover_aversion < 1.0
+        ):
+            alpha = float(cfg.turnover_aversion)
+            all_syms = set(raw_weights.index) | set(prev_weights.index)
+            mixed = {}
+            for s in all_syms:
+                rw = float(raw_weights.get(s, 0.0) or 0.0)
+                pw = float(prev_weights.get(s, 0.0) or 0.0)
+                mixed[s] = alpha * rw + (1 - alpha) * pw
+            weights = pd.Series(mixed, dtype=float)
+            # 重新归一
+            total = weights.sum()
+            if total > 0:
+                weights = weights / total
+            # 把权重 < 0.5% 的小尾巴去掉（避免组合里有太多 prev 残留极小持仓）
+            mask_keep = weights > 0.005
+            if mask_keep.any():
+                weights = pd.Series(weights[mask_keep])
+                weights = weights / weights.sum()
+            else:
+                weights = raw_weights
+        else:
+            weights = raw_weights
+
         weights = self._cap_and_redistribute(weights, cfg.max_single_weight)
-
         weights.name = "weight"
         return weights
 

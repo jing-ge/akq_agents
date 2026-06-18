@@ -53,6 +53,8 @@ from akq_agents.services.portfolio import (
     PortfolioSnapshotStore,
     Preprocessor,
 )
+from akq_agents.services.portfolio.backtester import BacktestConfig, PortfolioBacktester
+from akq_agents.services.portfolio.risk_filter import RiskFilter, RiskFilterConfig
 from akq_agents.services.storage import SQLiteStore, StateStore
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -106,16 +108,32 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
         registry = build_default_registry()
         services["factor_registry"] = registry
         services["factor_engine"] = FactorEngine()
-        evaluator = FactorEvaluator(meta_db_path=meta_db_path, window=30)
+        evaluator = FactorEvaluator(meta_db_path=meta_db_path, window=90)
         registry.attach_evaluator(evaluator)
         services["factor_evaluator"] = evaluator
         services["preprocessor"] = Preprocessor()
         services["composite_scorer"] = CompositeScorer(weighting="ir", evaluator=evaluator)
         services["portfolio_optimizer"] = PortfolioOptimizer(
-            OptimizerConfig(top_n=50, max_single_weight=0.05)
+            OptimizerConfig(top_n=50, max_single_weight=0.05, turnover_aversion=0.7)
         )
         services["attributor"] = Attributor()
         services["portfolio_snapshot_store"] = PortfolioSnapshotStore(meta_db_path)
+        # M7-B: 硬风控过滤
+        services["risk_filter"] = RiskFilter(RiskFilterConfig(
+            min_listing_days=60,
+            min_avg_amount=5e7,
+            min_price=1.0,
+            max_price=1000.0,
+        ))
+        # M7-A: 组合净值回测器（共享同一 meta.db + parquet 缓存）
+        services["portfolio_backtester"] = PortfolioBacktester(
+            meta_db_path=meta_db_path,
+            ohlcv_dir=repo._ohlcv_dir,
+            cfg=BacktestConfig(
+                commission=config.backtest.commission,
+                slippage=config.backtest.slippage,
+            ),
+        )
 
         # P2 scheduler 表（chat tool query_events 需要）
         services["scheduler_state_store"] = SchedulerStateStore(meta_db_path)

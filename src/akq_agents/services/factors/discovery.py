@@ -182,9 +182,12 @@ class FactorSpace:
 @dataclass
 class DiscoveryThresholds:
     min_abs_ic: float = 0.015
-    min_ir: float = 0.25
-    max_abs_corr: float = 0.7  # 与已 accepted 因子的相关性上限
-    min_window_days: int = 30  # 评估窗口下限
+    min_ir: float = 0.30          # M7-C: 提高到 0.30（in-sample 偏乐观）
+    max_abs_corr: float = 0.7
+    min_window_days: int = 60     # M7-C: 至少 60 个交易日才认 IC 估计
+    # M7-C: OOS promote 规则
+    shadow_min_oos_days: int = 20      # 至少累计 20 个 OOS 交易日观察
+    shadow_min_oos_ir: float = 0.15    # OOS IR 仍需 >= 0.15 才 promote
 
 
 @dataclass
@@ -258,14 +261,14 @@ class DiscoveryEngine:
         if ohlcv.empty:
             return stats
 
-        # 2) 已 active 因子的当日值矩阵（用于相关性筛选）
-        active_factor_history = self._compute_active_factor_history(ohlcv)
-
         # 3) close 旋转 + forward returns（用于 IC 计算）
         close = ohlcv.pivot_table(
             index="date", columns="symbol", values="close", aggfunc="last"
         ).sort_index()
         forward_returns = close.pct_change(fill_method=None).shift(-1)
+
+        # 2) 已 active 因子的完整历史矩阵（用于时间序列相关性筛选）
+        active_factor_history = self._compute_active_factor_history(ohlcv, close.index)
 
         # 4) 抽样候选
         candidates = self.space.sample(n_candidates, rng=self._rng)
@@ -335,22 +338,22 @@ class DiscoveryEngine:
                 stats.rejected_high_corr += 1
                 continue
 
-            # 通过 → 注册 + 持久化
-            try:
-                self.registry.register(factor)
-            except ValueError:
-                # 名字撞了（理论上不应该；hash 已唯一）→ 当 duplicate
-                stats.duplicates_skipped += 1
-                continue
-            self._record(name, recipe, "accepted", reason="ok",
-                         ic_mean=ic_mean, ic_std=metric.ic_std,
-                         ir=ir, t_stat=t_stat, max_abs_corr=max_abs_corr,
-                         evaluated_at=evaluated_at)
-            stats.accepted += 1
+            # 通过 IS 门槛 → 进入 shadow 状态（**不立刻注册到内存 registry**）
+            # 必须先通过 OOS 观察期才能 promote 到 active
+            self._record_with_shadow(
+                name, recipe,
+                ic_mean=ic_mean, ic_std=metric.ic_std,
+                ir=ir, t_stat=t_stat, max_abs_corr=max_abs_corr,
+                evaluated_at=evaluated_at,
+            )
+            stats.accepted += 1  # 这里"accepted"语义保持向后兼容（计入"通过门槛"）
             stats.accepted_names.append(name)
 
-            # 把新接收的因子也加入 active_factor_history，影响后续候选的相关性筛选
-            active_factor_history[name] = factor_history.iloc[-1] if len(factor_history) else pd.Series()
+            # 把新候选也加入 active_factor_history（影响后续 candidate 的相关性判定）
+            active_factor_history[name] = factor_history
+
+        # 4) 处理已存在的 shadow 因子：检查 OOS 是否满足 promote 条件
+        self._promote_shadows(stats=stats, as_of_date=as_of_date)
 
         return stats
 
@@ -395,13 +398,16 @@ class DiscoveryEngine:
     def _compute_factor_history(
         self, factor: Factor, ohlcv: pd.DataFrame, all_dates: pd.Index
     ) -> pd.DataFrame:
-        """对每个 as_of_date 用截止那日的 ohlcv 计算 factor 横截面值。"""
+        """对每个 as_of_date 用截止那日的 ohlcv 计算 factor 横截面值。
+
+        M7-C: 改为 daily（每个交易日都算），window 单位与交易日一致；不再 [::3]
+        稀疏采样。性能上 daily 比稀疏 3x 慢，但准确性显著提升。
+        如果实际性能成问题，未来可以改成"先 wide compute（pivot），再 rolling"，
+        但这要把每个 op 改写成可向量化版本，YAGNI。
+        """
         rows: dict[Any, pd.Series] = {}
-        # 速度优化：只在每 5 个交易日取一个采样点（足以算 60 天 IR），减少 O(N) 复杂度
-        # 注意：FactorEvaluator 内部仍按日做 Spearman，所以稀疏采样会让其 ic 序列变短，
-        # 这里我们干脆把窗口缩短到稀疏点数量。
-        sampled = list(all_dates)[::3]  # 每 3 个交易日采一次
-        for d in sampled:
+        # 至少要有 lookback_days 数据才能开始评估
+        for d in all_dates:
             d_date = d.date() if hasattr(d, "date") else d
             sub = ohlcv[ohlcv["date"] <= d_date]
             if len(sub) < factor.lookback_days:
@@ -417,39 +423,60 @@ class DiscoveryEngine:
             return pd.DataFrame()
         return pd.DataFrame(rows).T
 
-    def _compute_active_factor_history(self, ohlcv: pd.DataFrame) -> dict[str, pd.Series]:
-        """取最后一日已 active 因子的横截面值，用于做相关性筛选。"""
-        out: dict[str, pd.Series] = {}
+    def _compute_active_factor_history(self, ohlcv: pd.DataFrame, all_dates: pd.Index) -> dict[str, pd.DataFrame]:
+        """计算所有已 active 因子的完整 history（用于时间序列相关性筛选）。
+
+        返回：{factor_name: DataFrame(index=date, columns=symbol)}
+        """
+        out: dict[str, pd.DataFrame] = {}
         for f in self.registry.list_all():
             try:
-                s = f.compute(ohlcv)
-                if s is not None and not s.empty:
-                    out[f.name] = s
+                hist = self._compute_factor_history(f, ohlcv, all_dates)
+                if hist is not None and not hist.empty:
+                    out[f.name] = hist
             except Exception:
                 continue
         return out
 
     @staticmethod
     def _max_abs_corr(
-        factor_history: pd.DataFrame, others: dict[str, pd.Series]
+        factor_history: pd.DataFrame, others: dict[str, pd.DataFrame]
     ) -> float | None:
-        """新因子最后一日横截面 vs 每个已 active 因子横截面的 Spearman 相关，取 max abs。"""
+        """新因子 vs 每个已 active 因子的"时间序列相关性"：
+        在每个日期 t 上把两个因子横截面 rank 化后做 Spearman，得到 IC-IC 时序，
+        再取时序的均值 → 取所有 active 因子里绝对值最大的那个。
+
+        这比"只看最后一日横截面"的判别更稳，能识别"形似但相位不同"的因子。
+        """
         if factor_history.empty or not others:
             return None
-        s_new = factor_history.iloc[-1].dropna()
-        if len(s_new) < 5:
+        if len(factor_history) < 5:
             return None
         max_corr = 0.0
-        for name, s_other in others.items():
-            common = s_new.index.intersection(s_other.dropna().index)
-            if len(common) < 5:
+        for name, hist in others.items():
+            if hist.empty:
                 continue
-            try:
-                c = s_new.loc[common].rank().corr(s_other.loc[common].rank())
-            except Exception:
+            # 对齐日期
+            common_dates = factor_history.index.intersection(hist.index)
+            if len(common_dates) < 5:
                 continue
-            if c is not None and not pd.isna(c):
-                max_corr = max(max_corr, abs(float(c)))
+            # 每个日期算横截面 Spearman，然后取平均
+            corrs = []
+            for d in common_dates:
+                s_new = factor_history.loc[d].dropna()
+                s_other = hist.loc[d].dropna()
+                common_syms = s_new.index.intersection(s_other.index)
+                if len(common_syms) < 5:
+                    continue
+                try:
+                    c = s_new.loc[common_syms].rank().corr(s_other.loc[common_syms].rank())
+                except Exception:
+                    continue
+                if c is not None and not pd.isna(c):
+                    corrs.append(float(c))
+            if corrs:
+                avg_corr = float(np.mean(corrs))
+                max_corr = max(max_corr, abs(avg_corr))
         return max_corr if max_corr > 0 else None
 
     def _record(
@@ -482,15 +509,159 @@ class DiscoveryEngine:
         )
         self.proposal_store.upsert(proposal)
 
+    def _record_with_shadow(
+        self,
+        name: str,
+        recipe: dict,
+        *,
+        ic_mean: float | None,
+        ic_std: float | None,
+        ir: float | None,
+        t_stat: float | None,
+        max_abs_corr: float | None,
+        evaluated_at: str | None,
+    ) -> None:
+        """通过 IS 门槛的因子写入 status='shadow' + shadow_started_at=now。
+
+        注意：不调用 registry.register —— shadow 因子不参与组合合成，只在 OOS 期接受观察。
+        """
+        ts = now_iso()
+        proposal = FactorProposal(
+            factor_name=name,
+            recipe_json=recipe_to_json(recipe),
+            direction=recipe["direction"],
+            status="shadow",
+            ic_mean=ic_mean,
+            ic_std=ic_std,
+            ir=ir,
+            t_stat=t_stat,
+            max_abs_corr=max_abs_corr,
+            reason="passed_is_pending_oos",
+            created_at=ts,
+            evaluated_at=evaluated_at,
+            shadow_started_at=ts,
+            oos_observations=0,
+            oos_ir=None,
+        )
+        self.proposal_store.upsert(proposal)
+
+    def _promote_shadows(self, *, stats: "DiscoveryStats", as_of_date: date) -> None:
+        """遍历 shadow 因子，根据 shadow_started_at 算出累计 OOS 天数。
+
+        - 累计 OOS 天数 < shadow_min_oos_days：跳过
+        - 达到时长：重新算 OOS 期间（自 shadow_started_at 后）的 IR
+          - 通过 shadow_min_oos_ir：promote → 'accepted' + register 到内存 registry
+          - 否则：demote → 'demoted'（不会再被复评，避免无限重试）
+        """
+        from datetime import datetime as _dt
+
+        shadow_list = self.proposal_store.list_shadow()
+        if not shadow_list:
+            return
+
+        # 准备共享数据（一次性拉）
+        try:
+            ohlcv, _ = self._prepare_data(as_of_date)
+        except Exception:
+            return
+        if ohlcv.empty:
+            return
+        close = ohlcv.pivot_table(
+            index="date", columns="symbol", values="close", aggfunc="last"
+        ).sort_index()
+        forward_returns = close.pct_change(fill_method=None).shift(-1)
+        all_dates = close.index
+
+        for p in shadow_list:
+            if p.shadow_started_at is None:
+                continue
+            try:
+                shadow_dt = _dt.fromisoformat(p.shadow_started_at)
+            except Exception:
+                continue
+            # 把 shadow 开始时间映射到交易日
+            shadow_d = shadow_dt.date()
+            # OOS 期 = [shadow_d 之后的交易日]
+            oos_dates = [d for d in all_dates if (d.date() if hasattr(d, "date") else d) > shadow_d]
+            if len(oos_dates) < self.th.shadow_min_oos_days:
+                # 更新 oos_observations 计数，但不 promote
+                p.oos_observations = len(oos_dates)
+                p.evaluated_at = now_iso()
+                self.proposal_store.upsert(p)
+                continue
+
+            # 满足时长 → 重新算 OOS IR
+            from akq_agents.services.factors.proposal_store import recipe_from_json
+            try:
+                recipe = recipe_from_json(p.recipe_json)
+                factor = make_factor(recipe)
+            except Exception:
+                continue
+            try:
+                hist = self._compute_factor_history(factor, ohlcv, all_dates)
+            except Exception:
+                continue
+            if hist.empty:
+                continue
+            # 只看 OOS 期间
+            oos_hist = hist.loc[hist.index.isin(oos_dates)]
+            oos_ret = forward_returns.loc[forward_returns.index.isin(oos_dates)]
+            if len(oos_hist) < 5:
+                continue
+            # 复用 evaluator._rolling_ic 算 IR
+            from akq_agents.services.portfolio.evaluator import _rolling_ic
+            ic_series = _rolling_ic(oos_hist, oos_ret, window=min(len(oos_hist), 60))
+            ic_clean = ic_series.dropna()
+            if len(ic_clean) < 5:
+                continue
+            oos_ic_mean = float(ic_clean.mean())
+            oos_ic_std = float(ic_clean.std(ddof=1)) if ic_clean.std(ddof=1) > 0 else None
+            oos_ir = (oos_ic_mean / oos_ic_std) if oos_ic_std else None
+
+            if oos_ir is not None and abs(oos_ir) >= self.th.shadow_min_oos_ir:
+                # Promote → accepted + register
+                try:
+                    self.registry.register(factor)
+                except ValueError:
+                    pass
+                p.status = "accepted"
+                p.reason = f"promoted_after_{len(oos_dates)}d_oos_ir={oos_ir:.3f}"
+                p.oos_observations = len(oos_dates)
+                p.oos_ir = oos_ir
+                p.evaluated_at = now_iso()
+                self.proposal_store.upsert(p)
+                stats.accepted_names.append(p.factor_name + " (promoted)")
+                logger.info(
+                    "discovery: shadow %s PROMOTED (oos_ir=%.3f over %d days)",
+                    p.factor_name, oos_ir, len(oos_dates),
+                )
+            else:
+                p.status = "demoted"
+                p.reason = f"oos_ir_too_low_{oos_ir:.3f}" if oos_ir is not None else "oos_ir_undefined"
+                p.oos_observations = len(oos_dates)
+                p.oos_ir = oos_ir
+                p.evaluated_at = now_iso()
+                self.proposal_store.upsert(p)
+                logger.info(
+                    "discovery: shadow %s DEMOTED (oos_ir=%s over %d days)",
+                    p.factor_name, oos_ir, len(oos_dates),
+                )
+
 
 def restore_accepted_factors(
     registry: FactorRegistry, proposal_store: FactorProposalStore
 ) -> int:
-    """启动期：把数据库里 accepted 的因子重新 register 到内存 registry。"""
+    """启动期：把数据库里 status='accepted' 的因子重新 register 到内存 registry。
+
+    注意 list_accepted() 现在同时返回 accepted + shadow，但 shadow 不参与组合 →
+    我们这里只 register 真 accepted。
+    """
     from akq_agents.services.factors.proposal_store import recipe_from_json
 
     count = 0
     for p in proposal_store.list_accepted():
+        if p.status != "accepted":
+            continue  # shadow 不进 registry
         try:
             recipe = recipe_from_json(p.recipe_json)
             factor = make_factor(recipe)

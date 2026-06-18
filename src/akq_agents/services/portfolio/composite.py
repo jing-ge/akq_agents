@@ -52,19 +52,26 @@ class CompositeScorer:
         if self._weighting == "equal" or self._evaluator is None:
             return pd.Series(1.0 / n, index=factor_names, dtype=float)
 
-        # ir 加权：取每个因子最近一次 |IR|，缺失则用集合中位数兜底
+        # M7-C: 取每个因子最近 N 期历史 IR 做 EWMA（半衰期 30 天，权重更倾向近期）
+        # fallback：缺历史则用 latest |IR|
         irs: dict[str, float] = {}
         for name in factor_names:
             try:
-                m = self._evaluator.get_latest(name, 1)  # type: ignore[attr-defined]
+                history = self._evaluator.list_history(name, limit=120) if hasattr(self._evaluator, "list_history") else []
             except Exception:
-                m = None
-            if m is not None and m.ir is not None:
-                irs[name] = max(float(m.ir), 0.0)  # 负 IR 视为 0
-            else:
-                irs[name] = -1.0  # sentinel for "missing"
+                history = []
+            ir_value = self._ewma_abs_ir(history)
+            if ir_value is None:
+                # 退化用 latest
+                try:
+                    m = self._evaluator.get_latest(name, 1)
+                except Exception:
+                    m = None
+                if m is not None and m.ir is not None:
+                    ir_value = max(float(m.ir), 0.0)
+            irs[name] = ir_value if ir_value is not None else -1.0
 
-        # missing 的兜底：用已有非负 IR 的中位数；若全部缺失 → equal
+        # missing 兜底
         valid = [v for v in irs.values() if v >= 0.0]
         if not valid:
             return pd.Series(1.0 / n, index=factor_names, dtype=float)
@@ -77,3 +84,19 @@ class CompositeScorer:
         if total <= 0:
             return pd.Series(1.0 / n, index=factor_names, dtype=float)
         return pd.Series({name: v / total for name, v in irs.items()}, dtype=float)
+
+    @staticmethod
+    def _ewma_abs_ir(history: list) -> float | None:
+        """EWMA half-life=30 天的 |IR|。history 按时间 DESC（最新在前）。"""
+        if not history:
+            return None
+        # 取最近 90 条
+        sub = history[:90]
+        irs = [abs(float(m.ir)) for m in sub if getattr(m, "ir", None) is not None]
+        if not irs:
+            return None
+        # EWMA: 权重 = 0.5 ** (i / 30)，i=0 表示最新
+        import math
+        weights = [math.pow(0.5, i / 30.0) for i in range(len(irs))]
+        wsum = sum(weights)
+        return sum(w * v for w, v in zip(weights, irs)) / wsum if wsum > 0 else None
