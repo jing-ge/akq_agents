@@ -55,7 +55,9 @@ from akq_agents.services.portfolio import (
 )
 from akq_agents.services.portfolio.backtester import BacktestConfig, PortfolioBacktester
 from akq_agents.services.portfolio.industry_map import IndustryMapStore
+from akq_agents.services.portfolio.paper_trading import PaperTradingConfig, PaperTradingStore
 from akq_agents.services.portfolio.risk_filter import RiskFilter, RiskFilterConfig
+from akq_agents.services.portfolio.trade_list import HoldingsStore, TradeListStore, TradeListConfig
 from akq_agents.services.storage import SQLiteStore, StateStore
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -121,6 +123,15 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
         services["portfolio_snapshot_store"] = PortfolioSnapshotStore(meta_db_path)
         # M9-C 行业映射 store
         services["industry_map_store"] = IndustryMapStore(meta_db_path)
+        # P0-2: Paper Trading 前向跟踪
+        services["paper_trading_store"] = PaperTradingStore(
+            meta_db_path,
+            PaperTradingConfig(assumed_capital=100_000.0),
+        )
+        # P0-1: Holdings + Trade List（把权重翻译成具体下单清单）
+        services["holdings_store"] = HoldingsStore(meta_db_path)
+        services["trade_list_store"] = TradeListStore(meta_db_path)
+        services["trade_list_config"] = TradeListConfig(assumed_capital=100_000.0)
         # M7-B: 硬风控过滤
         services["risk_filter"] = RiskFilter(RiskFilterConfig(
             min_listing_days=60,

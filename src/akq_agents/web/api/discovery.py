@@ -180,3 +180,37 @@ async def rebuild_nav() -> dict[str, Any]:
         return {"status": "no_backtester"}
     result = backtester.rebuild_full_history()
     return {"status": "ok", "summary": result.summary, "n_days": len(result.nav)}
+
+
+# ============================================================
+# P0-2 Paper Trading 前向跟踪
+# ============================================================
+
+
+@router.get("/paper-trading/summary")
+async def paper_trading_summary() -> dict[str, Any]:
+    """所有 cohort 在 30/60/90 天后的平均表现。"""
+    svc: ServiceContainer = get_services()
+    if svc.paper_trading_store is None:
+        return {"error": "no_paper_trading"}
+    return svc.paper_trading_store.summary()
+
+
+@router.get("/paper-trading/cohorts")
+async def paper_trading_cohorts(limit: int = 60) -> dict[str, Any]:
+    """所有 cohort 列表 + 各自最新表现。"""
+    svc: ServiceContainer = get_services()
+    if svc.paper_trading_store is None:
+        return {"cohorts": [], "n": 0}
+    rows = svc.paper_trading_store.list_cohorts(limit=limit)
+    return {"cohorts": rows, "n": len(rows)}
+
+
+@router.get("/paper-trading/cohorts/{cohort_date}/timeseries")
+async def paper_trading_cohort_timeseries(cohort_date: str) -> dict[str, Any]:
+    """某 cohort 的逐日表现时序。"""
+    svc: ServiceContainer = get_services()
+    if svc.paper_trading_store is None:
+        return {"timeseries": [], "n": 0}
+    rows = svc.paper_trading_store.get_cohort_timeseries(cohort_date)
+    return {"cohort_date": cohort_date, "timeseries": rows, "n": len(rows)}

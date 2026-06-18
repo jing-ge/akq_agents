@@ -344,6 +344,255 @@ def build_explain_portfolio(services: dict[str, Any]) -> ToolSpec:
     )
 
 
+# ============================================================
+# P1-3: 对比类工具（让 LLM 能做"比较与因果"而不是只"打开抽屉"）
+# ============================================================
+
+
+def build_diff_portfolio(services: dict[str, Any]) -> ToolSpec:
+    """对比两天的组合：谁进了 / 谁出了 / 谁的权重变化最大。"""
+    store = services["portfolio_snapshot_store"]
+
+    def handler(args: dict[str, Any]) -> dict[str, Any]:
+        date_a = args.get("date_a")
+        date_b = args.get("date_b")
+        if not date_a or not date_b:
+            return {"error": "INVALID_ARGUMENTS", "detail": "需要 date_a 和 date_b"}
+        try:
+            da = date.fromisoformat(date_a)
+            db = date.fromisoformat(date_b)
+        except ValueError:
+            return {"error": "INVALID_ARGUMENTS", "detail": "日期格式 YYYY-MM-DD"}
+
+        rows_a = {r.symbol: r for r in store.read_snapshot(da)}
+        rows_b = {r.symbol: r for r in store.read_snapshot(db)}
+        if not rows_a:
+            return {"error": "NO_SNAPSHOT", "date": date_a}
+        if not rows_b:
+            return {"error": "NO_SNAPSHOT", "date": date_b}
+
+        # 进入 (在 b 不在 a)
+        entered = []
+        for sym, r in rows_b.items():
+            if sym not in rows_a:
+                entered.append({
+                    "symbol": sym, "weight_b": r.weight,
+                    "composite_score": r.composite_score,
+                    "industry": r.industry,
+                })
+        # 退出 (在 a 不在 b)
+        exited = []
+        for sym, r in rows_a.items():
+            if sym not in rows_b:
+                exited.append({
+                    "symbol": sym, "weight_a": r.weight,
+                    "industry": r.industry,
+                })
+        # 权重变化（两天都在）
+        changed = []
+        for sym, ra in rows_a.items():
+            if sym in rows_b:
+                rb = rows_b[sym]
+                delta = rb.weight - ra.weight
+                changed.append({
+                    "symbol": sym,
+                    "weight_a": ra.weight,
+                    "weight_b": rb.weight,
+                    "delta": delta,
+                    "industry": rb.industry,
+                })
+        # 按 |delta| 排序
+        changed.sort(key=lambda x: -abs(x["delta"]))
+        # turnover = 0.5 * Σ|delta|
+        all_syms = set(rows_a) | set(rows_b)
+        turnover = 0.5 * sum(
+            abs(rows_b.get(s, type("X", (), {"weight": 0})).weight - rows_a.get(s, type("X", (), {"weight": 0})).weight)
+            for s in all_syms
+        )
+
+        return {
+            "date_a": date_a, "date_b": date_b,
+            "n_holdings_a": len(rows_a), "n_holdings_b": len(rows_b),
+            "n_entered": len(entered),
+            "n_exited": len(exited),
+            "turnover": turnover,
+            "entered_top": sorted(entered, key=lambda x: -x["weight_b"])[:10],
+            "exited_top": sorted(exited, key=lambda x: -x["weight_a"])[:10],
+            "weight_changes_top": changed[:15],
+        }
+
+    return ToolSpec(
+        name="diff_portfolio",
+        description="对比两天的组合差异：谁新进、谁退出、谁的权重变化最大、总换手率。用于「为什么今天换手比上周高一倍」这种问题。",
+        json_schema={
+            "type": "object",
+            "properties": {
+                "date_a": {"type": "string", "description": "起始日期 YYYY-MM-DD"},
+                "date_b": {"type": "string", "description": "对比日期 YYYY-MM-DD"},
+            },
+            "required": ["date_a", "date_b"],
+        },
+        handler=handler,
+    )
+
+
+def build_factor_decay_check(services: dict[str, Any]) -> ToolSpec:
+    """某因子最近 N 天 IC 趋势：是否在衰减？"""
+    evaluator = services["factor_evaluator"]
+
+    def handler(args: dict[str, Any]) -> dict[str, Any]:
+        name = args.get("factor_name")
+        if not name:
+            return {"error": "INVALID_ARGUMENTS", "detail": "需要 factor_name"}
+        lookback = int(args.get("lookback_days", 60))
+
+        history = evaluator.list_history(name, limit=200)
+        if not history:
+            return {"error": "NO_HISTORY", "factor_name": name}
+
+        # history 倒序，截最近 N 个
+        recent = history[:lookback]
+        if len(recent) < 3:
+            return {
+                "factor_name": name,
+                "n_observations": len(recent),
+                "verdict": "数据不足",
+                "history": [{"date": m.as_of_date, "ic": m.ic_mean, "ir": m.ir, "status": m.status} for m in recent],
+            }
+
+        irs = [float(m.ir) for m in recent if m.ir is not None]
+        ics = [float(m.ic_mean) for m in recent if m.ic_mean is not None]
+        if not irs:
+            return {"error": "NO_IR", "factor_name": name}
+
+        # 前半段 vs 后半段：是否衰减
+        mid = len(irs) // 2
+        ir_recent = sum(irs[:mid]) / max(mid, 1)        # 最近一半（更近）
+        ir_earlier = sum(irs[mid:]) / max(len(irs) - mid, 1)  # 较早一半
+        ir_peak = max(abs(ir) for ir in irs)
+        ir_latest = irs[0] if irs else 0
+
+        verdict = "稳定"
+        if abs(ir_recent) < 0.6 * abs(ir_earlier) and abs(ir_earlier) > 0.1:
+            verdict = "⚠️ 显著衰减"
+        elif abs(ir_recent) < 0.8 * abs(ir_earlier) and abs(ir_earlier) > 0.1:
+            verdict = "轻微衰减"
+        elif abs(ir_recent) > 1.2 * abs(ir_earlier):
+            verdict = "改善"
+
+        # 列史
+        sample = [
+            {"date": m.as_of_date, "ic": round(float(m.ic_mean), 4) if m.ic_mean is not None else None,
+             "ir": round(float(m.ir), 4) if m.ir is not None else None, "status": m.status}
+            for m in recent[:30]
+        ]
+
+        return {
+            "factor_name": name,
+            "verdict": verdict,
+            "n_observations": len(recent),
+            "ir_latest": round(ir_latest, 4),
+            "ir_recent_half_avg": round(ir_recent, 4),
+            "ir_earlier_half_avg": round(ir_earlier, 4),
+            "ir_peak_abs": round(ir_peak, 4),
+            "history_sample": sample,
+        }
+
+    return ToolSpec(
+        name="factor_decay_check",
+        description="检查某因子最近 N 天 IC/IR 趋势：前半段 vs 后半段，给出「稳定 / 轻微衰减 / 显著衰减 / 改善」判定。用于「这个因子是不是快不行了」。",
+        json_schema={
+            "type": "object",
+            "properties": {
+                "factor_name": {"type": "string"},
+                "lookback_days": {"type": "integer", "default": 60},
+            },
+            "required": ["factor_name"],
+        },
+        handler=handler,
+    )
+
+
+def build_attribute_nav_drop(services: dict[str, Any]) -> ToolSpec:
+    """期间 NAV 跌幅按因子贡献 / 个股贡献 / 行业贡献拆解。"""
+    backtester = services["portfolio_backtester"]
+    snapshot_store = services["portfolio_snapshot_store"]
+
+    def handler(args: dict[str, Any]) -> dict[str, Any]:
+        date_start = args.get("date_start")
+        date_end = args.get("date_end")
+        if not date_start or not date_end:
+            return {"error": "INVALID_ARGUMENTS", "detail": "需要 date_start 和 date_end"}
+
+        df = backtester.read_nav()
+        if df.empty:
+            return {"error": "NO_NAV_DATA"}
+
+        df_sub = df[(df["as_of_date"] >= date_start) & (df["as_of_date"] <= date_end)]
+        if df_sub.empty:
+            return {"error": "NO_DATA_IN_RANGE", "date_start": date_start, "date_end": date_end}
+
+        n = len(df_sub)
+        nav_start = float(df_sub.iloc[0]["nav_net"])
+        nav_end = float(df_sub.iloc[-1]["nav_net"])
+        total_return = (nav_end / nav_start) - 1.0 if nav_start > 0 else 0.0
+        max_dd_in_range = float(((df_sub["nav_net"] / df_sub["nav_net"].cummax()) - 1.0).min())
+        worst_day_idx = df_sub["daily_return_net"].idxmin()
+        worst_day = df_sub.loc[worst_day_idx]
+
+        # 在最坏一天的组合 attribution（如果有）
+        worst_date = worst_day["as_of_date"]
+        try:
+            rows = snapshot_store.read_snapshot(date.fromisoformat(worst_date))
+        except Exception:
+            rows = []
+
+        # 个股贡献：用 weight × daily_return 估计（简化）
+        worst_holdings = []
+        for r in rows[:15]:
+            worst_holdings.append({
+                "symbol": r.symbol,
+                "weight": r.weight,
+                "industry": r.industry,
+                "composite_score": r.composite_score,
+            })
+
+        # benchmark 同期
+        bench_start = df_sub.iloc[0]["benchmark_nav"]
+        bench_end = df_sub.iloc[-1]["benchmark_nav"]
+        bench_return = (bench_end / bench_start - 1.0) if (bench_start and bench_start > 0) else None
+
+        return {
+            "date_start": date_start, "date_end": date_end,
+            "n_days": n,
+            "nav_start": nav_start, "nav_end": nav_end,
+            "total_return_net": total_return,
+            "max_drawdown_in_range": max_dd_in_range,
+            "worst_day": {
+                "date": worst_date,
+                "daily_return": float(worst_day["daily_return_net"]) if worst_day["daily_return_net"] is not None else None,
+                "turnover": float(worst_day["turnover"]) if worst_day["turnover"] is not None else None,
+            },
+            "worst_day_top_holdings": worst_holdings,
+            "benchmark_return": bench_return,
+            "excess_return": (total_return - bench_return) if bench_return is not None else None,
+        }
+
+    return ToolSpec(
+        name="attribute_nav_drop",
+        description="对某段时间的 NAV 表现做归因：总收益、最大回撤、最差一天的持仓 top 15、同期 benchmark / 超额。用于「最近 30 天为什么跑输沪深300」。",
+        json_schema={
+            "type": "object",
+            "properties": {
+                "date_start": {"type": "string", "description": "YYYY-MM-DD"},
+                "date_end": {"type": "string", "description": "YYYY-MM-DD"},
+            },
+            "required": ["date_start", "date_end"],
+        },
+        handler=handler,
+    )
+
+
 def register_default_tools(registry: ToolRegistry, services: dict[str, Any]) -> ToolRegistry:
     """注册 P4 v2 的 4 个默认工具 + M5 的 3 个新工具。
 
@@ -363,12 +612,17 @@ def register_default_tools(registry: ToolRegistry, services: dict[str, Any]) -> 
     if "portfolio_snapshot_store" in services:
         registry.register(build_get_portfolio_snapshot(services))
         registry.register(build_explain_portfolio(services))
+        registry.register(build_diff_portfolio(services))    # P1-3
     if "portfolio_backtester" in services:
         registry.register(build_get_nav_summary(services))
+        if "portfolio_snapshot_store" in services:
+            registry.register(build_attribute_nav_drop(services))  # P1-3
     if "scheduler_state_store" in services:
         registry.register(build_query_events(services))
     if "factor_proposal_store" in services:
         registry.register(build_get_factor_proposals(services))
     if "discovery_engine" in services:
         registry.register(build_run_factor_discovery(services))
+    if "factor_evaluator" in services:
+        registry.register(build_factor_decay_check(services))   # P1-3
     return registry

@@ -355,6 +355,16 @@ class DiscoveryEngine:
         # 4) 处理已存在的 shadow 因子：检查 OOS 是否满足 promote 条件
         self._promote_shadows(stats=stats, as_of_date=as_of_date)
 
+        # P1-4: DSL 空间耗尽告警 —— 如果 duplicates 占比超过 80%，提示扩 DSL
+        if stats.proposed > 0:
+            dup_ratio = stats.duplicates_skipped / stats.proposed
+            if dup_ratio >= 0.8:
+                logger.warning(
+                    "factor.space_exhausted: duplicates %.0f%% (%d/%d) — DSL 空间快被穷举完了，"
+                    "考虑扩 _OPS / _WINDOWS / _BASES",
+                    dup_ratio * 100, stats.duplicates_skipped, stats.proposed,
+                )
+
         return stats
 
     # ------------------------------------------------------------------

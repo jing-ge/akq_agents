@@ -207,6 +207,44 @@ class PortfolioAgent(BaseAgent):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("portfolio_backtester rebuild failed: %s", exc)
 
+        # P0-2: Paper Trading 冻结当日 cohort + 估值所有历史 cohort（前向证据）
+        # today_close 在 paper trading 和 trade list 都用，提前算好
+        today_close: dict[str, float] = {}
+        if not sub_ohlcv.empty:
+            last_day_df = sub_ohlcv[sub_ohlcv["date"] == today]
+            if last_day_df.empty:
+                last_day_df = sub_ohlcv[sub_ohlcv["date"] == sub_ohlcv["date"].max()]
+            for _, row in last_day_df.iterrows():
+                today_close[str(row["symbol"])] = float(row["close"])
+        if not ohlcv.empty:
+            bench_rows = ohlcv[(ohlcv["symbol"] == "000300") & (ohlcv["date"] == today)]
+            if bench_rows.empty:
+                bench_rows = ohlcv[(ohlcv["symbol"] == "000300")].tail(1)
+            if not bench_rows.empty:
+                today_close["000300"] = float(bench_rows["close"].iloc[-1])
+
+        paper = self._services.get("paper_trading_store")
+        if paper is not None:
+            try:
+                weights_dict = {str(s): float(w) for s, w in weights.items()}
+                paper.freeze_today_cohort(today, weights_dict, today_close)
+                paper.update_track_perf(today, today_close)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("paper_trading update failed: %s", exc)
+
+        # P0-1: 生成今日交易清单（权重 → BUY/SELL/HOLD 具体股数）
+        try:
+            self._generate_trade_list(
+                today=today,
+                weights=weights,
+                composite=composite,
+                today_close_map=today_close,
+                industry_name_map=industry_name_map,
+                prev_weights=prev_weights,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("trade_list generation failed: %s", exc)
+
         # Compute turnover
         turnover = self._compute_turnover(weights, prev_weights)
 
@@ -224,6 +262,78 @@ class PortfolioAgent(BaseAgent):
             "turnover": turnover,
             "as_of_date": today.isoformat(),
         }
+
+    def _generate_trade_list(
+        self,
+        *,
+        today,
+        weights,
+        composite,
+        today_close_map: dict,
+        industry_name_map: dict,
+        prev_weights,
+    ) -> None:
+        """P0-1: 生成今日交易清单（BUY/SELL/HOLD + 具体股数）。"""
+        holdings_store = self._services.get("holdings_store")
+        tl_store = self._services.get("trade_list_store")
+        tl_cfg = self._services.get("trade_list_config")
+        if holdings_store is None or tl_store is None:
+            return
+
+        from akq_agents.services.portfolio.trade_list import generate_trade_list
+
+        weights_dict = {str(s): float(w) for s, w in weights.items()}
+        composite_dict = {str(s): float(v) for s, v in composite.items()} if composite is not None else {}
+        holdings_dict = holdings_store.as_dict()
+        prev_weights_dict = {str(s): float(w) for s, w in prev_weights.items()} if prev_weights is not None and not prev_weights.empty else {}
+
+        # 补充：对 holdings 里的 symbol 但 today_close 没有的，现场从 parquet 查最近 close
+        close_map = dict(today_close_map or {})
+        missing = [s for s in holdings_dict if s not in close_map]
+        if missing:
+            try:
+                close_map.update(self._lookup_close_for_symbols(missing, today))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("close lookup failed for missing holdings: %s", exc)
+
+        items = generate_trade_list(
+            cohort_date=today,
+            target_weights=weights_dict,
+            current_close=close_map,
+            holdings=holdings_dict,
+            composite_scores=composite_dict,
+            industry_map=industry_name_map or {},
+            yesterday_weights=prev_weights_dict,
+            cfg=tl_cfg,
+        )
+        tl_store.upsert_cohort(today, items)
+
+    def _lookup_close_for_symbols(self, symbols: list[str], today) -> dict[str, float]:
+        """为某些 symbol 现场查 ohlcv 最近 close。"""
+        repo = self._services.get("data_repository")
+        if repo is None or not symbols:
+            return {}
+        import pyarrow.dataset as ds
+        from datetime import timedelta
+        ohlcv_dir = getattr(repo, "_ohlcv_dir", None)
+        if ohlcv_dir is None or not ohlcv_dir.exists():
+            return {}
+        start = (today - timedelta(days=14)).isoformat()
+        end = today.isoformat()
+        dataset = ds.dataset(ohlcv_dir, format="parquet", partitioning="hive")
+        table = dataset.to_table(
+            filter=(ds.field("date") >= start)
+                   & (ds.field("date") <= end)
+                   & ds.field("symbol").isin(list(symbols)),
+            columns=["date", "symbol", "close"],
+        )
+        df = table.to_pandas()
+        if df.empty:
+            return {}
+        df = df.sort_values(["symbol", "date"])
+        # 每只 symbol 取最新一天的 close
+        latest = df.groupby("symbol").tail(1)
+        return {str(r["symbol"]): float(r["close"]) for _, r in latest.iterrows()}
 
     @staticmethod
     def _loose_read_ohlcv(repo, symbols, start: date, end: date) -> pd.DataFrame:

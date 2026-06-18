@@ -27,6 +27,7 @@ class ServiceContainer:
     discovery_engine: Any = None
     proposal_store: Any = None
     workflow: Any = None
+    paper_trading_store: Any = None
 
 
 _container_override: ServiceContainer | None = None
@@ -76,4 +77,5 @@ def _build_default() -> ServiceContainer:
         discovery_engine=services.get("discovery_engine"),
         proposal_store=services.get("factor_proposal_store"),
         workflow=workflow,
+        paper_trading_store=services.get("paper_trading_store"),
     )

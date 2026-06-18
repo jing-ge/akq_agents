@@ -103,6 +103,7 @@ async def factors_list() -> dict[str, Any]:
     rows = []
     for f in svc.factor_registry.list_all():
         latest = None
+        decay_verdict = None  # P1-4 衰减判定
         if svc.factor_evaluator is not None:
             m = svc.factor_evaluator.get_latest(f.name, f.factor_version)
             if m is not None:
@@ -113,6 +114,27 @@ async def factors_list() -> dict[str, Any]:
                     "ir": m.ir,
                     "status": m.status,
                 }
+            # P1-4: 取 30 天历史算衰减
+            try:
+                history = svc.factor_evaluator.list_history(f.name, limit=30)
+                irs = [float(m.ir) for m in history if m.ir is not None]
+                if len(irs) >= 6:
+                    mid = len(irs) // 2
+                    ir_recent = sum(abs(x) for x in irs[:mid]) / mid
+                    ir_earlier = sum(abs(x) for x in irs[mid:]) / max(len(irs) - mid, 1)
+                    ir_peak = max(abs(x) for x in irs)
+                    ir_now = abs(irs[0])
+                    if ir_earlier > 0.1 and ir_recent < 0.6 * ir_earlier:
+                        decay_verdict = {"level": "severe", "label": "⚠️ 显著衰减",
+                                        "ir_recent": ir_recent, "ir_earlier": ir_earlier}
+                    elif ir_earlier > 0.1 and ir_recent < 0.8 * ir_earlier:
+                        decay_verdict = {"level": "mild", "label": "轻微衰减",
+                                        "ir_recent": ir_recent, "ir_earlier": ir_earlier}
+                    elif ir_now < 0.6 * ir_peak and ir_peak > 0.2:
+                        decay_verdict = {"level": "off_peak", "label": "已离峰值",
+                                        "ir_now": ir_now, "ir_peak": ir_peak}
+            except Exception:
+                pass
         rows.append(
             {
                 "name": f.name,
@@ -120,6 +142,7 @@ async def factors_list() -> dict[str, Any]:
                 "direction": f.direction,
                 "lookback_days": f.lookback_days,
                 "last_metric": latest,
+                "decay": decay_verdict,
             }
         )
     return {"factors": rows, "n": len(rows)}

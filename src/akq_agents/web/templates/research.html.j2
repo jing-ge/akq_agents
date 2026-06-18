@@ -27,6 +27,35 @@
   </span>
 </div>
 
+<!-- P0-1: 今日交易清单 -->
+<div class="card" id="trade-list-card">
+  <h2>🎯 今日交易清单 <span class="small">Trade List — 把权重翻译成具体下单</span></h2>
+  <p class="small" style="color:#94a3b8; margin-top:0">
+    根据你的真实持仓 vs 今日推荐组合，自动算出 <b>该买什么 / 该卖什么 / 各多少股</b>（按整手 100 取整）。
+    假定本金 ¥100,000。
+    <a href="#" onclick="document.getElementById('holdings-editor').scrollIntoView({behavior:'smooth'}); return false;">校准我的实际持仓 ↓</a>
+  </p>
+  <div id="trade-list-summary" class="small"></div>
+  <div id="trade-list-table" style="margin-top:10px; max-height:540px; overflow:auto"></div>
+</div>
+
+<!-- P0-1: 持仓编辑器 -->
+<div class="card" id="holdings-editor">
+  <h2>📋 我的真实持仓 <span class="small">Holdings — 手动校准</span></h2>
+  <p class="small" style="color:#94a3b8; margin-top:0">
+    系统不会自动改这里。你需要 <b>手动告诉系统</b>「我昨天真的买了/没买」，
+    这样明天的交易清单才会基于真实持仓计算。
+  </p>
+  <div class="toolbar" style="gap:6px">
+    <input id="hold-symbol" type="text" placeholder="代码 例 600519" style="width:130px">
+    <input id="hold-shares" type="number" placeholder="股数" style="width:100px">
+    <input id="hold-cost" type="number" step="0.01" placeholder="成本价" style="width:110px">
+    <button onclick="upsertHolding()" class="primary">添加 / 更新</button>
+    <span id="hold-msg" class="small" style="color:#94a3b8"></span>
+  </div>
+  <div id="holdings-table" style="margin-top:10px"></div>
+</div>
+
 <div class="grid grid-2 main-row">
   <!-- Portfolio -->
   <div class="card holdings-compact">
@@ -79,6 +108,21 @@
   <div id="nav-stats" class="small"></div>
 </div>
 
+<!-- P0-2: Paper Trading 前向跟踪 -->
+<div class="card" id="paper-trading-card">
+  <h2>📦 前向跟踪 (Paper Trading)
+    <span class="small">把每天系统推荐的组合"假装真买了"，看 N 天后真实表现</span>
+  </h2>
+  <p class="small" style="color:#94a3b8; margin-top:0">
+    <b>这是把 in-sample 回测变成 out-of-sample 证据的唯一方式。</b>
+    每天 daemon 跑完会把当日 top 50 + close 永久冻结到 paper_trades 表（不再修改）。
+    每过一天就用最新 close 重新估值，30/60/90 天后回头看"事后涨没涨"。
+  </p>
+  <div id="paper-summary" class="small" style="margin-top:10px"></div>
+  <div id="paper-cohorts-chart" class="chart" style="height:280px"></div>
+  <div id="paper-cohorts-table" class="small" style="margin-top:12px"></div>
+</div>
+
 <div class="card">
   <h2>因子归因 <span class="small">今日组合的收益预期由哪些因子贡献</span></h2>
   <div id="attribution-chart" class="chart"></div>
@@ -125,6 +169,15 @@
 {% endblock %}
 
 {% block scripts %}
+<style>
+.trade-table { width: 100%; font-size: 12.5px; border-collapse: collapse; }
+.trade-table th { text-align: left; color: #94a3b8; font-weight: 500; padding: 8px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid rgba(94,234,212,0.15); white-space: nowrap; }
+.trade-table td { padding: 7px 10px; border-bottom: 1px solid rgba(94,234,212,0.05); }
+.trade-table tr:hover { background: rgba(94,234,212,0.04); }
+.trade-table button.small { font-size: 11px; padding: 3px 8px; }
+#holdings-editor .toolbar input { background: rgba(15,23,42,0.6); border: 1px solid #334155; color: #e2e8f0; padding: 5px 8px; border-radius: 4px; font-family: var(--font-mono); font-size: 13px; }
+#holdings-editor .toolbar input:focus { outline: none; border-color: #5eead4; }
+</style>
 <script>
 // ====== 中文术语映射 ==========
 const DIR_CN  = { long: '做多', short: '做空' };
@@ -340,8 +393,252 @@ window.addEventListener('load', () => {
   if (factorSel.value) loadFactor();
   loadProposals();
   loadNav();
+  loadPaperTracking();
+  loadTradeList();
+  loadHoldings();
   setupAutoRefresh();
 });
+
+// ===== P0-1 Trade List + Holdings =============================
+
+async function loadTradeList() {
+  const sumEl = document.getElementById('trade-list-summary');
+  const tblEl = document.getElementById('trade-list-table');
+  sumEl.innerHTML = '<span style="color:#94a3b8">加载中...</span>';
+  try {
+    const r = await fetch('/api/trading/today-list');
+    const d = await r.json();
+    if (!d.items || !d.items.length) {
+      sumEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div><div>暂无交易清单</div><div class="empty-state-hint">下次 portfolio agent 跑完后自动生成</div></div>';
+      tblEl.innerHTML = '';
+      return;
+    }
+    const fmt = (v, d=2) => v == null ? '-' : Number(v).toLocaleString('en', {maximumFractionDigits: d});
+
+    sumEl.innerHTML = `
+      <div class="kpi-strip">
+        <div><span class="small">建议日期</span><span class="stat-num">${d.cohort_date}</span></div>
+        <div><span class="small">买入</span><span class="stat-num metric-good">${d.n_buy}</span></div>
+        <div><span class="small">卖出</span><span class="stat-num metric-bad">${d.n_sell}</span></div>
+        <div><span class="small">不动</span><span class="stat-num">${d.n_hold}</span></div>
+        <div><span class="small">总买入额</span><span class="stat-num metric-good">¥${fmt(d.total_buy_amount, 0)}</span></div>
+        <div><span class="small">总卖出额</span><span class="stat-num metric-bad">¥${fmt(d.total_sell_amount, 0)}</span></div>
+      </div>
+    `;
+
+    // 表格 — 按 action 分组，先 BUY 后 SELL 后 HOLD
+    const actBadge = (a) => {
+      if (a === 'BUY') return '<span class="status-ok" style="font-weight:600">买入</span>';
+      if (a === 'SELL') return '<span class="status-error" style="font-weight:600">卖出</span>';
+      return '<span style="color:#94a3b8">保持</span>';
+    };
+    // 只显示 BUY/SELL，HOLD 折叠
+    const tradable = d.items.filter(it => it.action !== 'HOLD');
+    const holdItems = d.items.filter(it => it.action === 'HOLD');
+    let html = `<table class="trade-table"><thead><tr>
+      <th>动作</th><th>代码</th><th>行业</th>
+      <th>当前 → 目标</th><th>变动股数</th><th>金额</th>
+      <th>当前价</th><th>原因</th><th>操作</th>
+    </tr></thead><tbody>${tradable.map(it => `<tr>
+      <td>${actBadge(it.action)}</td>
+      <td><code>${it.symbol}</code></td>
+      <td class="small">${it.industry || '-'}</td>
+      <td>${fmt(it.current_shares, 0)} → ${fmt(it.target_shares, 0)}</td>
+      <td class="${it.delta_shares>=0?'metric-good':'metric-bad'}">${it.delta_shares>=0?'+':''}${fmt(it.delta_shares, 0)}</td>
+      <td class="${it.delta_amount>=0?'metric-good':'metric-bad'}">¥${fmt(Math.abs(it.delta_amount), 0)}</td>
+      <td>${fmt(it.current_price, 2)}</td>
+      <td class="small">${it.reason || ''}</td>
+      <td>${it.executed ? '✓ 已执行' : `<button onclick="markExecuted('${it.symbol}', '${d.cohort_date}', this)" class="small">标记完成</button>`}</td>
+    </tr>`).join('')}</tbody></table>`;
+    if (holdItems.length > 0) {
+      html += `<details style="margin-top:14px"><summary class="small">展开 ${holdItems.length} 个保持不动的持仓</summary>`;
+      html += `<table class="trade-table" style="margin-top:8px"><thead><tr>
+        <th>代码</th><th>行业</th><th>股数</th><th>当前价</th><th>原因</th>
+      </tr></thead><tbody>${holdItems.map(it => `<tr>
+        <td><code>${it.symbol}</code></td>
+        <td class="small">${it.industry || '-'}</td>
+        <td>${fmt(it.current_shares, 0)}</td>
+        <td>${fmt(it.current_price, 2)}</td>
+        <td class="small">${it.reason || ''}</td>
+      </tr>`).join('')}</tbody></table></details>`;
+    }
+    tblEl.innerHTML = html;
+  } catch (e) {
+    sumEl.textContent = '加载失败: ' + e.message;
+  }
+}
+
+async function markExecuted(symbol, date, btn) {
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    await fetch(`/api/trading/today-list/${symbol}/mark-executed?date=${date}`, {method:'POST'});
+    btn.outerHTML = '✓ 已执行';
+  } catch (e) { btn.disabled = false; btn.textContent = '标记完成'; }
+}
+
+async function loadHoldings() {
+  const tblEl = document.getElementById('holdings-table');
+  try {
+    const r = await fetch('/api/trading/holdings');
+    const d = await r.json();
+    if (!d.holdings || !d.holdings.length) {
+      tblEl.innerHTML = '<div class="empty-state small"><div>当前持仓为空</div><div class="empty-state-hint">在上方表单添加你的真实持仓</div></div>';
+      return;
+    }
+    tblEl.innerHTML = `<table><thead><tr>
+      <th>代码</th><th>股数</th><th>成本价</th><th>更新时间</th><th>备注</th><th>操作</th>
+    </tr></thead><tbody>${d.holdings.map(h => `<tr>
+      <td><code>${h.symbol}</code></td>
+      <td>${Number(h.shares).toLocaleString('en')}</td>
+      <td>${h.avg_cost != null ? Number(h.avg_cost).toFixed(2) : '-'}</td>
+      <td class="small">${h.updated_at}</td>
+      <td class="small">${h.note || ''}</td>
+      <td><button onclick="deleteHolding('${h.symbol}')" class="small">删除</button></td>
+    </tr>`).join('')}</tbody></table>`;
+  } catch (e) {
+    tblEl.innerHTML = '加载失败';
+  }
+}
+
+async function upsertHolding() {
+  const symbol = document.getElementById('hold-symbol').value.trim();
+  const shares = parseFloat(document.getElementById('hold-shares').value);
+  const cost = parseFloat(document.getElementById('hold-cost').value);
+  const msgEl = document.getElementById('hold-msg');
+  if (!symbol || isNaN(shares)) {
+    msgEl.textContent = '需要填代码 + 股数';
+    msgEl.style.color = '#f87171';
+    return;
+  }
+  msgEl.textContent = '保存中...';
+  try {
+    await fetch(`/api/trading/holdings/${symbol}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({shares, avg_cost: isNaN(cost) ? null : cost}),
+    });
+    msgEl.textContent = `✓ 已保存 ${symbol}`;
+    msgEl.style.color = '#5eead4';
+    document.getElementById('hold-symbol').value = '';
+    document.getElementById('hold-shares').value = '';
+    document.getElementById('hold-cost').value = '';
+    await loadHoldings();
+  } catch (e) {
+    msgEl.textContent = '保存失败';
+    msgEl.style.color = '#f87171';
+  }
+}
+
+async function deleteHolding(symbol) {
+  if (!confirm(`确定删除 ${symbol}？`)) return;
+  try {
+    await fetch(`/api/trading/holdings/${symbol}`, {method: 'DELETE'});
+    await loadHoldings();
+  } catch (e) { alert('删除失败'); }
+}
+
+// ===== P0-2 Forward Track =====================================
+
+async function loadPaperTracking() {
+  const sumEl = document.getElementById('paper-summary');
+  const tblEl = document.getElementById('paper-cohorts-table');
+  const chartEl = document.getElementById('paper-cohorts-chart');
+  if (sumEl) sumEl.innerHTML = '<span style="color:#94a3b8">加载中...</span>';
+
+  try {
+    const [sumR, listR] = await Promise.all([
+      fetch('/api/research/paper-trading/summary'),
+      fetch('/api/research/paper-trading/cohorts?limit=200'),
+    ]);
+    const summary = await sumR.json();
+    const list = await listR.json();
+    if (summary.n_cohorts === 0) {
+      sumEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div><div class="empty-state-title">尚无 paper trading 记录</div><div class="empty-state-hint">明天 daemon 跑完盘后第一次会冻结 cohort，30 天后即有真 OOS 数据</div></div>';
+      return;
+    }
+
+    const fmt = (v, mult=100) => v == null ? '-' : (v * mult).toFixed(2) + '%';
+    const at = (k) => summary[k] || {n: 0};
+
+    sumEl.innerHTML = `
+      <div class="kpi-strip" style="margin-bottom:8px">
+        <div><span class="small">已冻结 cohort</span><span class="stat-num">${summary.n_cohorts}</span></div>
+        <div><span class="small">30 天后均值</span><span class="stat-num ${at('at_30d').mean_return>=0?'metric-good':'metric-bad'}">${fmt(at('at_30d').mean_return)}</span><span class="small">(n=${at('at_30d').n})</span></div>
+        <div><span class="small">30 天后超额</span><span class="stat-num ${at('at_30d').mean_excess>=0?'metric-good':'metric-bad'}">${fmt(at('at_30d').mean_excess)}</span></div>
+        <div><span class="small">60 天后均值</span><span class="stat-num ${at('at_60d').mean_return>=0?'metric-good':'metric-bad'}">${fmt(at('at_60d').mean_return)}</span><span class="small">(n=${at('at_60d').n})</span></div>
+        <div><span class="small">60 天后超额</span><span class="stat-num ${at('at_60d').mean_excess>=0?'metric-good':'metric-bad'}">${fmt(at('at_60d').mean_excess)}</span></div>
+        <div><span class="small">90 天后均值</span><span class="stat-num ${at('at_90d').mean_return>=0?'metric-good':'metric-bad'}">${fmt(at('at_90d').mean_return)}</span><span class="small">(n=${at('at_90d').n})</span></div>
+        <div><span class="small">90 天后超额</span><span class="stat-num ${at('at_90d').mean_excess>=0?'metric-good':'metric-bad'}">${fmt(at('at_90d').mean_excess)}</span></div>
+      </div>
+    `;
+
+    // 画散点：x=建仓日，y=最新收益率，颜色按 days_elapsed 编码
+    if (typeof echarts !== 'undefined' && list.cohorts && list.cohorts.length) {
+      const old = echarts.getInstanceByDom(chartEl);
+      if (old) old.dispose();
+      const chart = echarts.init(chartEl);
+      const data = list.cohorts.filter(c => c.latest_return_pct != null).map(c => ({
+        value: [c.cohort_date, (c.latest_return_pct * 100).toFixed(2)],
+        days: c.days_elapsed,
+        excess: c.latest_excess_pct != null ? (c.latest_excess_pct * 100).toFixed(2) : null,
+        n: c.n_holdings,
+      }));
+      chart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+          trigger: 'item',
+          formatter: (p) => {
+            const d = p.data;
+            return `<b>${d.value[0]}</b> 建仓 (${d.days} 天前)<br/>` +
+                   `收益: <b style="color:${d.value[1]>=0?'#5eead4':'#f87171'}">${d.value[1]}%</b><br/>` +
+                   (d.excess !== null ? `超额: ${d.excess}%<br/>` : '') +
+                   `持仓: ${d.n} 只`;
+          },
+        },
+        grid: { left: 60, right: 20, top: 20, bottom: 50 },
+        xAxis: {
+          type: 'category',
+          name: '建仓日',
+          axisLine: {lineStyle:{color:'#334155'}},
+          axisLabel: {color:'#94a3b8', rotate: 30},
+        },
+        yAxis: {
+          type: 'value',
+          name: '截止今日收益率 (%)',
+          axisLabel: {color:'#94a3b8', formatter: '{value}%'},
+          splitLine: {lineStyle:{color:'#1e293b', type:'dashed'}},
+        },
+        visualMap: {
+          show: false,
+          dimension: 'days',
+          min: 0, max: 250,
+          inRange: { color: ['#fbbf24', '#5eead4'] },
+        },
+        series: [{
+          type: 'scatter',
+          symbolSize: 8,
+          data,
+        }],
+      });
+    }
+
+    // 表格列出最近 20 个 cohort
+    if (list.cohorts && list.cohorts.length) {
+      const recent = list.cohorts.slice(0, 20);
+      tblEl.innerHTML = `<table><thead><tr>
+        <th>建仓日</th><th>持仓</th><th>已 N 天</th><th>当前收益</th><th>超额 (vs 沪深300)</th>
+      </tr></thead><tbody>${recent.map(c => `<tr>
+        <td>${c.cohort_date}</td>
+        <td>${c.n_holdings}</td>
+        <td>${c.days_elapsed != null ? c.days_elapsed : '-'}</td>
+        <td class="${c.latest_return_pct>=0?'metric-good':'metric-bad'}">${c.latest_return_pct != null ? (c.latest_return_pct*100).toFixed(2)+'%' : '-'}</td>
+        <td class="${c.latest_excess_pct>=0?'metric-good':'metric-bad'}">${c.latest_excess_pct != null ? (c.latest_excess_pct*100).toFixed(2)+'%' : '-'}</td>
+      </tr>`).join('')}</tbody></table>`;
+    }
+  } catch (e) {
+    sumEl.textContent = '加载失败: ' + e.message;
+  }
+}
 
 // ===== 自动刷新 ============================================
 const AUTO_REFRESH_MS = 30000;

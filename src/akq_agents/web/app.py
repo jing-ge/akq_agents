@@ -16,6 +16,7 @@ from akq_agents.web.api.data_explorer import router as data_router
 from akq_agents.web.api.discovery import router as discovery_router
 from akq_agents.web.api.ops import router as ops_router
 from akq_agents.web.api.research import router as research_router
+from akq_agents.web.api.trading import router as trading_router
 from akq_agents.web.deps import get_services
 from akq_agents.web.guard import LocalhostOnlyMiddleware
 
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
     app.include_router(control_router, prefix="/api/control", tags=["control"])
     app.include_router(data_router, prefix="/api/data", tags=["data"])
+    app.include_router(trading_router, prefix="/api/trading", tags=["trading"])
 
     # pages
     @app.get("/", include_in_schema=False)
