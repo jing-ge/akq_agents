@@ -2,12 +2,19 @@
 {% block title %}Research{% endblock %}
 
 {% block content %}
-<h1>Research</h1>
+<h1>研究面板 <span class="small" style="font-weight:400">Research</span></h1>
+<p class="page-intro">
+  这个页面用来 <b>查看每日组合、单因子表现、自动发现的新因子</b>。
+  <b>组合</b>=今日 AI 推荐的股票篮子（含权重 / 评分 / 行业分布）；
+  <b>因子</b>=每个因子在历史上的预测能力曲线（IC / IR）；
+  <b>归因</b>=今日组合靠哪些因子赚的分；
+  <b>自动发现</b>=Agent 24 小时不断生成的新因子配方，绿色=表现达标已采纳，红色=未达标已淘汰。
+</p>
 
 <div class="grid grid-2">
   <!-- Portfolio -->
   <div class="card">
-    <h2>组合</h2>
+    <h2>今日组合 <span class="small">Portfolio</span></h2>
     <div class="toolbar" style="margin-bottom: 12px;">
       <label>日期：
         <select id="portfolio-date">
@@ -25,7 +32,7 @@
 
   <!-- Factors -->
   <div class="card">
-    <h2>因子</h2>
+    <h2>因子表现 <span class="small">Factor</span></h2>
     <div class="toolbar" style="margin-bottom: 12px;">
       <label>因子：
         <select id="factor-name">
@@ -42,7 +49,7 @@
 </div>
 
 <div class="card">
-  <h2>归因 - 因子贡献</h2>
+  <h2>因子归因 <span class="small">今日组合的收益预期由哪些因子贡献</span></h2>
   <div id="attribution-chart" class="chart"></div>
 </div>
 
@@ -51,16 +58,20 @@
   <h2>自动发现因子流水
     <span class="small" id="proposal-counts"></span>
   </h2>
+  <p class="small" style="margin:-6px 0 10px;color:var(--fg-mute)">
+    AI 自动生成因子配方 → 回测 → 自动判断是否纳入组合。绿色=<b class="status-ok">已采纳</b>，红色=<b class="status-error">已淘汰</b>。
+  </p>
   <div class="toolbar" style="margin-bottom:12px;">
     <label>状态：
       <select id="proposal-status">
         <option value="">全部</option>
-        <option value="accepted">已接收</option>
-        <option value="rejected">已拒绝</option>
+        <option value="accepted">已采纳</option>
+        <option value="rejected">已淘汰</option>
       </select>
     </label>
-    <button class="primary" onclick="loadProposals()">刷新</button>
-    <button onclick="runDiscovery()">立即跑一轮 (20)</button>
+    <button class="primary" onclick="loadProposals()">刷新列表</button>
+    <button class="warn" onclick="runDiscovery()"
+            title="让 AI 临时生成 20 个新因子配方并回测（约 30~120 秒）">立即跑一轮发现（20 个候选）</button>
   </div>
   <div id="proposals-table" class="small"></div>
 </div>
@@ -68,12 +79,27 @@
 
 {% block scripts %}
 <script>
+// ====== 中文术语映射 ==========
+const DIR_CN  = { long: '做多', short: '做空' };
+const OP_CN   = {
+  rolling_mean: '滚动均值', rolling_std: '滚动标准差', rolling_sum: '滚动求和',
+  rolling_max: '滚动最大值', rolling_min: '滚动最小值',
+  zscore: 'Z 标准化', rank: '横截面排序', diff: '差分', pct_change: '涨跌幅',
+  momentum: '动量', reversal: '反转', ts_rank: '时序排序',
+};
+const BASE_CN = {
+  close: '收盘价', open: '开盘价', high: '最高价', low: '最低价',
+  volume: '成交量', amount: '成交额', turnover: '换手率',
+  vwap: '成交均价', ret: '收益率',
+};
+function cnOf(map, k) { return map[k] || k; }
+
 async function loadPortfolio() {
   const date = document.getElementById('portfolio-date').value;
-  if (!date) { document.getElementById('portfolio-table').innerHTML = '<p class="small">暂无组合快照</p>'; return; }
+  if (!date) { document.getElementById('portfolio-table').innerHTML = '<p class="small">该日期暂无组合快照</p>'; return; }
   const summary = document.getElementById('portfolio-summary');
   const tableEl = document.getElementById('portfolio-table');
-  summary.textContent = '加载中...';
+  summary.textContent = '加载中…';
   tableEl.innerHTML = '';
   try {
     const r = await fetch(`/api/research/portfolio?date=${date}`);
@@ -88,13 +114,19 @@ async function loadPortfolio() {
   } catch (e) { summary.textContent = '错误: ' + e.message; }
 }
 function renderPortfolioTable(rows) {
-  if (!rows || !rows.length) return '<p class="small">空</p>';
-  return `<table><thead><tr><th>symbol</th><th>name</th><th>weight</th><th>score</th><th>top_factors</th></tr></thead><tbody>
+  if (!rows || !rows.length) return '<p class="small">该日期组合为空</p>';
+  return `<table><thead><tr>
+      <th><abbr title="股票代码，例如 600000.SH">代码</abbr></th>
+      <th>名称</th>
+      <th><abbr title="该股票在组合中所占的资金比例">权重</abbr></th>
+      <th><abbr title="多因子合成评分，越高代表 AI 越看好">综合评分</abbr></th>
+      <th><abbr title="对该股票评分贡献最大的前 3 个因子">主要因子贡献</abbr></th>
+    </tr></thead><tbody>
     ${rows.slice(0, 50).map(r => `<tr>
       <td><code>${r.symbol}</code></td>
-      <td>${r.name || '-'}</td>
+      <td>${r.name || '—'}</td>
       <td>${(r.weight * 100).toFixed(2)}%</td>
-      <td>${r.composite_score != null ? r.composite_score.toFixed(3) : '-'}</td>
+      <td>${r.composite_score != null ? r.composite_score.toFixed(3) : '—'}</td>
       <td class="small">${(r.top_factors || []).slice(0, 3).map(f => `${f.name}=${f.contribution.toFixed(3)}`).join(', ')}</td>
     </tr>`).join('')}
   </tbody></table>`;
@@ -123,7 +155,7 @@ async function loadAttribution(date) {
     if (typeof echarts === 'undefined') return;
     const chart = echarts.init(document.getElementById('attribution-chart'));
     chart.setOption({
-      title: { text: '因子贡献 (top 20)' },
+      title: { text: '因子贡献（前 20 名）' },
       tooltip: { trigger: 'axis' },
       xAxis: { type: 'category', data: items.map(i => i[0]), axisLabel: { rotate: 30 } },
       yAxis: { type: 'value' },
@@ -136,16 +168,16 @@ async function loadFactor() {
   const name = document.getElementById('factor-name').value;
   if (!name) return;
   const tableEl = document.getElementById('factor-table');
-  tableEl.innerHTML = '加载中...';
+  tableEl.innerHTML = '加载中…';
   try {
     const r = await fetch(`/api/research/factors/${name}/metrics?limit=120`);
     if (!r.ok) { tableEl.innerHTML = '加载失败'; return; }
     const d = await r.json();
     if (!d.metrics || !d.metrics.length) {
-      tableEl.innerHTML = '<p class="small">暂无数据（factor_metrics 表为空，等 batch.deep_research 跑过一次）</p>';
+      tableEl.innerHTML = '<p class="small">暂无表现数据。请先到「运维」页点【重算因子表现（IC / IR）】跑一次。</p>';
       return;
     }
-    tableEl.innerHTML = `<p class="small">${d.n} 条 metrics（按 version DESC, date DESC）</p>`;
+    tableEl.innerHTML = `<p class="small">共 ${d.n} 条记录（按版本与日期倒序）</p>`;
     if (typeof echarts === 'undefined') return;
     const chart = echarts.init(document.getElementById('ic-chart'));
     // 按 factor_version 分组
@@ -159,11 +191,11 @@ async function loadFactor() {
     });
     const series = [];
     Object.entries(groups).forEach(([k, g]) => {
-      series.push({ name: `IR ${k}`, type: 'line', data: g.irs });
-      series.push({ name: `IC ${k}`, type: 'line', data: g.ics });
+      series.push({ name: `IR（信息比率）${k}`, type: 'line', data: g.irs });
+      series.push({ name: `IC（信息系数）${k}`, type: 'line', data: g.ics });
     });
     chart.setOption({
-      title: { text: `${name} IC / IR` },
+      title: { text: `${name} 的 IC / IR 曲线` },
       tooltip: { trigger: 'axis' },
       legend: {},
       xAxis: { type: 'category', data: d.metrics.map(m => m.as_of_date).reverse() },
@@ -187,32 +219,53 @@ async function loadProposals() {
   const url = '/api/research/proposals?limit=50' + (status ? '&status=' + status : '');
   const tableEl = document.getElementById('proposals-table');
   const countsEl = document.getElementById('proposal-counts');
-  tableEl.innerHTML = '加载中...';
+  tableEl.innerHTML = '加载中…';
   try {
     const r = await fetch(url);
     if (!r.ok) { tableEl.innerHTML = '加载失败'; return; }
     const d = await r.json();
-    countsEl.textContent = ' [' + Object.entries(d.counts || {}).map(([k,v]) => `${k}=${v}`).join(' / ') + ']';
-    if (!d.rows || !d.rows.length) { tableEl.innerHTML = '<p class="small">暂无候选；点"立即跑一轮"开始。</p>'; return; }
+    const counts = d.counts || {};
+    const cnMap = { accepted: '已采纳', rejected: '已淘汰', pending: '待评估' };
+    countsEl.textContent = ' ［' + Object.entries(counts).map(([k,v]) => `${cnMap[k]||k}=${v}`).join(' ／ ') + '］';
+    if (!d.rows || !d.rows.length) {
+      tableEl.innerHTML = '<p class="small">还没有候选因子。点击右上「立即跑一轮发现」开始让 AI 自动产生新因子……</p>';
+      return;
+    }
     tableEl.innerHTML = `<table><thead><tr>
-      <th>name</th><th>status</th><th>IR</th><th>IC</th><th>t</th><th>max|corr|</th><th>reason</th><th>recipe</th><th>evaluated_at</th>
-    </tr></thead><tbody>${d.rows.map(r => `<tr class="row-${r.status === 'accepted' ? 'accepted' : 'rejected'}">
+      <th><abbr title="自动生成的因子名（仅作 ID，不必看懂）">因子名</abbr></th>
+      <th>状态</th>
+      <th><abbr title="IR = Information Ratio（信息比率），衡量因子预测稳定性，越大越好（>0.3 算良好）">IR</abbr></th>
+      <th><abbr title="IC = Information Coefficient（信息系数），衡量因子值与未来收益的相关性，越大越好（>0.03 算良好）">IC</abbr></th>
+      <th><abbr title="t 统计量，衡量 IC 的显著性，绝对值 >2 一般算显著">t 统计量</abbr></th>
+      <th><abbr title="该因子与现有因子的最大相关系数绝对值；越低代表越有新意">最大相关性</abbr></th>
+      <th>评估结论</th>
+      <th><abbr title="recipe：因子配方 = 算子(基础数据, 窗口, 方向)">配方</abbr></th>
+      <th>评估时间</th>
+    </tr></thead><tbody>${d.rows.map(r => {
+      const recipe = r.recipe || {};
+      const opCn  = cnOf(OP_CN,  recipe.op);
+      const baseCn = cnOf(BASE_CN, recipe.base);
+      const dirCn = cnOf(DIR_CN, recipe.direction);
+      const statusText = r.status === 'accepted' ? '已采纳' : (r.status === 'rejected' ? '已淘汰' : r.status);
+      return `<tr class="row-${r.status === 'accepted' ? 'accepted' : 'rejected'}">
       <td><code>${r.factor_name}</code></td>
-      <td><span class="status-${r.status === 'accepted' ? 'ok' : 'error'}">${r.status}</span></td>
-      <td>${r.ir != null ? r.ir.toFixed(3) : '-'}</td>
-      <td>${r.ic_mean != null ? r.ic_mean.toFixed(4) : '-'}</td>
-      <td>${r.t_stat != null ? r.t_stat.toFixed(2) : '-'}</td>
-      <td>${r.max_abs_corr != null ? r.max_abs_corr.toFixed(2) : '-'}</td>
-      <td>${r.reason || '-'}</td>
-      <td class="small">${r.recipe.op}(${r.recipe.base}, w=${r.recipe.window}, ${r.recipe.direction})</td>
+      <td><span class="status-${r.status === 'accepted' ? 'ok' : 'error'}">${statusText}</span></td>
+      <td>${r.ir != null ? r.ir.toFixed(3) : '—'}</td>
+      <td>${r.ic_mean != null ? r.ic_mean.toFixed(4) : '—'}</td>
+      <td>${r.t_stat != null ? r.t_stat.toFixed(2) : '—'}</td>
+      <td>${r.max_abs_corr != null ? r.max_abs_corr.toFixed(2) : '—'}</td>
+      <td>${r.reason || '—'}</td>
+      <td class="small" title="原始 recipe: ${recipe.op}(${recipe.base}, w=${recipe.window}, ${recipe.direction})">
+        ${opCn}（${baseCn}，窗口 ${recipe.window} 天，${dirCn}）
+      </td>
       <td class="small">${r.evaluated_at || r.created_at}</td>
-    </tr>`).join('')}</tbody></table>`;
+    </tr>`;}).join('')}</tbody></table>`;
   } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
 }
 
 async function runDiscovery() {
   const tableEl = document.getElementById('proposals-table');
-  tableEl.innerHTML = '正在跑一轮发现（可能 30~120 秒）...';
+  tableEl.innerHTML = '<p class="small">⏳ 正在让 AI 生成 20 个新因子并回测，预计 30~120 秒，请稍候……</p>';
   try {
     const r = await fetch('/api/control/jobs/factor.discovery/trigger?n_candidates=20', { method: 'POST' });
     const d = await r.json();

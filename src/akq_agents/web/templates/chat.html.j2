@@ -2,33 +2,38 @@
 {% block title %}Chat{% endblock %}
 
 {% block content %}
-<h1>Chat</h1>
+<h1>AI 对话 <span class="small" style="font-weight:400">Chat</span></h1>
+<p class="page-intro">
+  这个页面用来 <b>跟系统内的 AI 智能体对话</b>。你可以直接用大白话问，例如：
+  「<i>今天的组合里有哪些股票？</i>」「<i>最近一周哪些因子表现最好？</i>」「<i>帮我跑一轮因子发现</i>」「<i>数据健康度如何？</i>」。
+  AI 在回答时可能调用工具查数据 / 触发任务，会以 🔧 标记。
+</p>
 
 <div class="grid grid-2" style="grid-template-columns: 1fr 3fr;">
   <!-- Sessions sidebar -->
   <div class="card">
-    <h2>会话</h2>
-    <button onclick="newSession()" class="primary">+ 新会话</button>
+    <h2>会话列表</h2>
+    <button onclick="newSession()" class="primary">+ 新建会话</button>
     <div id="sessions-list" style="margin-top: 12px;">
       {% if sessions %}
         {% for s in sessions %}
-        <div onclick="loadSession('{{ s.session_id }}')" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 4px; background: #f3f4f6;">
+        <div onclick="loadSession('{{ s.session_id }}')" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 4px; background: var(--bg-2); border: 1px solid var(--line);">
           <code>{{ s.session_id }}</code>
-          <div class="small">{{ s.last_ts }} · {{ s.message_count }} 条</div>
+          <div class="small">{{ s.last_ts }} ｜ 共 {{ s.message_count }} 条消息</div>
         </div>
         {% endfor %}
       {% else %}
-        <p class="small">暂无会话</p>
+        <p class="small">暂无历史会话，点上方「新建会话」开始。</p>
       {% endif %}
     </div>
   </div>
 
   <!-- Conversation -->
   <div class="card">
-    <h2 id="session-title">未选择会话</h2>
+    <h2 id="session-title">尚未选择会话</h2>
     <div id="chat-window" class="chat-window"></div>
     <div class="chat-input">
-      <input id="chat-input" type="text" placeholder="按 Enter 发送" />
+      <input id="chat-input" type="text" placeholder="输入你的问题，按 Enter 发送…" />
       <button id="chat-send" onclick="sendMessage()" class="primary" disabled>发送</button>
     </div>
   </div>
@@ -44,14 +49,14 @@ async function newSession() {
   if (!r.ok) { alert('创建失败: ' + r.status); return; }
   const d = await r.json();
   currentSession = d.session_id;
-  document.getElementById('session-title').textContent = '会话: ' + currentSession;
+  document.getElementById('session-title').textContent = '会话 #' + currentSession;
   document.getElementById('chat-window').innerHTML = '';
   document.getElementById('chat-send').disabled = false;
 }
 
 async function loadSession(sid) {
   currentSession = sid;
-  document.getElementById('session-title').textContent = '会话: ' + sid;
+  document.getElementById('session-title').textContent = '会话 #' + sid;
   document.getElementById('chat-send').disabled = false;
   const r = await fetch(`/api/chat/sessions/${sid}/messages?limit=200`);
   if (!r.ok) return;

@@ -3,7 +3,7 @@
 llm:
   gateway:
     base_url: "http://127.0.0.1:18931"
-    anthropic_path: "/anthropic/v1/messages"
+    anthropic_path: "/v1/messages"
     timeout_s: 60
     max_retries: 2
   default_model: "Claude-Opus-4.7"
@@ -11,14 +11,16 @@ llm:
     enabled: true
     model: "Claude-Opus-4.7"
     max_tokens: 4000
-    temperature: 0.2
+    # 注意：当前网关上游对 Claude 系列禁用了自定义 temperature，必须 1.0
+    temperature: 1.0
     context_top_holdings: 20
     context_events_count: 10
   chat:
     enabled: true
     model: "Claude-Opus-4.7"
     max_tokens: 2000
-    temperature: 0.4
+    # 注意：网关上游限制，必须 1.0（详见 analyst）
+    temperature: 1.0
     max_iterations: 6
     history_window: 20
   safety:
