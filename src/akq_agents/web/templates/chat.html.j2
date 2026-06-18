@@ -132,12 +132,65 @@ function addMessage(role, content, toolName) {
   div.className = 'chat-msg ' + role;
   if (role === 'tool') {
     div.textContent = '🔧 ' + (toolName || '工具调用');
+  } else if (role === 'assistant') {
+    // 简单 markdown 渲染（LLM 喜欢用 ** / | / # / - / 代码块）
+    div.innerHTML = renderMarkdown(content);
   } else {
     div.textContent = content;
   }
   win.appendChild(div);
   win.scrollTop = win.scrollHeight;
   return div;
+}
+
+// 安全 escape
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 最简 markdown：粗体 / 行内代码 / 代码块 / 列表 / 标题 / 表格 / 换行
+function renderMarkdown(text) {
+  let s = text || '';
+  // 1) 代码块 ```...```
+  const blocks = [];
+  s = s.replace(/```([\s\S]*?)```/g, (_m, code) => {
+    blocks.push('<pre class="md-code">' + escHtml(code.trim()) + '</pre>');
+    return `\x00BLOCK${blocks.length - 1}\x00`;
+  });
+  // 2) escape 其他
+  s = escHtml(s);
+  // 3) 行内代码 `xxx`
+  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  // 4) 粗体 **xxx**
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  // 5) 表格（GFM）
+  s = s.replace(/(^\|.+\|$\n^\|[\s\-:|]+\|$\n(?:^\|.+\|$\n?)+)/gm, (match) => {
+    const lines = match.trim().split('\n');
+    const header = lines[0].split('|').slice(1, -1).map(c => c.trim());
+    const rows = lines.slice(2).map(ln => ln.split('|').slice(1, -1).map(c => c.trim()));
+    let html = '<table class="md-table"><thead><tr>';
+    for (const h of header) html += '<th>' + h + '</th>';
+    html += '</tr></thead><tbody>';
+    for (const r of rows) {
+      html += '<tr>' + r.map(c => '<td>' + c + '</td>').join('') + '</tr>';
+    }
+    html += '</tbody></table>';
+    return html;
+  });
+  // 6) 标题（行首 ##）
+  s = s.replace(/^### (.+)$/gm, '<h4 class="md-h">$1</h4>');
+  s = s.replace(/^## (.+)$/gm, '<h3 class="md-h">$1</h3>');
+  s = s.replace(/^# (.+)$/gm, '<h3 class="md-h">$1</h3>');
+  // 7) 列表 - / *
+  s = s.replace(/(?:^[-*] .+$\n?)+/gm, (block) => {
+    const items = block.trim().split('\n').map(ln => ln.replace(/^[-*] /, ''));
+    return '<ul class="md-ul">' + items.map(it => '<li>' + it + '</li>').join('') + '</ul>';
+  });
+  // 8) 换行
+  s = s.replace(/\n/g, '<br>');
+  // 9) 还原代码块
+  s = s.replace(/\x00BLOCK(\d+)\x00/g, (_m, i) => blocks[parseInt(i)]);
+  return s;
 }
 
 // 打字机渐进：把完整 content 按字符喂给已有的 div
@@ -165,7 +218,8 @@ function addAssistantTyped(content) {
     if (pct < 1) {
       requestAnimationFrame(tick);
     } else {
-      div.textContent = text;
+      // 渐进结束 → 用 markdown 渲染最终内容
+      div.innerHTML = renderMarkdown(text);
       div.classList.remove('streaming');
     }
   }

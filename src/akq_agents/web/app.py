@@ -48,7 +48,8 @@ def create_app() -> FastAPI:
     # pages
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
-        return RedirectResponse(url="/ops")
+        # 默认跳 research：用户每天最关心今日交易清单 + NAV，运维信息次要
+        return RedirectResponse(url="/research")
 
     @app.get("/ops", response_class=HTMLResponse, include_in_schema=False)
     async def page_ops(request: Request) -> HTMLResponse:
