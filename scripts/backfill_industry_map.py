@@ -34,7 +34,7 @@ def main() -> None:
     sw_industries = ak.sw_index_first_info()
     print(f"共 {len(sw_industries)} 个行业")
 
-    ts = datetime.utcnow().isoformat(timespec="seconds")
+    ts = datetime.now().isoformat(timespec="seconds")
     total_rows = 0
     for idx, row in sw_industries.iterrows():
         code = row["行业代码"].replace(".SI", "")

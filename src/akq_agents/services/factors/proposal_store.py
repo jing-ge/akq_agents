@@ -203,7 +203,9 @@ class FactorProposalStore:
 
 
 def now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds")
+    # 用本地时间（系统 timezone = Asia/Shanghai），跟 daemon log / web UI 一致。
+    # 之前用 utcnow() 导致 evaluated_at 显示比本地时间晚 8 小时（北京时间 14:00 显示 06:00）。
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def recipe_to_json(recipe: dict) -> str:
