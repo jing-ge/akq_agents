@@ -17,9 +17,12 @@
     <div id="sessions-list" style="margin-top: 12px;">
       {% if sessions %}
         {% for s in sessions %}
-        <div data-session-id="{{ s.session_id }}" onclick="loadSession('{{ s.session_id }}')">
-          <code>{{ s.session_id }}</code>
-          <div class="small">{{ s.last_ts }} ｜ 共 {{ s.message_count }} 条消息</div>
+        <div data-session-id="{{ s.session_id }}" class="session-row">
+          <div onclick="loadSession('{{ s.session_id }}')" style="flex:1; cursor:pointer; overflow:hidden;">
+            <code>{{ s.session_id }}</code>
+            <div class="small">{{ s.last_ts }} ｜ 共 {{ s.message_count }} 条消息</div>
+          </div>
+          <button class="session-del" onclick="event.stopPropagation(); deleteSession('{{ s.session_id }}')" title="删除会话">×</button>
         </div>
         {% endfor %}
       {% else %}
@@ -32,7 +35,24 @@
   <div class="card">
     <h2 id="session-title">尚未选择会话</h2>
     <div id="chat-window" class="chat-window">
-      <div class="empty-state" id="chat-empty"><span class="em">›_</span><div class="em-title">尚未选择会话</div><div class="em-hint">点左侧「+ 新建会话」开始，或选择一条历史会话查看。可以直接用大白话问，例如「今天的组合里有哪些股票？」</div></div>
+      <div class="empty-state" id="chat-empty">
+        <span class="em">›_</span>
+        <div class="em-title">尚未选择会话</div>
+        <div class="em-hint">点左侧「+ 新建会话」开始，或选择一条历史会话。</div>
+        <div style="margin-top:18px; text-align:left; max-width:520px">
+          <div class="small" style="color:#94a3b8; margin-bottom:8px">💡 试试这些问题：</div>
+          <div class="quick-questions">
+            <button class="qq" onclick="askQuick(this)">今天的组合里有哪些股票？</button>
+            <button class="qq" onclick="askQuick(this)">现在 NAV 是多少？跑赢沪深300 多少？</button>
+            <button class="qq" onclick="askQuick(this)">今天我该买什么、卖什么？</button>
+            <button class="qq" onclick="askQuick(this)">对比 6-16 和 6-17 的组合变化</button>
+            <button class="qq" onclick="askQuick(this)">momentum_5 这个因子最近是不是在衰减？</button>
+            <button class="qq" onclick="askQuick(this)">前向跟踪 30 / 60 / 90 天的真实表现</button>
+            <button class="qq" onclick="askQuick(this)">最近发现的新因子有哪些？哪些被淘汰了？</button>
+            <button class="qq" onclick="askQuick(this)">现在跑一轮因子发现</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="chat-input">
       <input id="chat-input" type="text" placeholder="输入你的问题，按 Enter 发送…" />
@@ -45,6 +65,26 @@
 {% block scripts %}
 <script>
 let currentSession = null;
+
+async function deleteSession(sid) {
+  if (!confirm(`确定删除会话 ${sid}？此操作不可撤销。`)) return;
+  try {
+    const r = await fetch(`/api/chat/sessions/${sid}`, { method: 'DELETE' });
+    if (!r.ok) { alert('删除失败 HTTP ' + r.status); return; }
+    // 从 sidebar 移除该行
+    const row = document.querySelector(`#sessions-list > div[data-session-id="${sid}"]`);
+    if (row) row.remove();
+    // 如果当前正打开的会话被删了，清空主区
+    if (currentSession === sid) {
+      currentSession = null;
+      document.getElementById('chat-send').disabled = true;
+      document.getElementById('session-title').textContent = '尚未选择会话';
+      document.getElementById('chat-window').innerHTML = '';
+      const empty = document.getElementById('chat-empty');
+      if (empty) empty.style.display = '';
+    }
+  } catch (e) { alert('删除失败: ' + e.message); }
+}
 
 async function newSession() {
   const r = await fetch('/api/chat/sessions', { method: 'POST' });
@@ -139,6 +179,26 @@ function addToolEvent(payload) {
   div.innerHTML = `🔧 <code>${payload.name}</code><br><span class="small">${JSON.stringify(payload.args || {}).slice(0, 80)}</span>`;
   win.appendChild(div);
   win.scrollTop = win.scrollHeight;
+}
+
+// 一键发送预设问题：自动新建 session（如果没有）+ 填入 input + sendMessage
+async function askQuick(btn) {
+  const q = btn.textContent;
+  if (!currentSession) {
+    // 自动新建一个 session
+    const r = await fetch('/api/chat/sessions', { method: 'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    const d = await r.json();
+    if (d && d.session_id) {
+      currentSession = d.session_id;
+      const titleEl = document.getElementById('session-title');
+      if (titleEl) titleEl.textContent = currentSession;
+      const winEl = document.getElementById('chat-window');
+      if (winEl) winEl.innerHTML = '';
+      document.getElementById('chat-send').disabled = false;
+    } else { return; }
+  }
+  document.getElementById('chat-input').value = q;
+  sendMessage();
 }
 
 async function sendMessage() {

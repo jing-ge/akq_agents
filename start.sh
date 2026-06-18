@@ -37,6 +37,18 @@ is_alive() {
     [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
 }
 
+# 简单日志轮转：> 50MB 时备份为 .old 并清空
+rotate_log_if_big() {
+    local log="$1"
+    [[ -f "$log" ]] || return 0
+    local size_kb
+    size_kb=$(du -k "$log" 2>/dev/null | awk '{print $1}')
+    if [[ -n "$size_kb" && "$size_kb" -gt 51200 ]]; then
+        mv "$log" "${log}.old"
+        : > "$log"
+    fi
+}
+
 wait_web_ready() {
     for _ in $(seq 1 20); do
         if curl -sf -o /dev/null "http://${WEB_HOST}:${WEB_PORT}/ops"; then
@@ -54,6 +66,8 @@ cmd_web() {
         echo "[web] 已经在跑，pid=$(cat "$WEB_PID")"
         return 0
     fi
+    rotate_log_if_big "$WEB_LOG"
+    rotate_log_if_big "$DAEMON_LOG"
     echo "[web] 启动中... (http://${WEB_HOST}:${WEB_PORT})"
     nohup "$PYTHON" -m akq_agents.cli.app web start \
         --host "$WEB_HOST" --port "$WEB_PORT" \

@@ -48,6 +48,24 @@ async def create_session() -> dict[str, Any]:
     return {"session_id": session_id}
 
 
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str) -> dict[str, Any]:
+    """删除一个会话（chat_messages 全部记录 + llm_calls 关联记录）。"""
+    svc: ServiceContainer = get_services()
+    if svc.llm_store is None:
+        raise HTTPException(503, detail="llm not configured")
+    from akq_agents.services.data.repository import open_meta_db
+
+    db_path = svc.repo._base_dir / "meta.db" if svc.repo else None
+    if db_path is None:
+        raise HTTPException(503, detail="repo not ready")
+    with open_meta_db(db_path) as conn:
+        conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM llm_calls WHERE session_id = ?", (session_id,))
+        conn.commit()
+    return {"status": "ok", "session_id": session_id}
+
+
 @router.get("/sessions/{session_id}/messages")
 async def list_messages(session_id: str, limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
     svc: ServiceContainer = get_services()

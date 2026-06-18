@@ -1689,3 +1689,57 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
   color: #475569;
   font-weight: 600;
 }
+
+/* chat quick questions */
+.quick-questions {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.quick-questions .qq {
+  background: rgba(94,234,212,0.06);
+  border: 1px solid rgba(94,234,212,0.15);
+  color: #cbd5e1;
+  padding: 9px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border 0.15s, transform 0.1s;
+  font-family: inherit;
+}
+.quick-questions .qq:hover {
+  background: rgba(94,234,212,0.14);
+  border-color: rgba(94,234,212,0.4);
+  transform: translateX(3px);
+}
+.quick-questions .qq:active {
+  transform: translateX(0);
+}
+
+/* chat session row 删除按钮 */
+.session-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  margin-bottom: 4px;
+}
+.session-row:hover {
+  background: rgba(94,234,212,0.06);
+}
+.session-del {
+  background: transparent;
+  border: 1px solid rgba(248,113,113,0.25);
+  color: #f87171;
+  width: 24px; height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, border 0.15s;
+  font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.session-row:hover .session-del { opacity: 1; }
+.session-del:hover {
+  background: rgba(248,113,113,0.15);
+  border-color: #f87171;
+}
