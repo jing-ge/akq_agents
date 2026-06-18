@@ -13,9 +13,23 @@
   红色 <b class="status-error">已淘汰</b>。
 </p>
 
-<div class="grid grid-2">
+<div class="refresh-bar">
+  <label class="refresh-toggle">
+    <input type="checkbox" id="auto-refresh">
+    <span class="refresh-dot"></span>
+    自动刷新 <span class="small">（30 秒）</span>
+  </label>
+  <span class="refresh-meta">
+    上次刷新：<code id="last-refresh-ts">—</code>
+  </span>
+  <span class="refresh-meta refresh-hint small">
+    勾选后每 30 秒重新拉取 组合 / 净值 / 自动发现；因子 IC/IR 不轮询。
+  </span>
+</div>
+
+<div class="grid grid-2 main-row">
   <!-- Portfolio -->
-  <div class="card">
+  <div class="card holdings-compact">
     <h2>今日组合 <span class="small">Portfolio</span></h2>
     <div class="toolbar" style="margin-bottom: 12px;">
       <label>日期：
@@ -26,10 +40,13 @@
         </select>
       </label>
       <button onclick="loadPortfolio()" class="primary">查询</button>
+      <span class="sep"></span>
+      <span id="portfolio-summary" class="small" style="margin-left:0"></span>
     </div>
-    <div id="portfolio-summary" class="small"></div>
-    <div id="portfolio-table"></div>
-    <div id="industry-chart" class="chart"></div>
+    <div id="industry-chart" class="chart chart-compact"></div>
+    <div class="holdings-scroll">
+      <div id="portfolio-table"></div>
+    </div>
   </div>
 
   <!-- Factors -->
@@ -131,19 +148,32 @@ async function loadPortfolio() {
 }
 function renderPortfolioTable(rows) {
   if (!rows || !rows.length) return '<p class="small">该日期组合为空</p>';
-  return `<table><thead><tr>
+  const renderChips = (tops) => {
+    if (!tops || !tops.length) return '<span class="small" style="color:var(--fg-mute)">—</span>';
+    return tops.slice(0, 2).map(f => {
+      const v = f.contribution;
+      const cls = v >= 0 ? 'fchip fchip-pos' : 'fchip fchip-neg';
+      const sign = v >= 0 ? '+' : '−';
+      const shortName = f.name.length > 18 ? f.name.slice(0, 16) + '…' : f.name;
+      return `<span class="${cls}" title="${f.name} = ${v.toFixed(3)}">
+        <span class="fchip-name">${shortName}</span>
+        <span class="fchip-val">${sign}${Math.abs(v).toFixed(2)}</span>
+      </span>`;
+    }).join('');
+  };
+  return `<table class="holdings-table"><thead><tr>
       <th><abbr title="股票代码，例如 600000.SH">代码</abbr></th>
       <th>名称</th>
-      <th><abbr title="该股票在组合中所占的资金比例">权重</abbr></th>
-      <th><abbr title="多因子合成评分，越高代表 AI 越看好">综合评分</abbr></th>
-      <th><abbr title="对该股票评分贡献最大的前 3 个因子">主要因子贡献</abbr></th>
+      <th class="num"><abbr title="该股票在组合中所占的资金比例">权重</abbr></th>
+      <th class="num"><abbr title="多因子合成评分，越高代表 AI 越看好">评分</abbr></th>
+      <th><abbr title="对该股票评分贡献最大的 Top 2 因子；悬停看完整因子名">主要因子</abbr></th>
     </tr></thead><tbody>
-    ${rows.slice(0, 50).map(r => `<tr>
+    ${rows.map(r => `<tr>
       <td><code>${r.symbol}</code></td>
       <td>${r.name || '—'}</td>
-      <td>${(r.weight * 100).toFixed(2)}%</td>
-      <td>${r.composite_score != null ? r.composite_score.toFixed(3) : '—'}</td>
-      <td class="small">${(r.top_factors || []).slice(0, 3).map(f => `${f.name}=${f.contribution.toFixed(3)}`).join(', ')}</td>
+      <td class="num">${(r.weight * 100).toFixed(2)}%</td>
+      <td class="num">${r.composite_score != null ? r.composite_score.toFixed(3) : '—'}</td>
+      <td class="fchip-cell">${renderChips(r.top_factors)}</td>
     </tr>`).join('')}
   </tbody></table>`;
 }
@@ -296,7 +326,57 @@ window.addEventListener('load', () => {
   if (factorSel.value) loadFactor();
   loadProposals();
   loadNav();
+  setupAutoRefresh();
 });
+
+// ===== 自动刷新 ============================================
+const AUTO_REFRESH_MS = 30000;
+const AUTO_REFRESH_KEY = 'research_auto_refresh';
+let autoRefreshTimer = null;
+
+function stampRefresh() {
+  const el = document.getElementById('last-refresh-ts');
+  if (!el) return;
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  el.textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+async function runAutoRefresh() {
+  // 因子 IC/IR 不轮询（周日才更新）
+  const dateSel = document.getElementById('portfolio-date');
+  const tasks = [];
+  if (dateSel && dateSel.value) tasks.push(loadPortfolio());
+  tasks.push(loadNav());
+  tasks.push(loadProposals());
+  try { await Promise.allSettled(tasks); } catch (e) { /* ignore */ }
+  stampRefresh();
+}
+
+function setupAutoRefresh() {
+  const cb = document.getElementById('auto-refresh');
+  if (!cb) return;
+  // 恢复上次状态
+  try {
+    if (localStorage.getItem(AUTO_REFRESH_KEY) === '1') cb.checked = true;
+  } catch (e) { /* ignore */ }
+  applyAutoRefresh(cb.checked);
+  cb.addEventListener('change', () => {
+    try { localStorage.setItem(AUTO_REFRESH_KEY, cb.checked ? '1' : '0'); } catch (e) { /* ignore */ }
+    applyAutoRefresh(cb.checked);
+  });
+  // 首次加载完成后打一个时间戳
+  setTimeout(stampRefresh, 800);
+}
+
+function applyAutoRefresh(on) {
+  const bar = document.querySelector('.refresh-bar');
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if (bar) bar.classList.toggle('is-on', !!on);
+  if (on) {
+    autoRefreshTimer = setInterval(runAutoRefresh, AUTO_REFRESH_MS);
+  }
+}
 
 async function loadNav() {
   const chartEl = document.getElementById('nav-chart');
