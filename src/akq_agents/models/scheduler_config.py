@@ -40,6 +40,24 @@ class FactorDiscoveryConfig(BaseModel):
     n_candidates_per_run: int = 20
 
 
+class DataRefreshConfig(BaseModel):
+    """今日 OHLCV 数据刷新 job（cron + 自适应重试）。
+
+    交易日 16:00 首次尝试（数据源此时通常已就绪）；如果尚未就绪 / 失败，
+    每 ``retry_interval_minutes`` 分钟重试一次，直到当天 quality_passed 为止，
+    最晚到 ``stop_hour``:00 不再重试。
+    """
+
+    enabled: bool = True
+    # 首次 cron 时间（仅交易日）
+    first_try_hour: int = 16
+    first_try_minute: int = 0
+    # 重试节奏
+    retry_interval_minutes: int = 30
+    stop_hour: int = 22       # 当天 22:00 之后不再尝试
+    timeout_s: int = 600       # 单次拉取超时 10 分钟（批量接口正常 ~15 秒，留 cushion）
+
+
 class SchedulerJobsConfig(BaseModel):
     batch_post_close: BatchJobConfig = Field(default_factory=BatchJobConfig)
     batch_deep_research: BatchJobConfig = Field(
@@ -54,6 +72,7 @@ class SchedulerJobsConfig(BaseModel):
         default_factory=lambda: IntervalJobConfig(interval_minutes=5, timeout_s=5)
     )
     factor_discovery: FactorDiscoveryConfig = Field(default_factory=FactorDiscoveryConfig)
+    data_refresh: DataRefreshConfig = Field(default_factory=DataRefreshConfig)
 
 
 class RetentionConfig(BaseModel):

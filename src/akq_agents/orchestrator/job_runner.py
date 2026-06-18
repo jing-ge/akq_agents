@@ -43,6 +43,7 @@ DEFAULT_TRADING_DAY_REQUIRED: frozenset[str] = frozenset(
     {
         "batch.post_close",
         "batch.deep_research",
+        "data.refresh_daily",
     }
 )
 
