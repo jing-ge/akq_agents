@@ -150,13 +150,23 @@ class FactorEvaluator:
             ic_std = float(ic_clean.std(ddof=1))
             ir = ic_mean / ic_std if ic_std > 0 else None
             t_stat = ir * np.sqrt(len(ic_clean)) if ir is not None else None
-            # M3：基于 IR 判定 active/inactive；阈值与 DiscoveryThresholds 同步（0.25）。
-            # 这里只看 |IR|，方向已在 Preprocessor 阶段处理。
+            # M3 + 改进：单点低 IR 不立即 disable，需要"连续 N 期"低才标 inactive
+            # 避免单日数据精度问题（如 spot 数据）导致核心因子瞬间被 disable
             status = "active"
             reason: str | None = None
             if ir is None or abs(ir) < 0.15:
-                status = "inactive"
-                reason = "low_ir"
+                # 看历史最近 4 期，加上当前共 5 期；如果 ≥3 期 |IR|<0.15 才 inactive
+                recent = self._read_recent_history(factor.name, factor.factor_version, limit=4)
+                low_count = 1 if (ir is None or abs(ir) < 0.15) else 0
+                for m in recent:
+                    if m.ir is None or abs(m.ir) < 0.15:
+                        low_count += 1
+                if low_count >= 3:
+                    status = "inactive"
+                    reason = "low_ir_persistent"
+                else:
+                    reason = f"low_ir_observed_{low_count}/5"
+                    # 保持 active，给因子缓冲
             metric = FactorMetric(
                 factor_name=factor.name,
                 factor_version=factor.factor_version,
@@ -203,6 +213,21 @@ class FactorEvaluator:
                 ),
             )
             conn.commit()
+
+    def _read_recent_history(self, factor_name: str, factor_version: int, limit: int = 4) -> list[FactorMetric]:
+        """读最近 N 条历史（不含当前正在写入的）。"""
+        with open_meta_db(self._db) as conn:
+            rows = conn.execute(
+                """
+                SELECT factor_name, factor_version, as_of_date, window_days,
+                       ic_mean, ic_std, ir, t_stat, status, reason
+                FROM factor_metrics
+                WHERE factor_name = ? AND factor_version = ?
+                ORDER BY as_of_date DESC LIMIT ?
+                """,
+                (factor_name, factor_version, limit),
+            ).fetchall()
+        return [FactorMetric(*r) for r in rows]
 
     def get_latest(self, factor_name: str, factor_version: int) -> FactorMetric | None:
         with open_meta_db(self._db) as conn:

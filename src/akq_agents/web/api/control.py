@@ -89,6 +89,11 @@ def _read_pid() -> int | None:
         os.kill(pid, 0)  # signal 0：检查存活
         return pid
     except (ValueError, ProcessLookupError, PermissionError):
+        # 死 pid → 清理文件，避免下次误判 already_running
+        try:
+            _DAEMON_PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
         return None
 
 
