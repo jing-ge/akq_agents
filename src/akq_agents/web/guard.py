@@ -26,12 +26,19 @@ def assert_loopback_bind(host: str) -> None:
 
 
 class LocalhostOnlyMiddleware(BaseHTTPMiddleware):
-    """拒绝非 loopback 来源的请求（防止反向代理意外暴露）。"""
+    """拒绝非 loopback 来源的请求（防止反向代理意外暴露）。
+
+    注意：``request.client`` 偶尔为 None（HTTP/2 prefetch、Safari preconnect、
+    或一些浏览器特殊连接路径下不带 client info）。由于 server 已绑定 loopback，
+    任何能到达这里的请求物理上都来自本机，因此 None 视为放行（否则会出现
+    偶发的 /research 403，前端表现为"卡住"）。
+    """
 
     async def dispatch(self, request: Request, call_next):
         client = request.client
         host = client.host if client else None
-        if host not in _LOOPBACK_HOSTS:
+        # host=None 放行：bind=loopback 时 None 也是本机来源
+        if host is not None and host not in _LOOPBACK_HOSTS:
             return JSONResponse(
                 {"error": "non-local request rejected", "client": host},
                 status_code=403,
