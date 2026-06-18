@@ -54,6 +54,7 @@ from akq_agents.services.portfolio import (
     Preprocessor,
 )
 from akq_agents.services.portfolio.backtester import BacktestConfig, PortfolioBacktester
+from akq_agents.services.portfolio.industry_map import IndustryMapStore
 from akq_agents.services.portfolio.risk_filter import RiskFilter, RiskFilterConfig
 from akq_agents.services.storage import SQLiteStore, StateStore
 
@@ -114,10 +115,12 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
         services["preprocessor"] = Preprocessor()
         services["composite_scorer"] = CompositeScorer(weighting="ir", evaluator=evaluator)
         services["portfolio_optimizer"] = PortfolioOptimizer(
-            OptimizerConfig(top_n=50, max_single_weight=0.05, turnover_aversion=0.7)
+            OptimizerConfig(top_n=50, max_single_weight=0.05, turnover_aversion=0.7, max_industry_weight=0.30)
         )
         services["attributor"] = Attributor()
         services["portfolio_snapshot_store"] = PortfolioSnapshotStore(meta_db_path)
+        # M9-C 行业映射 store
+        services["industry_map_store"] = IndustryMapStore(meta_db_path)
         # M7-B: 硬风控过滤
         services["risk_filter"] = RiskFilter(RiskFilterConfig(
             min_listing_days=60,

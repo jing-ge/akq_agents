@@ -34,10 +34,12 @@ class OptimizerConfig:
     # M7-A: 换手抑制系数。1.0 = 完全采纳新权重（无抑制）；0.0 = 完全不动。
     # 建议 0.5-0.8，让组合慢慢往新方向迁移，降低单日换手率。
     turnover_aversion: float = 1.0
+    # M9-C: 单行业权重上限（默认 0.30 = 30%），避免组合扎堆某一行业
+    max_industry_weight: float = 0.30
 
 
 class PortfolioOptimizer:
-    """inverse-vol top-N + 可选换手抑制。"""
+    """inverse-vol top-N + 可选换手抑制 + M9-C 单行业 cap。"""
 
     def __init__(self, cfg: OptimizerConfig | None = None) -> None:
         self._cfg = cfg or OptimizerConfig()
@@ -47,6 +49,7 @@ class PortfolioOptimizer:
         composite_score: pd.Series,
         vol_20: pd.Series,
         prev_weights: pd.Series | None = None,
+        industry_map: dict[str, str] | None = None,
     ) -> pd.Series:
         cfg = self._cfg
 
@@ -80,11 +83,9 @@ class PortfolioOptimizer:
                 pw = float(prev_weights.get(s, 0.0) or 0.0)
                 mixed[s] = alpha * rw + (1 - alpha) * pw
             weights = pd.Series(mixed, dtype=float)
-            # 重新归一
             total = weights.sum()
             if total > 0:
                 weights = weights / total
-            # 把权重 < 0.5% 的小尾巴去掉（避免组合里有太多 prev 残留极小持仓）
             mask_keep = weights > 0.005
             if mask_keep.any():
                 weights = pd.Series(weights[mask_keep])
@@ -95,7 +96,61 @@ class PortfolioOptimizer:
             weights = raw_weights
 
         weights = self._cap_and_redistribute(weights, cfg.max_single_weight)
+
+        # M9-C: 单行业权重 cap（在 single-weight cap 之后）
+        if industry_map and cfg.max_industry_weight < 1.0:
+            weights = self._cap_industry_weight(weights, industry_map, cfg.max_industry_weight)
+
         weights.name = "weight"
+        return weights
+
+    @staticmethod
+    def _cap_industry_weight(
+        weights: pd.Series, industry_map: dict[str, str], cap: float
+    ) -> pd.Series:
+        """对超过 cap 的行业按比例缩减，剩余权重均摊给其他行业（不改变行业内相对顺序）。
+
+        最多迭代 5 次（避免再次触发 cap）。
+        """
+        for _ in range(5):
+            # 把 weights 按行业分组
+            ind_to_syms: dict[str, list] = {}
+            for sym in weights.index:
+                ind = industry_map.get(str(sym), "__unknown__")
+                ind_to_syms.setdefault(ind, []).append(sym)
+
+            ind_weight = {
+                ind: float(weights.loc[syms].sum())
+                for ind, syms in ind_to_syms.items()
+            }
+            over = {ind: w for ind, w in ind_weight.items() if w > cap}
+            if not over:
+                break
+
+            excess_total = sum(w - cap for w in over.values())
+            # 缩减 over 行业内每只票
+            for ind, w in over.items():
+                shrink_ratio = cap / w
+                for sym in ind_to_syms[ind]:
+                    weights.loc[sym] *= shrink_ratio
+
+            # 把 excess 分配给 under 行业（按当前权重 pro-rata）
+            under_inds = [ind for ind in ind_weight if ind not in over]
+            if not under_inds:
+                # 没有 under 行业 → 把 excess 均摊到所有持仓
+                weights = weights + excess_total / len(weights)
+                break
+            under_syms = [s for ind in under_inds for s in ind_to_syms[ind]]
+            under_w_sum = weights.loc[under_syms].sum()
+            if under_w_sum > 0:
+                weights.loc[under_syms] += excess_total * (weights.loc[under_syms] / under_w_sum)
+            else:
+                weights.loc[under_syms] += excess_total / len(under_syms)
+
+        # 归一化
+        total = weights.sum()
+        if total > 0 and abs(total - 1.0) > 1e-9:
+            weights = weights / total
         return weights
 
     @staticmethod

@@ -271,6 +271,30 @@ def build_run_factor_discovery(services: dict[str, Any]) -> ToolSpec:
     )
 
 
+def build_get_nav_summary(services: dict[str, Any]) -> ToolSpec:
+    """查询 M7-A 组合净值回测结果（扣费 NAV、夏普、回撤、超额）。"""
+    backtester = services["portfolio_backtester"]
+
+    def handler(_args: dict[str, Any]) -> dict[str, Any]:
+        df = backtester.read_nav()
+        if df.empty:
+            return {"error": "NO_NAV_DATA", "detail": "尚未生成 NAV，运行回填脚本或等待 daemon 跑完一次盘后批处理"}
+        summary = backtester._summarize(df)
+        # 加几个最近值方便对话
+        last = df.iloc[-1]
+        summary["latest_date"] = str(last["as_of_date"])
+        summary["latest_nav_net"] = float(last["nav_net"])
+        summary["latest_benchmark_nav"] = float(last["benchmark_nav"]) if last["benchmark_nav"] is not None else None
+        return summary
+
+    return ToolSpec(
+        name="get_nav_summary",
+        description="查询组合扣费净值回测结果：累计收益、年化、夏普、最大回撤、超额收益（vs 沪深300）、平均换手率、总成本。无入参。",
+        json_schema={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
+
+
 def build_explain_portfolio(services: dict[str, Any]) -> ToolSpec:
     """对某日组合做自然语言友好的归因摘要。"""
     store = services["portfolio_snapshot_store"]
@@ -339,6 +363,8 @@ def register_default_tools(registry: ToolRegistry, services: dict[str, Any]) -> 
     if "portfolio_snapshot_store" in services:
         registry.register(build_get_portfolio_snapshot(services))
         registry.register(build_explain_portfolio(services))
+    if "portfolio_backtester" in services:
+        registry.register(build_get_nav_summary(services))
     if "scheduler_state_store" in services:
         registry.register(build_query_events(services))
     if "factor_proposal_store" in services:

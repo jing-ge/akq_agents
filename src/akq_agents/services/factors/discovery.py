@@ -620,20 +620,39 @@ class DiscoveryEngine:
 
             if oos_ir is not None and abs(oos_ir) >= self.th.shadow_min_oos_ir:
                 # Promote → accepted + register
+                # M9-B: 如果 OOS IR 为负，说明原 direction 反了，自动反转
+                if oos_ir < 0:
+                    new_direction = "short" if recipe["direction"] == "long" else "long"
+                    flipped_recipe = dict(recipe)
+                    flipped_recipe["direction"] = new_direction
+                    # 注意：name 是 hash 包含 direction 的，反转后 name 也变。
+                    # 但我们不希望生成新条目（会失去 OOS 历史），所以保留原 factor_name，
+                    # 只更新 recipe_json + direction，使 make_factor 用反转后的版本。
+                    factor = make_factor(flipped_recipe)
+                    # 强制把 factor.name 改回原 name（保持 db 主键）
+                    factor.name = p.factor_name  # type: ignore[attr-defined]
+                    p.recipe_json = recipe_to_json(flipped_recipe)
+                    p.direction = new_direction
+                    effective_ir = -oos_ir  # 反向后等价于正 IR
+                    flip_note = f", direction_flipped (was {recipe['direction']})"
+                else:
+                    effective_ir = oos_ir
+                    flip_note = ""
                 try:
                     self.registry.register(factor)
                 except ValueError:
                     pass
                 p.status = "accepted"
-                p.reason = f"promoted_after_{len(oos_dates)}d_oos_ir={oos_ir:.3f}"
+                p.reason = f"promoted_after_{len(oos_dates)}d_oos_ir={oos_ir:.3f}{flip_note}"
+                p.ir = effective_ir  # 把 IR 也更新成"有效方向后"的正值
                 p.oos_observations = len(oos_dates)
-                p.oos_ir = oos_ir
+                p.oos_ir = effective_ir
                 p.evaluated_at = now_iso()
                 self.proposal_store.upsert(p)
                 stats.accepted_names.append(p.factor_name + " (promoted)")
                 logger.info(
-                    "discovery: shadow %s PROMOTED (oos_ir=%.3f over %d days)",
-                    p.factor_name, oos_ir, len(oos_dates),
+                    "discovery: shadow %s PROMOTED (oos_ir=%.3f over %d days%s)",
+                    p.factor_name, oos_ir, len(oos_dates), flip_note,
                 )
             else:
                 p.status = "demoted"
@@ -665,6 +684,9 @@ def restore_accepted_factors(
         try:
             recipe = recipe_from_json(p.recipe_json)
             factor = make_factor(recipe)
+            # 强制保持 db 里的 factor_name（即便 recipe 改过 direction）
+            # 这样 factor_metrics / portfolio_attribution 等历史表的 key 一致
+            factor.name = p.factor_name  # type: ignore[attr-defined]
             registry.register(factor)
             count += 1
         except Exception as exc:  # noqa: BLE001

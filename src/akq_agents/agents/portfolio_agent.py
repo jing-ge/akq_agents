@@ -171,7 +171,11 @@ class PortfolioAgent(BaseAgent):
         # Step 7: optimizer
         vol_20 = _compute_vol_20(sub_ohlcv)
         prev_weights = store.read_prev_weights(today)
-        weights = opt.solve(composite, vol_20, prev_weights)
+        # M9-C: 行业映射（code 和 name）
+        ind_store = self._services.get("industry_map_store")
+        industry_code_map = ind_store.load() if ind_store is not None else {}
+        industry_name_map = ind_store.load_names() if ind_store is not None else {}
+        weights = opt.solve(composite, vol_20, prev_weights, industry_map=industry_code_map)
 
         if weights.empty:
             return {"status": "skipped", "reason": "optimizer_empty", "portfolio_size": 0}
@@ -191,8 +195,8 @@ class PortfolioAgent(BaseAgent):
             composite_score=composite,
             attribution=attribution,
             prev_weights=prev_weights,
-            name_map={},  # P3a 暂无 name 映射（P1 universe 暂无 name 字段；可后续接入）
-            industry_map={},  # P3a 不接入行业映射（推迟到 P3b）
+            name_map={},  # P1 universe 暂无 name 字段
+            industry_map=industry_name_map,  # M9-C: 真实申万一级行业名
         )
 
         # M7-A: 写完 snapshot 后增量重算 NAV（若 backtester 已装配）
