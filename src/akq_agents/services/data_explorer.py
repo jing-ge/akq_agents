@@ -234,12 +234,14 @@ _CATALOG: list[ApiSpec] = [
     # ============ 工具 ============
     ApiSpec(
         api="tool_trade_date_hist_sina",
-        label="交易日历",
+        label="交易日历（日历视图）",
         category="工具",
-        desc="历史所有交易日（新浪源）。",
-        params=[],
-        display_hint="table",
-        head=300,
+        desc="A 股交易日历：绿色=交易日、灰色=非交易日，按年切换。",
+        params=[
+            ParamSpec("year", "int", "年份", default=2026,
+                     help="例如 2025、2026；可查 1990 起任意年"),
+        ],
+        display_hint="calendar",
     ),
 ]
 
@@ -301,6 +303,11 @@ class DataExplorerService:
         if fn is None:
             return {"error": "API_NOT_FOUND", "detail": f"akshare 无 {api}"}
 
+        # 特殊处理：交易日历 akshare 不接收 year 参数，拉全量后再按 year 筛
+        post_filter_year: int | None = None
+        if api == "tool_trade_date_hist_sina":
+            post_filter_year = clean_args.pop("year", None)
+
         try:
             df = fn(**clean_args) if clean_args else fn()
         except Exception as exc:  # noqa: BLE001
@@ -313,6 +320,16 @@ class DataExplorerService:
                 df = pd.DataFrame(df)
             except Exception:
                 return {"error": "BAD_RESPONSE", "detail": "akshare 返回非 DataFrame"}
+
+        # 交易日历：按 year 筛
+        if post_filter_year is not None and "trade_date" in df.columns:
+            try:
+                df = df.copy()
+                df["trade_date"] = pd.to_datetime(df["trade_date"])
+                df = df[df["trade_date"].dt.year == int(post_filter_year)]
+                df["trade_date"] = df["trade_date"].dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass
 
         self._cache[cache_key] = (now, df)
         return self._format_response(spec, df, from_cache=False)

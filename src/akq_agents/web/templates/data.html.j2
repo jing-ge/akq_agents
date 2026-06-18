@@ -38,6 +38,11 @@
     <div class="card" id="data-result-card" style="display:none">
       <h2>查询结果 <span class="small" id="result-meta"></span></h2>
       <div id="data-chart" class="chart" style="height:380px; display:none"></div>
+      <div id="calendar-legend" style="display:none; gap:18px; margin:8px 0 12px 0; font-size:12px; color:#94a3b8;">
+        <span><i style="display:inline-block;width:10px;height:10px;background:#5eead4;border-radius:2px;vertical-align:middle;margin-right:6px"></i>交易日</span>
+        <span><i style="display:inline-block;width:10px;height:10px;background:#fbbf24;border-radius:2px;vertical-align:middle;margin-right:6px"></i>法定假日</span>
+        <span><i style="display:inline-block;width:10px;height:10px;background:#334155;border-radius:2px;vertical-align:middle;margin-right:6px"></i>周末</span>
+      </div>
       <div id="data-table" style="overflow:auto; max-height:520px"></div>
     </div>
   </main>
@@ -160,17 +165,34 @@ function renderResult(data) {
 
   const chartEl = document.getElementById('data-chart');
   const tableEl = document.getElementById('data-table');
+  const calendarLegend = document.getElementById('calendar-legend');
+  // calendar 模式：显示图例 + 隐藏下方表格（避免又长又重复）
+  if (calendarLegend) calendarLegend.style.display = (data.display_hint === 'calendar') ? 'flex' : 'none';
+  tableEl.style.display = (data.display_hint === 'calendar') ? 'none' : '';
 
-  // 图表
-  let chartRendered = false;
-  if (data.display_hint === 'chart_kline' && data.kline_cols && typeof echarts !== 'undefined') {
-    renderKline(chartEl, data);
-    chartRendered = true;
-  } else if (data.display_hint === 'chart_line' && typeof echarts !== 'undefined') {
-    renderLine(chartEl, data);
-    chartRendered = true;
+  // 决定要不要画图（必须在 init 之前 unhide 容器，否则 ECharts 拿到 width=0 → 图被挤成一根竖条）
+  const willChart =
+    (data.display_hint === 'chart_kline' && data.kline_cols && typeof echarts !== 'undefined') ||
+    (data.display_hint === 'chart_line' && typeof echarts !== 'undefined') ||
+    (data.display_hint === 'calendar' && typeof echarts !== 'undefined');
+  chartEl.style.display = willChart ? '' : 'none';
+  // 日历视图需要更高（一年 ~5 行 × 14px + padding ≈ 220px，但配 monthLabel 通常需要 240+）
+  // line / kline 用 380px
+  chartEl.style.height = (data.display_hint === 'calendar') ? '260px' : '380px';
+  // 销毁旧 chart 实例（避免重复 init 失败 / 残留）
+  if (typeof echarts !== 'undefined') {
+    const old = echarts.getInstanceByDom(chartEl);
+    if (old) old.dispose();
   }
-  chartEl.style.display = chartRendered ? '' : 'none';
+
+  if (willChart) {
+    // 等待一帧让 layout 完成，再 init —— 这样 width 已经是实际宽度
+    requestAnimationFrame(() => {
+      if (data.display_hint === 'chart_kline') renderKline(chartEl, data);
+      else if (data.display_hint === 'chart_line') renderLine(chartEl, data);
+      else if (data.display_hint === 'calendar') renderCalendar(chartEl, data);
+    });
+  }
 
   // 表格
   tableEl.innerHTML = renderTable(data.columns, data.rows);
@@ -213,6 +235,7 @@ function renderKline(el, data) {
         itemStyle: { color: '#5eead4', opacity: 0.6 } },
     ],
   });
+  bindChartResize(chart);
 }
 
 function renderLine(el, data) {
@@ -276,8 +299,102 @@ function renderTable(cols, rows) {
   return html;
 }
 
+// 渲染交易日历：日历视图，标记每天是否交易日
+function renderCalendar(el, data) {
+  // 1) 把 trade_date 列拿出来 → 交易日 Set
+  const tradeSet = new Set();
+  for (const r of (data.rows || [])) {
+    const d = r['trade_date'] || r['date'];
+    if (d) tradeSet.add(String(d).slice(0, 10));
+  }
+  // 2) 确定年份范围
+  let year = 2026;
+  if (tradeSet.size > 0) {
+    // 取第一个日期的年份
+    const first = tradeSet.values().next().value;
+    if (first) year = parseInt(first.slice(0, 4), 10);
+  }
+  // 3) 构造该年所有日期，标记 1=交易日 / 0=非交易日
+  const start = new Date(year, 0, 1);
+  const end = new Date(year, 11, 31);
+  const points = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const iso = d.toISOString().slice(0, 10);
+    const isTrade = tradeSet.has(iso);
+    const dow = d.getDay(); // 0=Sun, 6=Sat
+    const isWeekend = (dow === 0 || dow === 6);
+    let v;
+    if (isTrade) v = 2;
+    else if (isWeekend) v = 0;
+    else v = 1; // 工作日但非交易日 → 法定假日
+    points.push([iso, v]);
+  }
+  // 统计
+  const nTrade = points.filter(p => p[1] === 2).length;
+  const nHoliday = points.filter(p => p[1] === 1).length;
+  const nWeekend = points.filter(p => p[1] === 0).length;
+  // 把统计写到 result-meta 旁边
+  const meta = document.getElementById('result-meta');
+  if (meta) {
+    meta.textContent = `${year} 年 · 交易日 ${nTrade} 天 · 法定假日 ${nHoliday} 天 · 周末 ${nWeekend} 天`;
+  }
+
+  const chart = echarts.init(el);
+  chart.setOption({
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'item',
+      formatter: (p) => {
+        const labels = ['周末', '法定假日', '交易日'];
+        const colors = ['#475569', '#fbbf24', '#5eead4'];
+        const v = p.value[1];
+        return `<b>${p.value[0]}</b><br/><span style="color:${colors[v]}">●</span> ${labels[v]}`;
+      },
+    },
+    visualMap: {
+      show: false,
+      min: 0, max: 2,
+      inRange: { color: ['#334155', '#fbbf24', '#5eead4'] },
+    },
+    calendar: [{
+      orient: 'vertical',
+      range: String(year),
+      cellSize: ['auto', 14],
+      top: 30,
+      bottom: 30,
+      left: 60,
+      right: 30,
+      splitLine: { show: true, lineStyle: { color: '#1e293b' } },
+      itemStyle: { borderColor: '#0f172a', borderWidth: 2, color: '#1e293b' },
+      yearLabel: { show: false },
+      monthLabel: { color: '#94a3b8', fontSize: 11, nameMap: 'cn' },
+      dayLabel: { color: '#94a3b8', fontSize: 10, nameMap: 'cn', firstDay: 1 },
+    }],
+    series: [{
+      type: 'scatter',
+      coordinateSystem: 'calendar',
+      symbolSize: 11,
+      data: points.filter(p => p[1] > 0),  // 只画 weekend 之外的（背景色就是 weekend）
+      itemStyle: {
+        color: (params) => {
+          const v = params.value[1];
+          return v === 2 ? '#5eead4' : '#fbbf24';
+        },
+      },
+    }],
+  });
+  bindChartResize(chart);
+}
+
 function renderEmpty(icon, msg) {
   return '<div class="empty-state"><div class="empty-state-icon">' + icon + '</div><div>' + msg + '</div></div>';
+}
+
+// 监听窗口 resize 让 ECharts 自适应；监听器只附一次（用 chart 自带 _resize_bound 标记）
+function bindChartResize(chart) {
+  if (!chart || chart.__bound_resize) return;
+  chart.__bound_resize = true;
+  window.addEventListener('resize', () => { try { chart.resize(); } catch {} });
 }
 </script>
 
