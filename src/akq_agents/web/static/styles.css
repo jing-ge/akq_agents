@@ -1126,6 +1126,30 @@ hr.thin {
    ============================================================ */
 
 /* ---------- A. Job 详情展开（Ops 页 jobs-table 内嵌） ---------- */
+
+/* Ops 页「最近任务运行」表：固定列宽，防止中文 / 时间戳 / 按钮被挤成竖排。
+   该表与「事件流」表分占 grid-2 的左右两列，容器宽度紧张，所以用 table-layout:fixed
+   显式分配每列空间，避免浏览器把每列等分到 ~75px。 */
+.jobs-table {
+  table-layout: fixed;
+}
+.jobs-table col.col-job    { width: 38%; }   /* job_id pill + 中文别名 */
+.jobs-table col.col-part   { width: 18%; }   /* 分区（含日期+小时段） */
+.jobs-table col.col-status { width: 12%; }
+.jobs-table col.col-dur    { width: 10%; }
+.jobs-table col.col-time   { width: 12%; }   /* 仅 HH:MM:SS */
+.jobs-table col.col-act    { width: 10%; min-width: 68px; }
+.jobs-table tbody td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+/* 任务列允许 pill + 中文别名靠在一起且整体省略，但 code 本身不能换行 */
+.jobs-table td.jc-job code { white-space: nowrap; }
+.jobs-table td.jc-job .small { color: var(--fg-dim); }
+.jobs-table td.jc-time { font-variant-numeric: tabular-nums; }
+
 .job-detail-btn {
   font-size: 11px;
   padding: 3px 9px;
@@ -1134,6 +1158,8 @@ hr.thin {
   color: var(--fg-mute);
   border-radius: var(--r-sm);
   transition: all 160ms var(--ease-out);
+  white-space: nowrap;
+  min-width: 60px;
 }
 .job-detail-btn:hover {
   border-color: var(--accent);

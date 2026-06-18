@@ -26,6 +26,9 @@
     <span class="sep"></span>
 
     <span class="group-label">手动执行任务</span>
+    <button class="safe"
+            title="一次性拉取今日全 A 股快照（~15 秒，批量接口）→ 把数据补到缓存"
+            onclick="refreshDataAsync(this)">📥 拉取今日数据（~15 秒）</button>
     <button class="primary"
             title="立即跑一次「盘后批处理」全流程：拉数据 → 跑因子 → 生成今日组合（约 30~120 秒）"
             onclick="doAction(this,'/api/control/jobs/batch.post_close/trigger','POST')">立即跑一次完整流程（更新组合）</button>
@@ -100,6 +103,55 @@ async function doAction(btn, url, method) {
     out.className = 'console-output ' + (r.ok ? 'is-ok' : 'is-err');
     const tag = r.ok ? '✅ 执行完成' : '❌ 执行失败';
     out.textContent = tag + '  [HTTP ' + r.status + ']\n' + pretty;
+  } catch (err) {
+    out.className = 'console-output is-err';
+    out.textContent = '❌ 网络异常：' + err;
+  } finally {
+    if (btn) { btn.classList.remove('is-loading'); btn.disabled = false; }
+  }
+}
+
+// 异步拉取今日数据：触发后台线程，前端轮询状态
+async function refreshDataAsync(btn) {
+  const out = document.getElementById('control-output');
+  out.className = 'console-output is-busy';
+  out.textContent = '⏳ 启动后台数据拉取...\n';
+  if (btn) { btn.classList.add('is-loading'); btn.disabled = true; }
+  try {
+    const r = await fetch('/api/control/data/refresh', { method: 'POST' });
+    const startData = await r.json();
+    if (!r.ok) {
+      out.className = 'console-output is-err';
+      out.textContent = '❌ 启动失败 [HTTP ' + r.status + ']\n' + JSON.stringify(startData, null, 2);
+      return;
+    }
+    out.textContent = '📥 后台拉取已启动\n  目标日期: ' + (startData.target_date || '-') +
+                      '\n  开始时间: ' + (startData.started_at || '-') +
+                      '\n\n⏳ 轮询进度中...';
+    // 每 2 秒轮询一次状态
+    const startTs = Date.now();
+    const poll = async () => {
+      const sr = await fetch('/api/control/data/refresh/status');
+      const sd = await sr.json();
+      const elapsed = Math.floor((Date.now() - startTs) / 1000);
+      if (sd.running) {
+        out.textContent = '📥 后台拉取中...\n  目标日期: ' + sd.target_date +
+                          '\n  开始时间: ' + sd.started_at +
+                          '\n  已耗时: ' + elapsed + ' 秒\n\n（通常 10-30 秒完成；批量接口 ~15 秒）';
+        setTimeout(poll, 2000);
+      } else {
+        if (sd.error) {
+          out.className = 'console-output is-err';
+          out.textContent = '❌ 拉取失败\n  目标: ' + sd.target_date +
+                            '\n  错误: ' + sd.error;
+        } else {
+          out.className = 'console-output is-ok';
+          const res = sd.result || {};
+          out.textContent = '✅ 拉取完成\n' + JSON.stringify(res, null, 2);
+        }
+      }
+    };
+    setTimeout(poll, 2000);
   } catch (err) {
     out.className = 'console-output is-err';
     out.textContent = '❌ 网络异常：' + err;
@@ -190,12 +242,21 @@ htmx.on('#jobs-table', 'htmx:afterRequest', e => {
 });
 function renderJobs(runs) {
   if (!runs || !runs.length) return '<div class="empty-state"><span class="em">▢</span><div class="em-title">暂无任务运行记录</div><div class="em-hint">后台 daemon 启动后会定时跑「盘后批处理」「因子发现」等任务，跑完会出现在这里。也可以点上方按钮立即触发一次。</div></div>';
-  return `<table><thead><tr>
+  return `<table class="jobs-table">
+    <colgroup>
+      <col class="col-job"/>
+      <col class="col-part"/>
+      <col class="col-status"/>
+      <col class="col-dur"/>
+      <col class="col-time"/>
+      <col class="col-act"/>
+    </colgroup>
+    <thead><tr>
       <th><abbr title="任务标识，例如 batch.post_close = 盘后批处理">任务 / Job</abbr></th>
       <th><abbr title="任务的分区，通常是日期（YYYY-MM-DD）">分区</abbr></th>
       <th>状态</th>
       <th>耗时</th>
-      <th>开始时间</th>
+      <th>开始</th>
       <th></th>
     </tr></thead><tbody>
     ${runs.map(r => {
@@ -204,13 +265,16 @@ function renderJobs(runs) {
       // attr-safe key for partitions containing ':' etc.
       const jobAttr = encodeURIComponent(r.job_id);
       const partAttr = encodeURIComponent(r.partition);
+      // started_at 是 ISO 时间戳（如 2026-06-18T16:38:09.046701），只显示 HH:MM:SS
+      // 分区列已经携带日期信息，这里无需重复
+      const startedShort = r.started_at ? (r.started_at.slice(11, 19) || r.started_at) : '—';
       return `<tr>
-      <td><code>${r.job_id}</code>${jobCn ? ' <span class="small">'+ jobCn +'</span>' : ''}</td>
-      <td>${r.partition}</td>
-      <td><span class="status-${r.status}">${cn}</span>${r.reason_code ? ' <code>' + r.reason_code + '</code>' : ''}</td>
-      <td>${r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) + ' 秒' : '—'}</td>
-      <td class="small">${r.started_at || '—'}</td>
-      <td><button class="job-detail-btn" data-job="${jobAttr}" data-part="${partAttr}" onclick="expandJob(this)" title="展开/收起该任务的子步骤详情">📋 详情</button></td>
+      <td class="jc-job"><code>${r.job_id}</code>${jobCn ? ' <span class="small">'+ jobCn +'</span>' : ''}</td>
+      <td class="jc-part">${r.partition}</td>
+      <td class="jc-status"><span class="status-${r.status}">${cn}</span>${r.reason_code ? ' <code>' + r.reason_code + '</code>' : ''}</td>
+      <td class="jc-dur">${r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) + ' 秒' : '—'}</td>
+      <td class="jc-time small" title="${r.started_at || ''}">${startedShort}</td>
+      <td class="jc-act"><button class="job-detail-btn" data-job="${jobAttr}" data-part="${partAttr}" onclick="expandJob(this)" title="展开/收起该任务的子步骤详情">📋 详情</button></td>
     </tr>`;
     }).join('')}
   </tbody></table>`;

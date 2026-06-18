@@ -4,6 +4,8 @@
 - ``POST /daemon/start`` — 后台启动 daemon（subprocess + pid 文件）
 - ``POST /daemon/stop`` — 给 daemon pid 发 SIGTERM
 - ``POST /jobs/{name}/trigger`` — 同步触发某个 job
+- ``POST /data/refresh`` — 异步触发今日 OHLCV 数据拉取（后台线程，立即返回）
+- ``GET  /data/refresh/status`` — 查询当前后台拉取进度
 
 支持的 jobs：``batch.post_close``、``batch.deep_research``、``factor.discovery``。
 
@@ -20,6 +22,8 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -154,3 +158,97 @@ async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
         return {"status": "ok", **stats.as_dict()}
 
     raise HTTPException(500, "unreachable")
+
+
+# ============================================================
+# 数据拉取（异步后台线程，立即返回）
+# ============================================================
+
+# 进程级单例：避免重复触发
+_data_refresh_state: dict[str, Any] = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "target_date": None,
+    "result": None,
+    "error": None,
+}
+_data_refresh_lock = threading.Lock()
+
+
+@router.post("/data/refresh")
+async def data_refresh_trigger(target_date: str | None = None) -> dict[str, Any]:
+    """异步触发今日 OHLCV 数据拉取。
+
+    立即返回 (running=True)，真正工作在后台线程跑（通常 5-30 分钟）。
+    用 GET /data/refresh/status 轮询。
+
+    target_date 不传则用今天。
+    """
+    svc: ServiceContainer = get_services()
+    if svc.repo is None:
+        raise HTTPException(503, "data_repository not ready")
+
+    with _data_refresh_lock:
+        if _data_refresh_state["running"]:
+            return {
+                "status": "already_running",
+                "started_at": _data_refresh_state["started_at"],
+                "target_date": _data_refresh_state["target_date"],
+            }
+        _data_refresh_state.update({
+            "running": True,
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "finished_at": None,
+            "target_date": target_date or date.today().isoformat(),
+            "result": None,
+            "error": None,
+        })
+
+    repo = svc.repo
+    tdate = date.fromisoformat(target_date) if target_date else date.today()
+
+    def _worker():
+        try:
+            # 使用快速路径（stock_zh_a_spot 一次性拉全市场快照，~15s vs 单股逐拉 ~30min）
+            result = repo.refresh_daily_fast(tdate)
+            with _data_refresh_lock:
+                _data_refresh_state.update({
+                    "running": False,
+                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "result": {
+                        "target_date": str(result.target_date),
+                        "requested": getattr(result, "requested", None),
+                        "fetched": getattr(result, "fetched", None),
+                        "cached_hit": getattr(result, "cached_hit", None),
+                        "failed": getattr(result, "failed", None),
+                        "quality_passed": getattr(result, "quality_passed", None),
+                        "skipped_non_trading_day": getattr(result, "skipped_non_trading_day", False),
+                        "duration_s": getattr(result, "duration_s", None),
+                    },
+                })
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("data.refresh failed")
+            with _data_refresh_lock:
+                _data_refresh_state.update({
+                    "running": False,
+                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "error": f"{type(exc).__name__}: {exc!s}"[:500],
+                })
+
+    t = threading.Thread(target=_worker, daemon=True, name=f"data-refresh-{tdate}")
+    t.start()
+
+    return {
+        "status": "started",
+        "target_date": str(tdate),
+        "started_at": _data_refresh_state["started_at"],
+        "hint": "后台正在拉取，请用 GET /api/control/data/refresh/status 轮询",
+    }
+
+
+@router.get("/data/refresh/status")
+async def data_refresh_status() -> dict[str, Any]:
+    """查询当前数据拉取后台线程状态。"""
+    with _data_refresh_lock:
+        return dict(_data_refresh_state)

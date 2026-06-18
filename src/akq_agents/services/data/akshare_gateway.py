@@ -106,6 +106,47 @@ class AKShareGateway:
         out["date"] = pd.to_datetime(out["date"])
         return out
 
+    def fetch_market_snapshot_today(self) -> pd.DataFrame:
+        """一次性拉今日全市场快照（~13s vs 单股逐拉 ~30min）。
+
+        用 ``stock_zh_a_spot`` 新浪源；返回字段标准化到
+        ``[symbol, open, high, low, close, volume, amount]``。
+
+        只能拉**当日**数据，不能拉历史。用于盘后快速增量刷新。
+        """
+        ak = self._get_ak_module()
+        df = self._call("stock_zh_a_spot", ak.stock_zh_a_spot)
+        if df is None or df.empty:
+            raise FetchError(reason_code="UNKNOWN", message="stock_zh_a_spot 返回空")
+
+        # 新浪 spot 列名：代码 / 名称 / 最新价 / 涨跌额 / 涨跌幅 / 买入 / 卖出 / 昨收 / 今开 / 最高 / 最低 / 成交量 / 成交额 / 时间戳
+        # （新浪的 "代码" 列已含 sh/sz 前缀，例如 sh600519；要去前缀）
+        col_map = {
+            "代码": "symbol_full",
+            "今开": "open",
+            "最高": "high",
+            "最低": "low",
+            "最新价": "close",
+            "成交量": "volume",
+            "成交额": "amount",
+        }
+        missing = [k for k in col_map if k not in df.columns]
+        if missing:
+            raise FetchError(
+                reason_code="SCHEMA_DRIFT",
+                message=f"stock_zh_a_spot missing cols: {', '.join(missing)}",
+            )
+        out = df.rename(columns=col_map)
+        # 去市场前缀 (sh600519 -> 600519)；ak 已经标准 6 位代码
+        out["symbol"] = out["symbol_full"].astype(str).str.replace(r"^(sh|sz|bj)", "", regex=True)
+        out = out.loc[:, ["symbol", "open", "high", "low", "close", "volume", "amount"]].copy()
+        # 类型清洗：转 float，无效值 -> NaN -> 直接丢
+        for col in ("open", "high", "low", "close", "volume", "amount"):
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        out = out.dropna(subset=["close", "open"])
+        out = out[(out["close"] > 0) & (out["volume"] >= 0)]
+        return out.reset_index(drop=True)
+
     def fetch_trading_dates(self) -> list[date]:
         """交易日历（``tool_trade_date_hist_sina``）。"""
         ak = self._get_ak_module()
