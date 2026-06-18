@@ -162,6 +162,23 @@ cmd_logs() {
     tail -f "$WEB_LOG" "$DAEMON_LOG" 2>/dev/null
 }
 
+# 看护循环：每 60 秒检查 web / daemon 是否活，挂了就尝试拉起
+# 用法：nohup ./start.sh watch > data/watcher.log 2>&1 &
+cmd_watch() {
+    echo "== 看护模式启动（每 60 秒一次自检）；Ctrl+C 退出 =="
+    while true; do
+        if ! is_alive "$WEB_PID"; then
+            echo "[$(date '+%H:%M:%S')] web 进程不存在，拉起..."
+            cmd_web 2>&1 | tail -3
+        fi
+        if ! is_alive "$DAEMON_PID"; then
+            echo "[$(date '+%H:%M:%S')] daemon 不存在，拉起..."
+            cmd_daemon_start 2>&1 | tail -3
+        fi
+        sleep 60
+    done
+}
+
 # ---- 入口 ---------------------------------------------------------------
 
 action="${1:-up}"
@@ -190,14 +207,18 @@ case "$action" in
     logs)
         cmd_logs
         ;;
+    watch)
+        cmd_watch
+        ;;
     *)
-        echo "用法: ./start.sh [up|web|daemon|stop|status|logs]"
+        echo "用法: ./start.sh [up|web|daemon|stop|status|logs|watch]"
         echo "  up      启动 web + daemon（默认）"
         echo "  web     只启动 web"
         echo "  daemon  只启动 daemon（要求 web 在跑）"
         echo "  stop    停止 daemon + web"
         echo "  status  查看运行状态"
         echo "  logs    tail web + daemon 日志"
+        echo "  watch   看护模式：每 60s 检查 web/daemon 死了自动拉起"
         exit 1
         ;;
 esac

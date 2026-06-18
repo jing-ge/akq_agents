@@ -376,7 +376,7 @@ class DiscoveryEngine:
         # 用 PortfolioAgent 同款的 loose read 避免 DataNotReady
         max_lookback = 180
         start = as_of_date - timedelta(days=max_lookback * 2)
-        ohlcv = self._loose_read_ohlcv(full.symbols, start, as_of_date)
+        ohlcv = self.repo.get_ohlcv_loose(full.symbols, start, as_of_date)
         if ohlcv.empty:
             return ohlcv, []
         from akq_agents.services.portfolio.combined_universe import build_portfolio_universe
@@ -386,24 +386,6 @@ class DiscoveryEngine:
         )
         sub = ohlcv[ohlcv["symbol"].isin(list(sub_symbols))]
         return sub.reset_index(drop=True), list(sub_symbols)
-
-    def _loose_read_ohlcv(self, symbols, start: date, end: date) -> pd.DataFrame:
-        import pyarrow.dataset as ds
-
-        ohlcv_root = getattr(self.repo, "_ohlcv_dir", None)
-        if ohlcv_root is None or not ohlcv_root.exists():
-            return pd.DataFrame()
-        dataset = ds.dataset(ohlcv_root, format="parquet", partitioning="hive")
-        table = dataset.to_table(
-            filter=(ds.field("date") >= start.isoformat())
-            & (ds.field("date") <= end.isoformat())
-            & ds.field("symbol").isin(list(symbols)),
-        )
-        frame = table.to_pandas()
-        if frame.empty:
-            return frame
-        frame["date"] = pd.to_datetime(frame["date"]).dt.date
-        return frame.sort_values(["symbol", "date"]).reset_index(drop=True)
 
     def _compute_factor_history(
         self, factor: Factor, ohlcv: pd.DataFrame, all_dates: pd.Index

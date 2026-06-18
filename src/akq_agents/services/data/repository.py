@@ -144,6 +144,25 @@ class DataRepository:
         symbols = [str(symbol) for symbol in frame["symbol"].dropna().tolist()]
         return UniverseSnapshot(date=d, symbols=symbols, excluded=excluded)
 
+    def get_ohlcv_loose(self, symbols, start: date, end: date) -> pd.DataFrame:
+        """宽容读 OHLCV：直接扫 parquet 区间，缺哪天就缺哪天，不抛 DataNotReady。
+
+        统一替代 portfolio_agent / discovery / batch_deep_research 里的 3 处重复实现。
+        """
+        if not self._ohlcv_dir.exists() or not symbols:
+            return pd.DataFrame()
+        dataset = ds.dataset(self._ohlcv_dir, format="parquet", partitioning="hive")
+        table = dataset.to_table(
+            filter=(ds.field("date") >= start.isoformat())
+            & (ds.field("date") <= end.isoformat())
+            & ds.field("symbol").isin(list(symbols)),
+        )
+        frame = table.to_pandas()
+        if frame.empty:
+            return frame
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        return frame.sort_values(["symbol", "date"]).reset_index(drop=True)
+
     def is_trading_day(self, d: date) -> bool:
         """代理到底层 ``TradingCalendar``。"""
         return self._calendar.is_trading_day(d)

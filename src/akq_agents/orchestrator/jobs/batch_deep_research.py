@@ -67,27 +67,6 @@ def _has_required_services(services: dict[str, Any]) -> bool:
     return all(k in services for k in {"data_repository", "factor_registry", "factor_evaluator"})
 
 
-def _loose_read_ohlcv(repo, symbols, start, end):
-    """绕过 calendar 严格校验，直接读 parquet 区间。"""
-    import pandas as pd
-    import pyarrow.dataset as ds
-
-    ohlcv_root = getattr(repo, "_ohlcv_dir", None)
-    if ohlcv_root is None or not ohlcv_root.exists():
-        return pd.DataFrame()
-    dataset = ds.dataset(ohlcv_root, format="parquet", partitioning="hive")
-    table = dataset.to_table(
-        filter=(ds.field("date") >= start.isoformat())
-        & (ds.field("date") <= end.isoformat())
-        & ds.field("symbol").isin(list(symbols)),
-    )
-    frame = table.to_pandas()
-    if frame.empty:
-        return frame
-    frame["date"] = pd.to_datetime(frame["date"]).dt.date
-    return frame.sort_values(["symbol", "date"]).reset_index(drop=True)
-
-
 def _do(services: dict[str, Any]) -> dict[str, Any]:
     """实际业务：对每个 factor 做 rolling IC 评估并写表。"""
     import pandas as pd
@@ -109,7 +88,7 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
     history_days = max_lookback + window + 10
     start = today - timedelta(days=history_days * 2)
     # 用宽容读：缺哪天就缺哪天（PortfolioAgent 同款）
-    ohlcv = _loose_read_ohlcv(repo, full_symbols, start, today)
+    ohlcv = repo.get_ohlcv_loose(full_symbols, start, today)
     if ohlcv.empty:
         return {"factors_evaluated": 0, "window": window, "reason": "no_data"}
     portfolio_universe = build_portfolio_universe(
