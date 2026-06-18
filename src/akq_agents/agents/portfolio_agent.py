@@ -122,7 +122,7 @@ class PortfolioAgent(BaseAgent):
                 "portfolio: strict get_ohlcv missing %d symbols, fall back to loose read",
                 len(exc.missing),
             )
-            ohlcv = repo.get_ohlcv_loose(full_universe.symbols, start, today)
+            ohlcv = repo.get_ohlcv_loose(list(full_universe.symbols) + ["000300"], start, today)
             if ohlcv.empty:
                 return {"status": "skipped", "reason": "ohlcv_not_ready", "portfolio_size": 0}
 

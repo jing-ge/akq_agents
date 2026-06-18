@@ -1800,3 +1800,24 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
   font-size: 13px;
   line-height: 1.6;
 }
+
+/* chat textarea 输入 */
+.chat-input textarea {
+  width: 100%;
+  background: rgba(15,23,42,0.6);
+  border: 1px solid #334155;
+  color: #e6e9f0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  resize: none;
+  min-height: 38px;
+  max-height: 140px;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.chat-input textarea:focus {
+  border-color: #5eead4;
+}
