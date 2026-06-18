@@ -12,6 +12,7 @@ from starlette.requests import Request
 
 from akq_agents.web.api.chat import router as chat_router
 from akq_agents.web.api.control import router as control_router
+from akq_agents.web.api.data_explorer import router as data_router
 from akq_agents.web.api.discovery import router as discovery_router
 from akq_agents.web.api.ops import router as ops_router
 from akq_agents.web.api.research import router as research_router
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(discovery_router, prefix="/api/research", tags=["discovery"])
     app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
     app.include_router(control_router, prefix="/api/control", tags=["control"])
+    app.include_router(data_router, prefix="/api/data", tags=["data"])
 
     # pages
     @app.get("/", include_in_schema=False)
@@ -88,6 +90,13 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             request=request, name="chat.html.j2",
             context={"page": "chat", "ctx": _page_ctx(), "sessions": sessions},
+        )
+
+    @app.get("/data", response_class=HTMLResponse, include_in_schema=False)
+    async def page_data(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request, name="data.html.j2",
+            context={"page": "data", "ctx": _page_ctx()},
         )
 
     return app

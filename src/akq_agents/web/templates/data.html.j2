@@ -1,0 +1,315 @@
+{% extends "base.html.j2" %}
+{% block title %}数据 Data{% endblock %}
+
+{% block content %}
+<h1>AKShare 数据浏览器 <span class="small" style="font-weight:400">Data Explorer</span></h1>
+<p class="page-intro">
+  这个页面用来 <b>实时查询 AKShare 基础数据</b>。左侧按类别选择接口，右侧填参数 → 「拉取」即可。
+  结果会在 5 分钟内缓存，重复点击同一参数瞬间返回。所有接口都是 <b>在线拉取</b>，
+  不写入本地数据库，纯用于探索 / 验证 / 临时查询。
+</p>
+
+<div class="data-explorer">
+  <!-- 左侧接口目录 -->
+  <aside class="card data-sidebar">
+    <h2>接口目录 <span class="small" id="catalog-counts"></span></h2>
+    <div id="catalog-list">
+      <div class="empty-state"><div class="empty-state-icon">⏳</div><div>加载目录中…</div></div>
+    </div>
+  </aside>
+
+  <!-- 右侧主区 -->
+  <main class="data-main">
+    <div class="card" id="data-meta">
+      <div class="empty-state">
+        <div class="empty-state-icon">📊</div>
+        <div class="empty-state-title">选择一个接口</div>
+        <div class="empty-state-hint">从左侧选择，例如「个股日线」「沪深300」「申万一级行业列表」</div>
+      </div>
+    </div>
+
+    <div class="card" id="data-form-card" style="display:none">
+      <h2 id="data-title"></h2>
+      <p class="small" id="data-desc"></p>
+      <div id="data-form" class="toolbar"></div>
+      <pre id="data-status" class="console-output small" style="display:none"></pre>
+    </div>
+
+    <div class="card" id="data-result-card" style="display:none">
+      <h2>查询结果 <span class="small" id="result-meta"></span></h2>
+      <div id="data-chart" class="chart" style="height:380px; display:none"></div>
+      <div id="data-table" style="overflow:auto; max-height:520px"></div>
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let CURRENT_SPEC = null;
+let CATALOG = {};
+
+window.addEventListener('load', loadCatalog);
+
+async function loadCatalog() {
+  try {
+    const r = await fetch('/api/data/catalog');
+    if (!r.ok) { document.getElementById('catalog-list').innerHTML = renderEmpty('❌', '目录加载失败'); return; }
+    const d = await r.json();
+    CATALOG = d.groups;
+    document.getElementById('catalog-counts').textContent = '共 ' + (d.total || 0) + ' 个接口';
+    document.getElementById('catalog-list').innerHTML = renderCatalog(d.groups);
+  } catch (e) {
+    document.getElementById('catalog-list').innerHTML = renderEmpty('❌', '加载错误: ' + e.message);
+  }
+}
+
+function renderCatalog(groups) {
+  let out = '';
+  for (const cat of Object.keys(groups)) {
+    out += `<div class="catalog-group"><div class="catalog-group-title">${cat}</div><ul>`;
+    for (const item of groups[cat]) {
+      out += `<li><a href="#" onclick="selectApi('${item.api}'); return false;" data-api="${item.api}" title="${item.desc}">${item.label}</a></li>`;
+    }
+    out += `</ul></div>`;
+  }
+  return out;
+}
+
+function selectApi(apiName) {
+  // 在 catalog 里找
+  let spec = null;
+  for (const cat of Object.keys(CATALOG)) {
+    const found = CATALOG[cat].find(it => it.api === apiName);
+    if (found) { spec = found; break; }
+  }
+  if (!spec) return;
+  CURRENT_SPEC = spec;
+  // 高亮当前
+  document.querySelectorAll('#catalog-list a').forEach(a => a.classList.toggle('active', a.dataset.api === apiName));
+  // 显示参数表单
+  document.getElementById('data-meta').style.display = 'none';
+  document.getElementById('data-form-card').style.display = '';
+  document.getElementById('data-title').textContent = spec.label;
+  document.getElementById('data-desc').textContent = spec.desc;
+  document.getElementById('data-form').innerHTML = renderForm(spec.params) + '<button onclick="fetchData()" class="primary">拉取数据</button>';
+  document.getElementById('data-status').style.display = 'none';
+  document.getElementById('data-result-card').style.display = 'none';
+}
+
+function renderForm(params) {
+  if (!params || !params.length) return '<span class="small" style="margin-right:12px">该接口无参数</span>';
+  let out = '';
+  for (const p of params) {
+    out += `<label class="data-param" title="${p.help || ''}">${p.label || p.name}`;
+    if (p.required) out += '<span style="color:#f87171"> *</span>';
+    if (p.type === 'enum' && p.options) {
+      out += `<select id="param-${p.name}">`;
+      for (const op of p.options) {
+        out += `<option value="${op}" ${op === p.default ? 'selected' : ''}>${op || '(空)'}</option>`;
+      }
+      out += `</select>`;
+    } else {
+      const t = p.type === 'int' ? 'number' : 'text';
+      out += `<input id="param-${p.name}" type="${t}" value="${p.default || ''}" placeholder="${p.help || ''}"/>`;
+    }
+    out += `</label>`;
+  }
+  return out;
+}
+
+async function fetchData() {
+  if (!CURRENT_SPEC) return;
+  const args = {};
+  for (const p of CURRENT_SPEC.params) {
+    const el = document.getElementById('param-' + p.name);
+    if (el) args[p.name] = el.value;
+  }
+  const status = document.getElementById('data-status');
+  status.style.display = '';
+  status.className = 'console-output small is-busy';
+  status.textContent = '> POST /api/data/fetch  api=' + CURRENT_SPEC.api + '\n参数: ' + JSON.stringify(args) + '\n\n拉取中…';
+
+  try {
+    const r = await fetch('/api/data/fetch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({api: CURRENT_SPEC.api, args}),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      status.className = 'console-output small status-error';
+      status.textContent += '\n❌ 失败: ' + (data.detail || JSON.stringify(data));
+      return;
+    }
+    status.className = 'console-output small';
+    const cachedTag = data.from_cache ? ' (来自缓存)' : '';
+    status.textContent = '✅ 拉取完成' + cachedTag + ' · 共 ' + data.n_total + ' 行，展示 ' + data.n_rows + ' 行';
+    renderResult(data);
+  } catch (e) {
+    status.className = 'console-output small status-error';
+    status.textContent += '\n❌ 网络错误: ' + e.message;
+  }
+}
+
+function renderResult(data) {
+  document.getElementById('data-result-card').style.display = '';
+  document.getElementById('result-meta').textContent =
+    (data.truncated ? '（截取 ' + data.n_rows + ' / ' + data.n_total + ')' : '共 ' + data.n_rows + ' 行') +
+    (data.from_cache ? ' · 缓存命中' : '');
+
+  const chartEl = document.getElementById('data-chart');
+  const tableEl = document.getElementById('data-table');
+
+  // 图表
+  let chartRendered = false;
+  if (data.display_hint === 'chart_kline' && data.kline_cols && typeof echarts !== 'undefined') {
+    renderKline(chartEl, data);
+    chartRendered = true;
+  } else if (data.display_hint === 'chart_line' && typeof echarts !== 'undefined') {
+    renderLine(chartEl, data);
+    chartRendered = true;
+  }
+  chartEl.style.display = chartRendered ? '' : 'none';
+
+  // 表格
+  tableEl.innerHTML = renderTable(data.columns, data.rows);
+}
+
+function renderKline(el, data) {
+  const cols = data.kline_cols;
+  const dates = data.rows.map(r => r[cols.date]);
+  const ohlc = data.rows.map(r => [
+    parseFloat(r[cols.open]), parseFloat(r[cols.close]),
+    parseFloat(r[cols.low]), parseFloat(r[cols.high]),
+  ]);
+  const volume = data.rows.map(r => parseFloat(r[cols.volume] || 0));
+  const chart = echarts.init(el);
+  chart.setOption({
+    backgroundColor: 'transparent',
+    color: ['#5eead4'],
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { data: ['K 线', '成交量'], textStyle: {color:'#cbd5e1'} },
+    grid: [
+      { left: 60, right: 20, top: 30, height: '60%' },
+      { left: 60, right: 20, top: '78%', height: '16%' },
+    ],
+    xAxis: [
+      { type: 'category', data: dates, scale: true, axisLine: {lineStyle:{color:'#334155'}}, axisLabel:{color:'#94a3b8'} },
+      { type: 'category', gridIndex: 1, data: dates, axisLine: {lineStyle:{color:'#334155'}}, axisLabel:{show:false} },
+    ],
+    yAxis: [
+      { scale: true, splitLine:{lineStyle:{color:'#1e293b',type:'dashed'}}, axisLabel:{color:'#94a3b8'} },
+      { gridIndex: 1, splitNumber: 2, splitLine:{lineStyle:{color:'#1e293b',type:'dashed'}}, axisLabel:{color:'#94a3b8'} },
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: [0, 1], start: 60, end: 100 },
+      { show: true, xAxisIndex: [0, 1], type: 'slider', bottom: 0, start: 60, end: 100, height: 18 },
+    ],
+    series: [
+      { name: 'K 线', type: 'candlestick', data: ohlc,
+        itemStyle: { color: '#ef4444', color0: '#10b981', borderColor:'#ef4444', borderColor0:'#10b981' } },
+      { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volume,
+        itemStyle: { color: '#5eead4', opacity: 0.6 } },
+    ],
+  });
+}
+
+function renderLine(el, data) {
+  const x = data.chart_x || guessXCol(data.columns);
+  const ys = (data.chart_y && data.chart_y.length) ? data.chart_y : guessYCols(data.columns, x);
+  const dates = data.rows.map(r => r[x]);
+  const chart = echarts.init(el);
+  const series = ys.map(y => ({
+    name: y, type: 'line', smooth: true, showSymbol: false,
+    data: data.rows.map(r => parseFloat(r[y])),
+  }));
+  chart.setOption({
+    backgroundColor: 'transparent',
+    color: ['#5eead4', '#60a5fa', '#fbbf24', '#f87171', '#a78bfa'],
+    tooltip: { trigger: 'axis' },
+    legend: { data: ys, textStyle:{color:'#cbd5e1'} },
+    grid: { left: 60, right: 20, top: 40, bottom: 50 },
+    xAxis: { type: 'category', data: dates, axisLine:{lineStyle:{color:'#334155'}}, axisLabel:{color:'#94a3b8'} },
+    yAxis: { type: 'value', scale: true, splitLine:{lineStyle:{color:'#1e293b',type:'dashed'}}, axisLabel:{color:'#94a3b8'} },
+    dataZoom: [
+      { type: 'inside', start: 60, end: 100 },
+      { type: 'slider', bottom: 5, start: 60, end: 100, height: 18 },
+    ],
+    series,
+  });
+}
+
+function guessXCol(cols) {
+  const candidates = ['date', '日期', 'month', '月份', 'time', '时间'];
+  for (const c of candidates) if (cols.includes(c)) return c;
+  return cols[0];
+}
+function guessYCols(cols, x) {
+  // 取 1-3 个数值列（非 x 非 symbol/code 类）
+  const blacklist = new Set([x, 'symbol', 'code', 'name', '代码', '名称', '股票代码']);
+  return cols.filter(c => !blacklist.has(c)).slice(0, 3);
+}
+
+function renderTable(cols, rows) {
+  if (!rows || !rows.length) return '<div class="empty-state"><div class="empty-state-icon">∅</div><div>无数据</div></div>';
+  let html = '<table><thead><tr>';
+  for (const c of cols) html += '<th>' + c + '</th>';
+  html += '</tr></thead><tbody>';
+  for (const r of rows) {
+    html += '<tr>';
+    for (const c of cols) {
+      const v = r[c];
+      let display = v;
+      // 数字 → 千分位
+      if (typeof v === 'number' || (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v))) {
+        const num = parseFloat(v);
+        if (!isNaN(num)) {
+          display = num.toLocaleString('en', {maximumFractionDigits: 4});
+        }
+      }
+      html += '<td>' + (display === null || display === undefined ? '-' : display) + '</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+function renderEmpty(icon, msg) {
+  return '<div class="empty-state"><div class="empty-state-icon">' + icon + '</div><div>' + msg + '</div></div>';
+}
+</script>
+
+<style>
+/* Data Explorer 页面专属布局 */
+.data-explorer { display: grid; grid-template-columns: 280px 1fr; gap: 18px; margin-top: 18px; }
+.data-sidebar { padding: 16px; max-height: 80vh; overflow-y: auto; position: sticky; top: 12px; align-self: start; }
+.data-sidebar h2 { margin-top: 0; padding-bottom: 8px; }
+.data-main { display: flex; flex-direction: column; gap: 18px; }
+.catalog-group { margin-bottom: 12px; }
+.catalog-group-title { font-size: 11px; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em;
+  text-transform: uppercase; padding: 6px 4px 4px; border-bottom: 1px dashed rgba(94, 234, 212, 0.15); margin-bottom: 4px; }
+.catalog-group ul { list-style: none; padding: 0; margin: 0; }
+.catalog-group li { margin: 0; }
+.catalog-group a {
+  display: block; padding: 6px 8px; color: #cbd5e1; text-decoration: none;
+  font-size: 13px; border-radius: 4px; transition: background 0.12s, color 0.12s, padding-left 0.15s;
+}
+.catalog-group a:hover { background: rgba(94,234,212,0.07); color: #5eead4; padding-left: 12px; }
+.catalog-group a.active { background: rgba(94,234,212,0.15); color: #5eead4; font-weight: 600; padding-left: 12px;
+  box-shadow: inset 2px 0 0 #5eead4; }
+.data-param { display: inline-flex; flex-direction: column; gap: 4px; margin-right: 16px;
+  font-size: 12px; color: #94a3b8; }
+.data-param input, .data-param select {
+  background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; color: #e2e8f0;
+  padding: 6px 10px; border-radius: 4px; font-family: var(--font-mono); font-size: 13px;
+  min-width: 160px;
+}
+.data-param input:focus, .data-param select:focus { outline: none; border-color: #5eead4; }
+@media (max-width: 900px) {
+  .data-explorer { grid-template-columns: 1fr; }
+  .data-sidebar { position: static; max-height: 300px; }
+}
+</style>
+{% endblock %}
