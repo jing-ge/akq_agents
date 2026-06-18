@@ -89,10 +89,16 @@ class PaperTradingStore:
         as_of_date: date,
         weights: dict[str, float],
         close_prices: dict[str, float],
+        fallback_lookup=None,
     ) -> int:
         """把当日权重 + close 冻结到 paper_trades。
 
         已存在的 (cohort_date, symbol) 不修改（PRIMARY KEY 保证）。
+
+        修复 oracle #2：close_prices 里缺 symbol（停牌）时，如果 fallback_lookup 不为 None，
+        会调用 fallback_lookup(symbol, as_of_date) 退化用最近 close 冻结，
+        避免静默丢权重导致 paper 当日总权重 < 100%、长期低估收益。
+
         返回新写入的行数。
         """
         from datetime import datetime
@@ -105,6 +111,11 @@ class PaperTradingStore:
         now = datetime.now().isoformat(timespec="seconds")
         for sym, w in weights.items():
             price = close_prices.get(sym)
+            if (price is None or price <= 0) and fallback_lookup is not None:
+                try:
+                    price = fallback_lookup(sym, as_of_date)
+                except Exception:
+                    price = None
             if price is None or price <= 0:
                 continue
             assumed_shares = (w * capital) / float(price)

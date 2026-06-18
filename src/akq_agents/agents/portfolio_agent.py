@@ -227,8 +227,39 @@ class PortfolioAgent(BaseAgent):
         if paper is not None:
             try:
                 weights_dict = {str(s): float(w) for s, w in weights.items()}
-                paper.freeze_today_cohort(today, weights_dict, today_close)
-                paper.update_track_perf(today, today_close)
+                # 修复 oracle #1：传 cohort_close_lookup 让 benchmark 收益有得算
+                # 修复 oracle #2：缺价票退化用最近 ohlcv close（停牌也算合理估值）
+                def _cohort_lookup(symbol: str, d):
+                    """从 ohlcv parquet 查某 symbol 在某 cohort_date 的 close。"""
+                    if repo is None:
+                        return None
+                    try:
+                        from datetime import timedelta as _td
+                        import pyarrow.dataset as ds
+                        ohlcv_dir = getattr(repo, "_ohlcv_dir", None)
+                        if ohlcv_dir is None or not ohlcv_dir.exists():
+                            return None
+                        start = (d - _td(days=14)).isoformat()
+                        end = d.isoformat()
+                        dataset = ds.dataset(ohlcv_dir, format="parquet", partitioning="hive")
+                        table = dataset.to_table(
+                            filter=(ds.field("date") >= start)
+                                   & (ds.field("date") <= end)
+                                   & (ds.field("symbol") == str(symbol)),
+                            columns=["date", "close"],
+                        )
+                        df = table.to_pandas()
+                        if df.empty:
+                            return None
+                        df = df.sort_values("date")
+                        return float(df.iloc[-1]["close"])
+                    except Exception:
+                        return None
+
+                # 冻结当日（含停牌票 fallback）
+                paper.freeze_today_cohort(today, weights_dict, today_close, fallback_lookup=_cohort_lookup)
+                # 估值历史（含 benchmark lookup）
+                paper.update_track_perf(today, today_close, cohort_close_lookup=_cohort_lookup)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("paper_trading update failed: %s", exc)
 

@@ -32,10 +32,13 @@ class IntervalJobConfig(BaseModel):
 
 
 class FactorDiscoveryConfig(BaseModel):
-    """因子自动发现 job（interval 触发，含每次抽样数量）。"""
+    """因子自动发现 job（interval 触发，含每次抽样数量）。
+
+    走 trading_day 白名单：非交易日 / 节假日 / 周末自动跳过（避免周末 48h 跑 960 个候选灌库）。
+    """
 
     enabled: bool = True
-    interval_minutes: int = 60
+    interval_minutes: int = 120  # 每 2 小时一次（之前 60 太密，配合白名单后这个值更稳）
     timeout_s: int = 900
     n_candidates_per_run: int = 20
 

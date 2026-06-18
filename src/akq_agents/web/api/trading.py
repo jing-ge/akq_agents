@@ -177,8 +177,20 @@ async def today_trade_list(date: str | None = None) -> dict[str, Any]:
     total_buy_amt = sum(it["delta_amount"] for it in items if it["action"] == "BUY")
     total_sell_amt = sum(abs(it["delta_amount"]) for it in items if it["action"] == "SELL")
 
+    # 修复 oracle #3：标注 staleness 让前端 / LLM 都能感知
+    today_actual = _date.today()
+    staleness_days = (today_actual - target_date).days
+    is_today = staleness_days == 0
+
     return {
         "cohort_date": target_date.isoformat(),
+        "today": today_actual.isoformat(),
+        "is_today": is_today,
+        "staleness_days": staleness_days,
+        "stale_warning": None if is_today else (
+            f"⚠️ 当前清单生成于 {staleness_days} 天前（{target_date.isoformat()}），"
+            f"今日盘后 15:30 会自动刷新；当前清单仅供参考，不代表今日盘中实时建议。"
+        ),
         "n": len(items),
         "n_buy": n_buy,
         "n_sell": n_sell,

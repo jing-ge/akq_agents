@@ -1787,3 +1787,16 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
   color: #e6e9f0;
   font-weight: 600;
 }
+
+/* trade list staleness 提醒 */
+.stale-banner {
+  background: rgba(251,191,36,0.08);
+  border: 1px solid rgba(251,191,36,0.3);
+  border-left: 3px solid #fbbf24;
+  color: #fcd34d;
+  padding: 10px 14px;
+  border-radius: 5px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}

@@ -12,10 +12,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
+import pandas as pd
+
 from akq_agents.services.llm.tools.registry import ToolRegistry, ToolSpec
+
+logger = logging.getLogger(__name__)
 
 # ---------------- 1. get_data_health ----------------
 
@@ -514,7 +519,7 @@ def build_factor_decay_check(services: dict[str, Any]) -> ToolSpec:
 
 
 def build_attribute_nav_drop(services: dict[str, Any]) -> ToolSpec:
-    """期间 NAV 跌幅按因子贡献 / 个股贡献 / 行业贡献拆解。"""
+    """期间 NAV 跌幅按个股 P&L 真贡献拆解（不是评分贡献）。"""
     backtester = services["portfolio_backtester"]
     snapshot_store = services["portfolio_snapshot_store"]
 
@@ -539,25 +544,68 @@ def build_attribute_nav_drop(services: dict[str, Any]) -> ToolSpec:
         max_dd_in_range = float(((df_sub["nav_net"] / df_sub["nav_net"].cummax()) - 1.0).min())
         worst_day_idx = df_sub["daily_return_net"].idxmin()
         worst_day = df_sub.loc[worst_day_idx]
+        worst_date_str = worst_day["as_of_date"]
 
-        # 在最坏一天的组合 attribution（如果有）
-        worst_date = worst_day["as_of_date"]
+        # 修复 oracle #5：真实 P&L 拆解
+        # 找 worst_date 的前一日 snapshot（昨日权重） + worst_date / 前一日 ohlcv close
+        # 个股 bps 贡献 = (close_t / close_{t-1} - 1) × prev_weight × 10000
+        contributions: list[dict] = []
         try:
-            rows = snapshot_store.read_snapshot(date.fromisoformat(worst_date))
-        except Exception:
-            rows = []
+            worst_d = date.fromisoformat(worst_date_str)
+            # 前一日 snapshot：从 NAV df 找上一行
+            pos = df_sub.index.get_loc(worst_day_idx)
+            if pos > 0:
+                prev_date_str = df_sub.iloc[pos - 1]["as_of_date"]
+                prev_date_d = date.fromisoformat(prev_date_str)
+                prev_holdings = snapshot_store.read_snapshot(prev_date_d)
+                if prev_holdings:
+                    symbols = [r.symbol for r in prev_holdings]
+                    # 查 worst_date / prev_date 两天的 close
+                    from akq_agents.web.deps import get_services as _gs
+                    svc2 = _gs()
+                    repo = svc2.repo
+                    if repo is not None:
+                        import pyarrow.dataset as ds
+                        dataset = ds.dataset(repo._ohlcv_dir, format="parquet", partitioning="hive")
+                        table = dataset.to_table(
+                            filter=(ds.field("date").isin([prev_date_d.isoformat(), worst_d.isoformat()]))
+                                   & ds.field("symbol").isin(symbols),
+                            columns=["date", "symbol", "close"],
+                        )
+                        ohlcv = table.to_pandas()
+                        if not ohlcv.empty:
+                            # close pivot
+                            close = ohlcv.pivot_table(index="symbol", columns="date", values="close", aggfunc="last")
+                            # 列名是 date object 或 str；统一处理
+                            cols = list(close.columns)
+                            prev_col = next((c for c in cols if str(c) == prev_date_d.isoformat()), None)
+                            worst_col = next((c for c in cols if str(c) == worst_d.isoformat()), None)
+                            if prev_col is not None and worst_col is not None:
+                                for r in prev_holdings:
+                                    sym = r.symbol
+                                    if sym in close.index:
+                                        p0 = close.at[sym, prev_col]
+                                        p1 = close.at[sym, worst_col]
+                                        if p0 is not None and p1 is not None and not pd.isna(p0) and not pd.isna(p1) and p0 > 0:
+                                            stock_ret = (float(p1) / float(p0)) - 1.0
+                                            contribution_bps = stock_ret * float(r.weight) * 10000
+                                            contributions.append({
+                                                "symbol": sym,
+                                                "industry": r.industry,
+                                                "prev_weight": float(r.weight),
+                                                "prev_price": float(p0),
+                                                "today_price": float(p1),
+                                                "stock_return_pct": stock_ret,
+                                                "contribution_bps": contribution_bps,
+                                            })
+        except Exception as exc:
+            logger.warning("attribute_nav_drop P&L decomposition failed: %s", exc)
 
-        # 个股贡献：用 weight × daily_return 估计（简化）
-        worst_holdings = []
-        for r in rows[:15]:
-            worst_holdings.append({
-                "symbol": r.symbol,
-                "weight": r.weight,
-                "industry": r.industry,
-                "composite_score": r.composite_score,
-            })
+        contributions.sort(key=lambda x: x["contribution_bps"])
+        top_drags = contributions[:5]              # 拖累最大（最负）
+        top_boosts = list(reversed(contributions[-5:]))  # 拉抬最大（最正）
 
-        # benchmark 同期
+        # benchmark
         bench_start = df_sub.iloc[0]["benchmark_nav"]
         bench_end = df_sub.iloc[-1]["benchmark_nav"]
         bench_return = (bench_end / bench_start - 1.0) if (bench_start and bench_start > 0) else None
@@ -569,18 +617,24 @@ def build_attribute_nav_drop(services: dict[str, Any]) -> ToolSpec:
             "total_return_net": total_return,
             "max_drawdown_in_range": max_dd_in_range,
             "worst_day": {
-                "date": worst_date,
+                "date": worst_date_str,
                 "daily_return": float(worst_day["daily_return_net"]) if worst_day["daily_return_net"] is not None else None,
                 "turnover": float(worst_day["turnover"]) if worst_day["turnover"] is not None else None,
             },
-            "worst_day_top_holdings": worst_holdings,
+            "worst_day_top_drags": top_drags,
+            "worst_day_top_boosts": top_boosts,
+            "decomposition_note": (
+                "contribution_bps = (close_t / close_{t-1} - 1) × prev_weight × 10000，"
+                "代表该股票当日真实 P&L 对组合的 bps 贡献（不是因子评分贡献）。"
+                "Top drags = 拖累最大（最负），top boosts = 拉抬最大（最正）。"
+            ),
             "benchmark_return": bench_return,
             "excess_return": (total_return - bench_return) if bench_return is not None else None,
         }
 
     return ToolSpec(
         name="attribute_nav_drop",
-        description="对某段时间的 NAV 表现做归因：总收益、最大回撤、最差一天的持仓 top 15、同期 benchmark / 超额。用于「最近 30 天为什么跑输沪深300」。",
+        description="对某段时间的 NAV 表现做**真实 P&L 归因**：找最差一天 → 拆解到每只持仓的 contribution_bps（按 prev_weight × 当日股票收益）→ top 5 拖累 + top 5 拉抬。用于「最近 30 天为什么跑输沪深300」「上周哪天跌得最惨，哪些票拖累」。",
         json_schema={
             "type": "object",
             "properties": {
@@ -609,28 +663,39 @@ def build_get_today_trade_list(services: dict[str, Any]) -> ToolSpec:
         from datetime import date as _date
 
         target = _date.fromisoformat(dates[0])
+        today_actual = _date.today()
+        staleness_days = (today_actual - target).days
         items = tl_store.list_cohort(target)
         n_buy = sum(1 for it in items if it["action"] == "BUY")
         n_sell = sum(1 for it in items if it["action"] == "SELL")
         n_hold = sum(1 for it in items if it["action"] == "HOLD")
         total_buy = sum(it["delta_amount"] for it in items if it["action"] == "BUY")
         total_sell = sum(abs(it["delta_amount"]) for it in items if it["action"] == "SELL")
-        # 只返回非 HOLD 的前 30 条（HOLD 占大多数）
         tradable = [
             {k: v for k, v in it.items() if k != "executed"}
             for it in items if it["action"] != "HOLD"
         ][:30]
-        return {
+        out = {
             "cohort_date": target.isoformat(),
+            "today": today_actual.isoformat(),
+            "is_today": staleness_days == 0,
+            "staleness_days": staleness_days,
             "n_buy": n_buy, "n_sell": n_sell, "n_hold": n_hold,
             "total_buy_amount": total_buy,
             "total_sell_amount": total_sell,
             "tradable": tradable,
         }
+        if staleness_days > 0:
+            out["stale_warning"] = (
+                f"⚠️ 注意：此清单生成于 {staleness_days} 天前（cohort_date={target.isoformat()}），"
+                f"今天是 {today_actual.isoformat()}。回答用户时必须明确告知"
+                f"「当前清单非今日，仅供参考，今日盘后将自动刷新」，不要让用户误以为是今日实时建议。"
+            )
+        return out
 
     return ToolSpec(
         name="get_today_trade_list",
-        description="返回根据当前真实持仓推算的今日交易清单：BUY/SELL/HOLD + 具体股数 + 金额 + 中文原因。用于「今天我该买什么？」",
+        description="返回根据当前真实持仓推算的今日交易清单：BUY/SELL/HOLD + 具体股数 + 金额 + 中文原因。注意：如果返回中含 stale_warning 字段，必须在回答里照实告知用户。",
         json_schema={"type": "object", "properties": {}, "required": []},
         handler=handler,
     )
