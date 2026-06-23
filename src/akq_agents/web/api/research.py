@@ -172,3 +172,105 @@ async def factor_metrics(name: str, limit: int = Query(default=120, ge=1, le=500
         ],
         "n": len(metrics),
     }
+
+
+# ============================================================
+# M14: LLM 因子构建方向（brainstorm）
+# ============================================================
+
+
+@router.get("/factors/llm-suggestions")
+async def llm_suggestions_list(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+    """列出 status='llm_suggested' 的待审核提议。"""
+    svc: ServiceContainer = get_services()
+    store = _proposal_store(svc)
+    if store is None:
+        return {"suggestions": [], "n": 0}
+    rows = store.list_recent(limit=limit, status="llm_suggested")
+    return {
+        "suggestions": [
+            {
+                "factor_name": r.factor_name,
+                "recipe": json.loads(r.recipe_json),
+                "direction": r.direction,
+                "reason": r.reason,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ],
+        "n": len(rows),
+    }
+
+
+@router.post("/factors/brainstorm/run")
+async def trigger_brainstorm(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """手动触发一次 LLM brainstorm（同步等结果）。"""
+    svc: ServiceContainer = get_services()
+    if svc.workflow is None:
+        raise HTTPException(503, detail="workflow not ready")
+    services = svc.workflow.services
+    if "llm_factor_brainstormer" not in services:
+        raise HTTPException(503, detail="llm_factor_brainstormer not configured (检查 LLM 是否启用)")
+    if "job_runner" not in services:
+        raise HTTPException(503, detail="job_runner not available")
+    n = int((payload or {}).get("n", 10))
+    n = max(1, min(n, 30))
+
+    from akq_agents.orchestrator.jobs.factor_brainstorm import run_once_now
+
+    out = run_once_now(services["job_runner"], services, n=n)
+    return {"ok": True, "result": str(out)}
+
+
+@router.post("/factors/llm-suggestions/{factor_name}/{action}")
+async def review_llm_suggestion(factor_name: str, action: str) -> dict[str, Any]:
+    """人工审核 LLM 提议：accept → status='shadow'，reject → status='rejected'。"""
+    if action not in ("accept", "reject"):
+        raise HTTPException(400, detail=f"action must be accept|reject, got {action!r}")
+    svc: ServiceContainer = get_services()
+    store = _proposal_store(svc)
+    if store is None:
+        raise HTTPException(503, detail="proposal_store not available")
+    if svc.repo is None:
+        raise HTTPException(503, detail="repo not available")
+
+    # 直接走 meta.db 改 status（FactorProposalStore.upsert 会要求重新填全字段，太啰嗦；这里 SQL 改 status 列）
+    from akq_agents.services.data.repository import open_meta_db
+    from akq_agents.services.factors.proposal_store import now_iso
+
+    db_path = svc.repo._base_dir / "meta.db"
+    with open_meta_db(db_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM factor_proposals WHERE factor_name = ?",
+            (factor_name,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, detail=f"factor not found: {factor_name}")
+        if row[0] != "llm_suggested":
+            raise HTTPException(409, detail=f"factor status is {row[0]!r}, not 'llm_suggested'")
+
+        new_status = "shadow" if action == "accept" else "rejected"
+        ts = now_iso()
+        if action == "accept":
+            conn.execute(
+                "UPDATE factor_proposals SET status=?, shadow_started_at=?, evaluated_at=? "
+                "WHERE factor_name=?",
+                (new_status, ts, ts, factor_name),
+            )
+        else:
+            conn.execute(
+                "UPDATE factor_proposals SET status=?, evaluated_at=? WHERE factor_name=?",
+                (new_status, ts, factor_name),
+            )
+        conn.commit()
+    return {"ok": True, "factor_name": factor_name, "status": new_status}
+
+
+def _proposal_store(svc: ServiceContainer):
+    """优先用顶层字段 svc.proposal_store；fallback 到 svc.workflow.services["factor_proposal_store"]。"""
+    store = getattr(svc, "proposal_store", None)
+    if store is not None:
+        return store
+    if svc.workflow is not None:
+        return svc.workflow.services.get("factor_proposal_store")
+    return None
