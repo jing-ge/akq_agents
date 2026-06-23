@@ -17,7 +17,9 @@ class BatchJobConfig(BaseModel):
 
     enabled: bool = True
     timeout_s: int = 5400  # 90min，含 P3 + P4
-    hour: int = 15
+    # I4: default 必须晚于 data_refresh.first_try_hour=16，否则 batch 跑时当日数据
+    # 还没刷出来，portfolio-agent 会因 DataNotReady 退化。yaml 文件丢失时也安全。
+    hour: int = 16
     minute: int = 30
     # batch.deep_research 使用 day_of_week='sun'；batch.post_close 不用
     day_of_week: str | None = None
