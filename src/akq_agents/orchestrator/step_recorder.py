@@ -4,7 +4,7 @@
 设计：
 - ``job_steps``：parent_job_id + parent_partition + step_seq + step_name +
   started_at + finished_at + status + payload_json
-- ``StepRecorder`` context manager: ``with recorder.step("data-agent"): ...``
+- ``StepRecorder`` context manager: ``with recorder.step("portfolio-agent"): ...``
 - payload 可以塞 任意 JSON：输入摘要、输出摘要、关键指标。
 """
 
@@ -63,10 +63,10 @@ class StepRecorder:
 
     @contextmanager
     def step(self, name: str, payload_in: dict[str, Any] | None = None):
-        """记录一个步骤：with recorder.step('data-agent', {...}): ... -> payload_out
+        """记录一个步骤：with recorder.step('portfolio-agent', {...}): ... -> payload_out
 
         用法：
-            with recorder.step('data-agent') as ctx:
+            with recorder.step('portfolio-agent') as ctx:
                 result = run()
                 ctx.set_payload({'rows': len(result), ...})
         """

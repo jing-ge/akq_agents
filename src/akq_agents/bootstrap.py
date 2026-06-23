@@ -23,15 +23,12 @@ from akq_agents.orchestrator.daemon_state_file import DaemonStateFile
 from akq_agents.orchestrator.scheduler import QuantDaemon
 from akq_agents.orchestrator.state_store import SchedulerStateStore
 from akq_agents.orchestrator.workflow import QuantWorkflow
-from akq_agents.services.akshare_service import AkshareService, MockAkshareService
-from akq_agents.services.backtest_service import AkquantBacktestService, MockBacktestService
 from akq_agents.services.data.akshare_gateway import AKShareGateway
 from akq_agents.services.data.calendar import TradingCalendar
 from akq_agents.services.data.quality import QualityGate
 from akq_agents.services.data.repository import DataRepository
 from akq_agents.services.data.retry_worker import RetryWorker
 from akq_agents.services.data.universe import UniverseManager
-from akq_agents.services.factor_service import FactorLibrary
 from akq_agents.services.factors import FactorEngine, build_default_registry
 from akq_agents.services.factors.discovery import DiscoveryEngine, restore_accepted_factors
 from akq_agents.services.factors.proposal_store import FactorProposalStore
@@ -43,7 +40,6 @@ from akq_agents.services.llm import (
     ToolRegistry,
     register_default_tools,
 )
-from akq_agents.services.llm_service import SimpleAdvisorService
 from akq_agents.services.portfolio import (
     Attributor,
     CompositeScorer,
@@ -69,37 +65,7 @@ WEB_CONFIG_PATH = BASE_DIR / "config" / "web.yaml"
 
 
 def build_services(config: AppConfig, data_config: DataConfig | None = None) -> dict[str, object]:
-    if config.services.use_mock_data:
-        market_service = MockAkshareService()
-    else:
-        market_service = AkshareService()
-
-    if config.services.use_mock_backtest:
-        backtest_service = MockBacktestService(
-            commission=config.backtest.commission,
-            slippage=config.backtest.slippage,
-            initial_capital=config.backtest.initial_capital,
-        )
-    else:
-        backtest_service = AkquantBacktestService(
-            benchmark=config.research.benchmark,
-            rebalance_frequency=config.research.rebalance_frequency,
-            commission=config.backtest.commission,
-            slippage=config.backtest.slippage,
-            initial_capital=config.backtest.initial_capital,
-            start_date=config.backtest.start_date,
-            end_date=config.backtest.end_date,
-            strict=config.services.strict_real_services,
-        )
-    advisor_service = SimpleAdvisorService()
-    factor_library = FactorLibrary()
-
-    services: dict[str, object] = {
-        "market": market_service,
-        "backtest": backtest_service,
-        "advisor": advisor_service,
-        "factor": factor_library,
-    }
+    services: dict[str, object] = {}
 
     # P1：装配数据层 Repository（可选；data.yaml 缺失则跳过，保持旧链路兼容）
     if data_config is not None:

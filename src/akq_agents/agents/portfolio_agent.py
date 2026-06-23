@@ -1,4 +1,4 @@
-"""PortfolioAgent v2（P3a 接入版）：负责组合 pipeline 的 7 个步骤。
+"""PortfolioAgent v2（P3a 接入版）：负责组合 pipeline 的 9 个步骤。
 
 Step 1: 取当日数据 universe（P1 已就绪）
 Step 2: 对 ohlcv 做 vol_20 计算
@@ -9,22 +9,16 @@ Step 6: CompositeScorer.score → composite_score
 Step 7: PortfolioOptimizer.solve → target_weights
 Step 8: Attributor.explain → attribution
 Step 9: PortfolioSnapshotStore.write → 持久化
-
-如果 services dict 不含 P3 组件（向后兼容旧 workflow），退化为旧版基于 factor_scores
-的加权逻辑。
 """
 
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
-from dataclasses import asdict
 from datetime import date, timedelta
 
 import pandas as pd
 
 from akq_agents.agents.base import AgentContext, BaseAgent
-from akq_agents.models.domain import PortfolioRecommendation
 from akq_agents.services.data.exceptions import DataNotReady
 
 logger = logging.getLogger(__name__)
@@ -71,22 +65,7 @@ class PortfolioAgent(BaseAgent):
         self._services = services or {}
 
     def run(self, context: AgentContext):
-        if self._has_p3_pipeline():
-            return self._run_p3(context)
-        return self._run_legacy(context)
-
-    def _has_p3_pipeline(self) -> bool:
-        required = {
-            "data_repository",
-            "factor_registry",
-            "factor_engine",
-            "preprocessor",
-            "composite_scorer",
-            "portfolio_optimizer",
-            "attributor",
-            "portfolio_snapshot_store",
-        }
-        return required.issubset(self._services.keys())
+        return self._run_p3(context)
 
     def _run_p3(self, context: AgentContext) -> dict:
         repo = self._services["data_repository"]
@@ -380,30 +359,3 @@ class PortfolioAgent(BaseAgent):
             s += abs(w_today - w_prev)
         return s / 2.0
 
-    def _run_legacy(self, context: AgentContext) -> dict:
-        """旧版逻辑：基于 factor_scores 简单加权。保持向后兼容。"""
-        selected_factors = {item["factor_name"] for item in context.state.get("selected_factors", [])}
-        factor_scores = context.state.get("factor_scores", [])
-
-        total_scores: dict[str, float] = defaultdict(float)
-        reasons: dict[str, list[str]] = defaultdict(list)
-        for item in factor_scores:
-            if item["factor_name"] not in selected_factors:
-                continue
-            total_scores[item["symbol"]] += item["value"]
-            reasons[item["symbol"]].append(f"{item['factor_name']}={item['value']:.4f}")
-
-        ranked = sorted(total_scores.items(), key=lambda pair: pair[1], reverse=True)[: self.top_n_symbols]
-        total = sum(score for _, score in ranked) or 1.0
-
-        recommendations = [
-            PortfolioRecommendation(
-                symbol=symbol,
-                weight=score / total,
-                score=score,
-                reasons=reasons[symbol],
-            )
-            for symbol, score in ranked
-        ]
-        context.state["portfolio"] = [asdict(item) for item in recommendations]
-        return {"portfolio": recommendations, "portfolio_size": len(recommendations)}

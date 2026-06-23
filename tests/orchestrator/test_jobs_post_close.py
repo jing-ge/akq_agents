@@ -35,10 +35,8 @@ def test_run_once_now_writes_completed_event(
 ) -> None:
     workflow = MagicMock()
     workflow.run_once.return_value = {
-        "data-agent": {"status": "ok"},
-        "factor-agent": {"status": "ok"},
         "portfolio-agent": {"portfolio_size": 50},
-        "advisor-agent": {"rendered": "今日组合 50 只"},
+        "analyst-agent": {"rendered": "今日组合 50 只"},
     }
     services: dict[str, Any] = {"workflow": workflow}
     cfg = SchedulerConfig()
@@ -66,7 +64,7 @@ def test_run_once_now_idempotent_same_day(
     runner: JobRunner, store: SchedulerStateStore
 ) -> None:
     workflow = MagicMock()
-    workflow.run_once.return_value = {"advisor-agent": {"rendered": "x"}}
+    workflow.run_once.return_value = {"analyst-agent": {"rendered": "x"}}
     services: dict[str, Any] = {"workflow": workflow}
     cfg = SchedulerConfig()
 
@@ -109,7 +107,6 @@ def test_run_once_now_portfolio_skipped_records_skipped(
     """
     workflow = MagicMock()
     workflow.run_once.return_value = {
-        "data-agent": {"status": "ok"},
         "portfolio-agent": {"status": "skipped", "reason": "data_not_ready", "portfolio_size": 0},
     }
     services: dict[str, Any] = {"workflow": workflow}

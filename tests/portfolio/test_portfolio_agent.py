@@ -128,23 +128,6 @@ def test_run_p3_skipped_on_data_not_ready_ohlcv(services: dict, repo_mock: Magic
     assert result["reason"] == "ohlcv_not_ready"
 
 
-def test_legacy_mode_when_p3_services_missing() -> None:
-    """没有 P3 services 时退化到旧逻辑（基于 factor_scores 加权）。"""
-    agent = PortfolioAgent(top_n_symbols=3)  # 不传 services
-    ctx = AgentContext(
-        state={
-            "selected_factors": [{"factor_name": "momentum"}],
-            "factor_scores": [
-                {"factor_name": "momentum", "symbol": "A", "value": 0.8},
-                {"factor_name": "momentum", "symbol": "B", "value": 0.5},
-            ],
-        }
-    )
-    result = agent.run(ctx)
-    assert "portfolio" in result
-    assert len(result["portfolio"]) == 2  # 2 个 symbol（top_n=3 但只有 2 个）
-    assert ctx.state["portfolio"]
-
 
 def test_run_p3_writes_turnover_in_state(services: dict, repo_mock: MagicMock) -> None:
     """两次连续跑 → 第二次 turnover < 1.0。"""

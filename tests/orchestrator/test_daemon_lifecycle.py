@@ -45,7 +45,7 @@ def daemon_assets(tmp_path: Path) -> dict[str, Any]:
     state_file = DaemonStateFile(tmp_path / "daemon_state.json")
     workflow = MagicMock()
     workflow.run_once.return_value = {
-        "advisor-agent": {"rendered": "ok"},
+        "analyst-agent": {"rendered": "ok"},
         "portfolio-agent": {"portfolio_size": 10},
     }
     services = {"workflow": workflow}

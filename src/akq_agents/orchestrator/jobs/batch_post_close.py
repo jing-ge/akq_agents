@@ -1,9 +1,6 @@
 """``batch.post_close``：每个交易日 15:30 触发的盘后大任务。
 
-P2 阶段：调用现有 ``QuantWorkflow.run_once``（DataAgent → FactorAgent → BacktestAgent →
-ResearchAgent → PortfolioAgent → RiskAgent → AdvisorAgent → ReportAgent）。
-
-P3 之后：替换为新的 P3 portfolio pipeline；本文件接口保持不变。
+调用 ``QuantWorkflow.run_once`` 执行核心链路（PortfolioAgent + 可选 AnalystAgent）。
 
 幂等性：``(job_id, date.today().isoformat())`` 由 :class:`JobRunner` 强制；
 同一交易日重复触发，第二次直接 noop。
@@ -67,12 +64,11 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
 
         raise DataNotReady({f"portfolio_agent:{portfolio_out.get('reason', 'unknown')}": [_date.today()]})
     # 汇总摘要（不要塞太大对象到 events.payload）
-    advice = outputs.get("advisor-agent", {}) if isinstance(outputs, dict) else {}
-    portfolio = portfolio_out
+    analyst_out = outputs.get("analyst-agent", {}) if isinstance(outputs, dict) else {}
     return {
         "agents": list(outputs.keys()) if isinstance(outputs, dict) else [],
-        "advice_rendered_chars": len(advice.get("rendered", "")) if isinstance(advice, dict) else 0,
-        "portfolio_n": portfolio.get("portfolio_size", 0) if isinstance(portfolio, dict) else 0,
+        "analyst_chars": len(analyst_out.get("rendered", "")) if isinstance(analyst_out, dict) else 0,
+        "portfolio_n": portfolio_out.get("portfolio_size", 0) if isinstance(portfolio_out, dict) else 0,
     }
 
 
