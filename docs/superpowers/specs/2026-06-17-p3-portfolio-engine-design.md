@@ -1,5 +1,5 @@
 # P3 多因子组合机 — 设计文档（v2，oracle review 后收敛）
-
+> **历史档案**：本文档是设计期 spec，不再代表当前实现。代码已经过 m1~m14 多轮迭代（含老 5-agent 链路删除、portfolio 重构、LLM 因子 brainstorm 等），具体行为请以 `src/` 代码和 `docs/architecture.md` 为准。
 - 项目：akq-agents
 - 阶段：P3（共 P1–P6 六阶段中的第三阶段）
 - 日期：2026-06-17

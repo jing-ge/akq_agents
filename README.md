@@ -37,6 +37,12 @@ PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app analy
 - **P4 LLM Agent 层**：AnalystAgent (盘后离线) + ChatAgent (CLI REPL，4 个只读工具)；本地 Anthropic 网关 (`127.0.0.1:18931`)
 - **P5 Web 控制台**：FastAPI + Jinja + HTMX + ECharts CDN；3 页（Ops / Research / Chat）；localhost-only；SSE 聊天
 
+## 当前限制
+
+- **advisory only，不下单实盘**：trade_list_cohorts 每天生成 BUY/SELL 建议，但 `holdings` 表需要在 web `/trading` 页手动校准。系统不接券商接口、不下单。
+- **paper trading 仅事后跟踪**：cohort 当日按 close 冻结建仓价，之后每日按 latest close 估值，仅作为"如果当天按此组合开仓今天表现如何"的参考。
+- **单机部署**：web/daemon 两进程通过 SQLite WAL 同步状态，没有多用户/权限/SSO。
+
 ## 关键文件
 
 - 配置：`config/system.yaml`、`config/data.yaml`、`config/scheduler.yaml`、`config/llm.yaml`、`config/web.yaml`

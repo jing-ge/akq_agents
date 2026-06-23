@@ -59,7 +59,6 @@ class StorageConfig(BaseModel):
 class ServicesConfig(BaseModel):
     use_mock_data: bool = True
     use_mock_backtest: bool = True
-    enable_llm: bool = False
     strict_real_services: bool = False
 
 

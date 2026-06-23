@@ -50,5 +50,4 @@ storage:
 services:
   use_mock_data: false
   use_mock_backtest: false
-  enable_llm: false
   strict_real_services: true
