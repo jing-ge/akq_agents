@@ -97,3 +97,27 @@ def test_run_once_now_workflow_exception_records_failed(
     fail_evt = next((e for e in events if e.kind == "batch.post_close.failed"), None)
     assert fail_evt is not None
     assert fail_evt.level == "error"
+
+
+def test_run_once_now_portfolio_skipped_records_skipped(
+    runner: JobRunner, store: SchedulerStateStore
+) -> None:
+    """当 portfolio-agent 因数据未就绪 skipped 时，整个 batch 应记为 SKIPPED 而不是 OK。
+
+    防止之前的 silent failure：post_close 早于 data refresh 跑时，portfolio-agent
+    用 fallback 数据 silently 退化但 batch 报 OK，让人误以为今天活儿干完了。
+    """
+    workflow = MagicMock()
+    workflow.run_once.return_value = {
+        "data-agent": {"status": "ok"},
+        "portfolio-agent": {"status": "skipped", "reason": "data_not_ready", "portfolio_size": 0},
+    }
+    services: dict[str, Any] = {"workflow": workflow}
+    cfg = SchedulerConfig()
+
+    batch_post_close.run_once_now(runner, services, cfg)
+
+    runs = store.list_recent_runs(limit=5, job_id="batch.post_close")
+    assert len(runs) == 1
+    assert runs[0].status == "skipped"
+    assert runs[0].reason_code == "DATA_NOT_READY"

@@ -8,7 +8,9 @@ scheduler:
     batch_post_close:
       enabled: true
       timeout_s: 5400        # 90min，含 P3 + P4
-      hour: 15
+      # 必须晚于 data_refresh.first_try_hour (16:00)，否则 post_close 跑时
+      # 当日 OHLCV 还没刷出来，portfolio-agent 会因 DataNotReady 退化成读最近一日
+      hour: 16
       minute: 30
     batch_deep_research:
       enabled: false         # 等 P3 接入再 true

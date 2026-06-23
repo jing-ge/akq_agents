@@ -57,9 +57,18 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
     # M11: 用 StepRecorder 把 agent 子步骤落到 job_steps 表
     recorder = _make_recorder(services)
     outputs = workflow.run_once(recorder=recorder) if recorder else workflow.run_once()
+    # 守门：portfolio-agent 自己 skipped 时（DataNotReady），不要假装整个 batch 成功 ——
+    # 主动抛 DataNotReady 让 JobRunner 把本次 run 标 status='skipped' reason='DATA_NOT_READY'。
+    portfolio_out = outputs.get("portfolio-agent", {}) if isinstance(outputs, dict) else {}
+    if isinstance(portfolio_out, dict) and portfolio_out.get("status") == "skipped":
+        from datetime import date as _date
+
+        from akq_agents.services.data.exceptions import DataNotReady
+
+        raise DataNotReady({f"portfolio_agent:{portfolio_out.get('reason', 'unknown')}": [_date.today()]})
     # 汇总摘要（不要塞太大对象到 events.payload）
     advice = outputs.get("advisor-agent", {}) if isinstance(outputs, dict) else {}
-    portfolio = outputs.get("portfolio-agent", {}) if isinstance(outputs, dict) else {}
+    portfolio = portfolio_out
     return {
         "agents": list(outputs.keys()) if isinstance(outputs, dict) else [],
         "advice_rendered_chars": len(advice.get("rendered", "")) if isinstance(advice, dict) else 0,
