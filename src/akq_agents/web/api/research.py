@@ -206,23 +206,36 @@ async def llm_suggestions_list(limit: int = Query(default=50, ge=1, le=200)) -> 
 async def trigger_brainstorm(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     """手动触发一次 LLM brainstorm（同步等结果）。
 
-    web 进程没有 JobRunner（它在 daemon 进程持有），所以这里直接调 brainstormer.run()。
-    daemon 的 20:00 cron 才走 JobRunner+job_runs 记账路径。
+    C5: web 进程在 deps.py 装了独立 JobRunner（与 daemon 共用 sched_store +
+    meta.db UNIQUE 约束）。走 JobRunner 写 job_runs/events，与 daemon 20:00
+    cron 一致；UI ops 看板能看到操作记录。
     """
+    from datetime import date as _date
+
     svc: ServiceContainer = get_services()
     if svc.workflow is None:
         raise HTTPException(503, detail="workflow not ready")
+    if svc.job_runner is None:
+        raise HTTPException(503, detail="job_runner not ready")
     services = svc.workflow.services
     brainstormer = services.get("llm_factor_brainstormer")
     if brainstormer is None:
         raise HTTPException(503, detail="llm_factor_brainstormer not configured (检查 LLM 是否启用)")
     n = int((payload or {}).get("n", 10))
     n = max(1, min(n, 30))
-    try:
-        stats = brainstormer.run(n=n)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(500, detail=f"brainstorm failed: {str(exc)[:200]}") from exc
-    return {"ok": True, "stats": stats}
+
+    from akq_agents.orchestrator.jobs.factor_brainstorm import JOB_ID
+
+    def _do_brainstorm() -> dict[str, Any]:
+        return brainstormer.run(n=n)
+
+    result = svc.job_runner.run(JOB_ID, _date.today().isoformat(), _do_brainstorm, timeout_s=120)
+    return {
+        "ok": result.status == "ok",
+        "status": result.status,
+        "reason_code": result.reason_code,
+        "stats": result.payload,
+    }
 
 
 @router.post("/factors/llm-suggestions/{factor_name}/{action}")

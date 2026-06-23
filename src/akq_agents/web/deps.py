@@ -28,6 +28,9 @@ class ServiceContainer:
     proposal_store: Any = None
     workflow: Any = None
     paper_trading_store: Any = None
+    # C5: web 进程也持有 JobRunner，让 trigger endpoint 能写 job_runs。
+    # 与 daemon JobRunner 共用 sched_store + meta.db UNIQUE 约束保证不双写。
+    job_runner: Any = None
 
 
 _container_override: ServiceContainer | None = None
@@ -54,8 +57,11 @@ def get_services() -> ServiceContainer:
 
 def _build_default() -> ServiceContainer:
     """从现有 bootstrap 装配；缺什么就留 None（视图层会判 None 渲染 friendly 提示）。"""
+    from concurrent.futures import ThreadPoolExecutor
+
     from akq_agents.bootstrap import build_workflow, load_web_config
     from akq_agents.orchestrator.daemon_state_file import DaemonStateFile
+    from akq_agents.orchestrator.job_runner import JobRunner
 
     workflow, _ = build_workflow()
     services = workflow.services
@@ -63,9 +69,21 @@ def _build_default() -> ServiceContainer:
     daemon_state_file = None
     if repo is not None:
         daemon_state_file = DaemonStateFile(repo._base_dir / "daemon_state.json")
+
+    # C5: web 进程造一个 JobRunner（与 daemon 共用 sched_store + meta.db UNIQUE 约束）。
+    # web 用单线程池足够（trigger 是低频手动操作）。
+    job_runner = None
+    sched_store = services.get("scheduler_state_store")
+    if sched_store is not None and repo is not None:
+        job_runner = JobRunner(
+            sched_store,
+            is_trading_day=repo.is_trading_day,
+            executor=ThreadPoolExecutor(max_workers=1, thread_name_prefix="web-job"),
+        )
+
     return ServiceContainer(
         repo=repo,
-        sched_store=services.get("scheduler_state_store"),
+        sched_store=sched_store,
         daemon_state_file=daemon_state_file,
         factor_registry=services.get("factor_registry"),
         factor_evaluator=services.get("factor_evaluator"),
@@ -78,4 +96,5 @@ def _build_default() -> ServiceContainer:
         proposal_store=services.get("factor_proposal_store"),
         workflow=workflow,
         paper_trading_store=services.get("paper_trading_store"),
+        job_runner=job_runner,
     )

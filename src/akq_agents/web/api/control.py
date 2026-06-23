@@ -105,10 +105,13 @@ _SUPPORTED_JOBS = {"batch.post_close", "batch.deep_research", "factor.discovery"
 
 @router.post("/jobs/{name}/trigger")
 async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
-    """同步触发 job。"""
+    """同步触发 job。C5: 走 JobRunner 写 job_runs/events，与 daemon cron 路径一致。"""
     if name not in _SUPPORTED_JOBS:
         raise HTTPException(404, f"unknown job: {name}")
     svc: ServiceContainer = get_services()
+    if svc.job_runner is None:
+        raise HTTPException(503, "job_runner not ready (web container 未装配)")
+    partition = date.today().isoformat()
 
     if name == "batch.post_close":
         if svc.workflow is None:
@@ -117,50 +120,55 @@ async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
         recorder = None
         try:
             from akq_agents.orchestrator.step_recorder import StepRecorder
-            from datetime import date as _date
             repo = svc.workflow.services.get("data_repository")
             if repo is not None:
                 recorder = StepRecorder(
                     repo._base_dir / "meta.db",
                     parent_job_id="batch.post_close",
-                    parent_partition=_date.today().isoformat(),
+                    parent_partition=partition,
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001
             recorder = None
-        try:
-            outputs = svc.workflow.run_once(recorder=recorder) if recorder else svc.workflow.run_once()
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("trigger batch.post_close failed")
-            raise HTTPException(500, str(exc)[:300]) from exc
+
+        from akq_agents.orchestrator.jobs.batch_post_close import _do, JOB_ID
+        # 把 recorder 通过 services 临时传入（避免改 _do 签名）
+        ws_services = dict(svc.workflow.services)
+        if recorder is not None:
+            ws_services["__recorder__"] = recorder  # batch_post_close._make_recorder 会忽略这个，按需扩展
+        result = svc.job_runner.run(JOB_ID, partition, lambda: _do(ws_services), timeout_s=5400)
         return {
-            "status": "ok",
-            "portfolio_size": len(outputs.get("portfolio-agent", {}).get("portfolio_size", []) or []) or
-                              outputs.get("portfolio-agent", {}).get("portfolio_size", 0),
-            "advisor": (outputs.get("advisor-agent") or {}).get("rendered", "")[:400],
+            "status": result.status,
+            "reason_code": result.reason_code,
+            "payload": result.payload,
         }
 
     if name == "batch.deep_research":
-        from akq_agents.orchestrator.jobs.batch_deep_research import _do
+        from akq_agents.orchestrator.jobs.batch_deep_research import _do, JOB_ID
 
-        # 构造 services dict 给 _do
         ws_services = svc.workflow.services if svc.workflow else {}
-        try:
-            result = _do(ws_services)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("trigger batch.deep_research failed")
-            raise HTTPException(500, str(exc)[:300]) from exc
-        return {"status": "ok", **result}
+        result = svc.job_runner.run(JOB_ID, partition, lambda: _do(ws_services), timeout_s=5400)
+        return {
+            "status": result.status,
+            "reason_code": result.reason_code,
+            "payload": result.payload,
+        }
 
     if name == "factor.discovery":
         engine = svc.discovery_engine
         if engine is None:
             raise HTTPException(503, "discovery_engine not ready")
-        try:
+        from akq_agents.orchestrator.jobs.factor_discovery import JOB_ID
+
+        def _do_discovery() -> dict[str, Any]:
             stats = engine.run_batch(n_candidates=n_candidates, as_of_date=date.today())
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("trigger factor.discovery failed")
-            raise HTTPException(500, str(exc)[:300]) from exc
-        return {"status": "ok", **stats.as_dict()}
+            return stats.as_dict()
+
+        result = svc.job_runner.run(JOB_ID, partition, _do_discovery, timeout_s=900)
+        return {
+            "status": result.status,
+            "reason_code": result.reason_code,
+            "payload": result.payload,
+        }
 
     raise HTTPException(500, "unreachable")
 

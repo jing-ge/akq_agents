@@ -13,7 +13,7 @@ from akq_agents.services.factors.proposal_store import (
 
 @pytest.fixture
 def container_with_brainstorm(assets):
-    """扩展 conftest 的 container：加 proposal_store + workflow.services."""
+    """扩展 conftest 的 container：加 proposal_store + workflow.services + job_runner."""
     from akq_agents.web.deps import get_services
 
     container = assets["container"]
@@ -21,7 +21,7 @@ def container_with_brainstorm(assets):
     # 真实 proposal_store（共用同一份 meta.db）
     store = FactorProposalStore(db)
     container.proposal_store = store
-    # mock workflow.services（job_runner + brainstormer 让 endpoint 能找到）
+    # mock workflow.services（brainstormer 让 endpoint 能找到）
     fake_brainstormer = MagicMock()
     fake_brainstormer.run.return_value = {
         "requested": 5,
@@ -32,21 +32,23 @@ def container_with_brainstorm(assets):
     }
     fake_runner = MagicMock()
 
-    # job_runner.run(job_id, partition, fn, timeout_s) → 直接执行 fn 并把返回值塞到一个 mock JobRunResult
+    # C5: job_runner.run(job_id, partition, fn, timeout_s) → 直接执行 fn 并塞到 mock JobRunResult
     def _run(job_id, partition, fn, *, timeout_s):
         result = MagicMock()
-        result.status = "success"
+        result.status = "ok"  # JobRunResult 用 'ok' 不是 'success'
+        result.reason_code = None
         result.payload = fn()  # 调 fn() 才能让 brainstormer.run 真被调
         return result
 
     fake_runner.run.side_effect = _run
+    # C5: job_runner 现在是 ServiceContainer 顶层字段
+    container.job_runner = fake_runner
     container.workflow = MagicMock()
     container.workflow.services = {
         "llm_factor_brainstormer": fake_brainstormer,
-        "job_runner": fake_runner,
         "factor_proposal_store": store,
     }
-    return {"container": container, "store": store, "brainstormer": fake_brainstormer}
+    return {"container": container, "store": store, "brainstormer": fake_brainstormer, "runner": fake_runner}
 
 
 
