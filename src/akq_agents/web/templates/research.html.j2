@@ -35,6 +35,9 @@
     假定本金 ¥100,000。
     <a href="#" onclick="document.getElementById('holdings-editor').scrollIntoView({behavior:'smooth'}); return false;">校准我的实际持仓 ↓</a>
   </p>
+  <div class="toolbar" style="gap:6px; margin-bottom:8px;">
+    <button class="primary" onclick="markAllExecuted()" title="把今日 trade_list 里所有 BUY/SELL 一键标记已执行 + 更新 holdings (HOLD 不动)">全部执行</button>
+  </div>
   <div id="trade-list-summary" class="small"></div>
   <div id="trade-list-table" style="margin-top:10px; max-height:540px; overflow:auto"></div>
 </div>
@@ -752,6 +755,22 @@ async function markExecuted(symbol, date, btn) {
     await fetch(`/api/trading/today-list/${symbol}/mark-executed?date=${date}`, {method:'POST'});
     btn.outerHTML = '✓ 已执行';
   } catch (e) { btn.disabled = false; btn.textContent = '标记完成'; }
+}
+
+async function markAllExecuted() {
+  if (!confirm('确认把今日 trade_list 里所有 BUY/SELL 全部标记已执行？这会更新 holdings 表。')) return;
+  try {
+    const r = await fetch('/api/trading/today-list/mark-all-executed', {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) {
+      alert('失败：' + (d.detail || JSON.stringify(d)));
+      return;
+    }
+    alert(`✅ 已执行 ${d.executed_count} 条`);
+    location.reload();
+  } catch (e) {
+    alert('网络错误：' + e.message);
+  }
 }
 
 async function loadHoldings() {

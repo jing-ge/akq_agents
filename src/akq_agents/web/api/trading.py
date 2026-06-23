@@ -203,15 +203,39 @@ async def today_trade_list(date: str | None = None) -> dict[str, Any]:
 
 @router.post("/today-list/{symbol}/mark-executed")
 async def mark_executed(symbol: str, date: str | None = None) -> dict[str, Any]:
-    """标记某条交易已执行（点击 ✓ 时调用）。"""
+    """标记某条交易已执行 + 同步 holdings。"""
     svc = get_services()
     workflow = svc.workflow
-    store = workflow.services.get("trade_list_store") if workflow else None
-    if store is None:
+    tl_store = workflow.services.get("trade_list_store") if workflow else None
+    h_store = workflow.services.get("holdings_store") if workflow else None
+    if tl_store is None:
         raise HTTPException(503, "trade_list_store not ready")
     target_date = _date.fromisoformat(date) if date else _date.today()
-    store.mark_executed(target_date, symbol)
-    return {"status": "ok"}
+    tl_store.mark_executed(target_date, symbol, holdings_store=h_store)
+    return {"status": "ok", "holdings_synced": h_store is not None}
+
+
+@router.post("/today-list/mark-all-executed")
+async def mark_all_executed(date: str | None = None) -> dict[str, Any]:
+    """一键执行: 把指定日期 trade_list 里所有 BUY/SELL 全部 mark executed + 同步 holdings。"""
+    svc = get_services()
+    workflow = svc.workflow
+    tl_store = workflow.services.get("trade_list_store") if workflow else None
+    h_store = workflow.services.get("holdings_store") if workflow else None
+    if tl_store is None:
+        raise HTTPException(503, "trade_list_store not ready")
+    target_date = _date.fromisoformat(date) if date else _date.today()
+    items = tl_store.list_cohort(target_date)
+    n_executed = 0
+    for it in items:
+        action = it.get("action")
+        if action not in ("BUY", "SELL"):
+            continue
+        if it.get("executed"):
+            continue
+        tl_store.mark_executed(target_date, it["symbol"], holdings_store=h_store)
+        n_executed += 1
+    return {"status": "ok", "executed_count": n_executed}
 
 
 @router.get("/dates")

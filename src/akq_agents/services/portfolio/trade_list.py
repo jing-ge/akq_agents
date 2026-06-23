@@ -250,13 +250,34 @@ class TradeListStore:
             ).fetchall()
         return [r[0] for r in rows]
 
-    def mark_executed(self, cohort_date: date, symbol: str) -> None:
+    def mark_executed(
+        self,
+        cohort_date: date,
+        symbol: str,
+        *,
+        holdings_store: HoldingsStore | None = None,
+    ) -> None:
+        """标记某条已执行；可选同时把 target_shares 同步到 holdings。"""
+        target_shares: float | None = None
         with open_meta_db(self._db) as conn:
+            if holdings_store is not None:
+                row = conn.execute(
+                    "SELECT target_shares FROM trade_list_cohorts WHERE cohort_date=? AND symbol=?",
+                    (cohort_date.isoformat(), str(symbol)),
+                ).fetchone()
+                if row is not None:
+                    target_shares = float(row[0])
             conn.execute(
                 "UPDATE trade_list_cohorts SET executed=1 WHERE cohort_date=? AND symbol=?",
                 (cohort_date.isoformat(), str(symbol)),
             )
             conn.commit()
+        if holdings_store is not None and target_shares is not None:
+            holdings_store.upsert(
+                str(symbol),
+                shares=target_shares,
+                note=f"executed cohort {cohort_date.isoformat()}",
+            )
 
 
 def generate_trade_list(
