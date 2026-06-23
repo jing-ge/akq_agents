@@ -236,6 +236,7 @@ class DiscoveryEngine:
         space: FactorSpace | None = None,
         thresholds: DiscoveryThresholds | None = None,
         random_seed: int | None = None,
+        state_store: Any = None,
     ) -> None:
         self.repo = repository
         self.registry = registry
@@ -244,6 +245,22 @@ class DiscoveryEngine:
         self.space = space or FactorSpace()
         self.th = thresholds or DiscoveryThresholds()
         self._rng = random.Random(random_seed)
+        # I5: 可选 SchedulerStateStore，让 silent fallback 能写 events 到 /ops 看板
+        self._state_store = state_store
+
+    def _write_event_safe(self, kind: str, error_msg: str) -> None:
+        """I5: silent fallback 路径补 events 记账。"""
+        if self._state_store is None:
+            return
+        try:
+            self._state_store.write_event(
+                level="warning",
+                kind=kind,
+                source="discovery_engine",
+                payload={"error": error_msg[:300]},
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------
 
@@ -353,7 +370,11 @@ class DiscoveryEngine:
             active_factor_history[name] = factor_history
 
         # 4) 处理已存在的 shadow 因子：检查 OOS 是否满足 promote 条件
-        self._promote_shadows(stats=stats, as_of_date=as_of_date)
+        # I5: silent fallback 整体包一层，失败时写 events（不影响主流程）
+        try:
+            self._promote_shadows(stats=stats, as_of_date=as_of_date)
+        except Exception as exc:  # noqa: BLE001
+            self._write_event_safe("factor.promote_shadows_failed", str(exc))
 
         # P1-4: DSL 空间耗尽告警 —— 如果 duplicates 占比超过 80%，提示扩 DSL
         if stats.proposed > 0:
@@ -554,7 +575,8 @@ class DiscoveryEngine:
         # 准备共享数据（一次性拉）
         try:
             ohlcv, _ = self._prepare_data(as_of_date)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            self._write_event_safe("factor.discovery.prepare_data_failed", str(exc))
             return
         if ohlcv.empty:
             return

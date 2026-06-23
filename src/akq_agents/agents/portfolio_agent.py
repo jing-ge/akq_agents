@@ -185,6 +185,9 @@ class PortfolioAgent(BaseAgent):
                 backtester.rebuild_full_history()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("portfolio_backtester rebuild failed: %s", exc)
+                self._write_event_safe(
+                    "portfolio.backtester.rebuild_failed", str(exc)
+                )
 
         # P0-2: Paper Trading 冻结当日 cohort + 估值所有历史 cohort（前向证据）
         # today_close 在 paper trading 和 trade list 都用，提前算好
@@ -241,6 +244,7 @@ class PortfolioAgent(BaseAgent):
                 paper.update_track_perf(today, today_close, cohort_close_lookup=_cohort_lookup)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("paper_trading update failed: %s", exc)
+                self._write_event_safe("paper_trading.update_failed", str(exc))
 
         # P0-1: 生成今日交易清单（权重 → BUY/SELL/HOLD 具体股数）
         try:
@@ -254,6 +258,7 @@ class PortfolioAgent(BaseAgent):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("trade_list generation failed: %s", exc)
+            self._write_event_safe("trade_list.generation_failed", str(exc))
 
         # Compute turnover
         turnover = self._compute_turnover(weights, prev_weights)
@@ -344,6 +349,24 @@ class PortfolioAgent(BaseAgent):
         # 每只 symbol 取最新一天的 close
         latest = df.groupby("symbol").tail(1)
         return {str(r["symbol"]): float(r["close"]) for _, r in latest.iterrows()}
+
+    def _write_event_safe(self, kind: str, error_msg: str) -> None:
+        """I5: silent fallback 路径补 events 记账，让 /ops 看板能感知盲区。
+
+        events 写失败不影响主流程（write_event 自身已 try/except 兜底）。
+        """
+        store = self._services.get("scheduler_state_store")
+        if store is None:
+            return
+        try:
+            store.write_event(
+                level="warning",
+                kind=kind,
+                source="portfolio_agent",
+                payload={"error": error_msg[:300]},
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     @staticmethod
     def _compute_turnover(weights: pd.Series, prev_weights: pd.Series) -> float:

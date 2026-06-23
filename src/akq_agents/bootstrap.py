@@ -131,6 +131,7 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             registry=registry,
             evaluator=evaluator,
             proposal_store=proposal_store,
+            state_store=services["scheduler_state_store"],
         )
 
         # P4 LLM 组件（仅在 data_repo 就绪时装配；缺 llm.yaml 也用默认配置）
