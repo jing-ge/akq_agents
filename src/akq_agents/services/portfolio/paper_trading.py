@@ -192,7 +192,15 @@ class PaperTradingStore:
             for sym, _w, fz_p, _cap, shares in holdings:
                 cur_p = latest_close.get(str(sym))
                 if cur_p is None or cur_p <= 0:
-                    cur_p = float(fz_p)
+                    # C4 fix: 与 freeze_today_cohort 的 fallback_lookup 路径对称 —
+                    # 优先查最近有效 close（停牌期间走最近一日 close 而非建仓价），
+                    # 最后才退回 frozen_price 兜底。
+                    if cohort_close_lookup is not None:
+                        looked = cohort_close_lookup(str(sym), as_of_date)
+                        if looked is not None and looked > 0:
+                            cur_p = float(looked)
+                    if cur_p is None or cur_p <= 0:
+                        cur_p = float(fz_p)
                 total_value += float(shares) * float(cur_p)
 
             return_pct = (total_value - assumed_capital) / assumed_capital if assumed_capital > 0 else 0.0
