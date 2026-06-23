@@ -128,6 +128,108 @@
   <div id="attribution-chart" class="chart"></div>
 </div>
 
+<!-- B2 (M15): 今日异动诊断 -->
+<div class="card">
+  <h2>今日异动诊断
+    <span class="small">个股贡献 bps + 因子贡献分解</span>
+  </h2>
+  <div class="toolbar">
+    <label>日期：<input type="date" id="attr-date" /></label>
+    <button class="primary" onclick="loadDailyAttribution()">分析</button>
+    <span id="attr-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
+  </div>
+  <div id="daily-attr-output"></div>
+</div>
+
+<script>
+async function loadDailyAttribution() {
+  const di = document.getElementById('attr-date');
+  const date = di.value || new Date().toISOString().slice(0, 10);
+  const status = document.getElementById('attr-status');
+  const out = document.getElementById('daily-attr-output');
+  status.textContent = '分析中...';
+  out.innerHTML = '';
+  try {
+    const r = await fetch(`/api/research/daily-attribution?date=${date}`);
+    if (!r.ok) {
+      const d = await r.json();
+      out.innerHTML = '<div class="small status-error">' + (d.detail || JSON.stringify(d)) + '</div>';
+      status.textContent = '';
+      return;
+    }
+    const d = await r.json();
+    out.innerHTML = renderDailyAttr(d);
+    status.textContent = `${d.n_with_return || 0}/${d.n_holdings} 只票有完整收益数据`;
+  } catch (e) {
+    out.innerHTML = '<div class="small status-error">网络错误：' + e.message + '</div>';
+    status.textContent = '';
+  }
+}
+
+function renderDailyAttr(d) {
+  let html = '<div class="grid grid-2" style="margin-top:8px">';
+
+  html += '<div><h3 class="small">📈 Top 5 贡献（涨）</h3><table class="data-table"><thead><tr><th>票</th><th>权重</th><th>涨跌</th><th>贡献 bps</th></tr></thead><tbody>';
+  if ((d.top_contributors || []).length === 0) {
+    html += '<tr><td colspan="4" class="small" style="color:var(--fg-mute)">暂无</td></tr>';
+  } else {
+    for (const r of d.top_contributors) {
+      html += `<tr>
+        <td><code>${r.symbol}</code> ${escapeHtml(r.name || '')}</td>
+        <td>${(r.prev_weight * 100).toFixed(2)}%</td>
+        <td class="status-ok">${(r.ret_pct * 100).toFixed(2)}%</td>
+        <td class="status-ok"><b>+${r.contrib_bps.toFixed(1)}</b></td>
+      </tr>`;
+    }
+  }
+  html += '</tbody></table></div>';
+
+  html += '<div><h3 class="small">📉 Top 5 拖累（跌）</h3><table class="data-table"><thead><tr><th>票</th><th>权重</th><th>涨跌</th><th>贡献 bps</th></tr></thead><tbody>';
+  if ((d.top_draggers || []).length === 0) {
+    html += '<tr><td colspan="4" class="small" style="color:var(--fg-mute)">暂无</td></tr>';
+  } else {
+    for (const r of d.top_draggers) {
+      html += `<tr>
+        <td><code>${r.symbol}</code> ${escapeHtml(r.name || '')}</td>
+        <td>${(r.prev_weight * 100).toFixed(2)}%</td>
+        <td class="status-error">${(r.ret_pct * 100).toFixed(2)}%</td>
+        <td class="status-error"><b>${r.contrib_bps.toFixed(1)}</b></td>
+      </tr>`;
+    }
+  }
+  html += '</tbody></table></div>';
+  html += '</div>';
+
+  html += '<h3 class="small" style="margin-top:16px;">🎯 因子贡献（汇总）</h3><table class="data-table"><thead><tr><th>因子</th><th>累计贡献</th></tr></thead><tbody>';
+  if ((d.factor_contribution || []).length === 0) {
+    html += '<tr><td colspan="2" class="small" style="color:var(--fg-mute)">暂无</td></tr>';
+  } else {
+    for (const f of d.factor_contribution) {
+      const cls = f.contribution >= 0 ? 'status-ok' : 'status-error';
+      const sign = f.contribution >= 0 ? '+' : '';
+      html += `<tr><td>${escapeHtml(f.name)}</td><td class="${cls}">${sign}${f.contribution.toFixed(3)}</td></tr>`;
+    }
+  }
+  html += '</tbody></table>';
+
+  return html;
+}
+
+if (typeof escapeHtml === 'undefined') {
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+}
+
+window.addEventListener('load', () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const di = document.getElementById('attr-date');
+  if (di && !di.value) di.value = today;
+});
+</script>
+
 <!-- M2 自动因子发现流水 -->
 <div class="card">
   <h2>自动发现因子流水

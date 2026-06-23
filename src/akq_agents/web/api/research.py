@@ -346,3 +346,111 @@ def _shadow_verdict(oos_obs, oos_ir):
     if oos_obs >= 60 and abs(oos_ir) < 0.10:
         return "should_demote"
     return "edge"
+
+
+@router.get("/daily-attribution")
+async def daily_attribution(date: str = Query(..., description="YYYY-MM-DD")) -> dict[str, Any]:
+    """当日组合 PnL 分解：top 5 涨/跌票 + 因子贡献排名。
+
+    数据源:
+    - portfolio_snapshots (当日 weight + top_factors_json)
+    - ohlcv parquet (今日 close + 前一交易日 close → 个股日收益)
+
+    返回字段:
+    - top_contributors: 涨幅 top 5 票（按 prev_weight × ret 排序）
+    - top_draggers: 跌幅 top 5 票
+    - factor_contribution: 按 top_factors_json 聚合的因子贡献排名 (top 8)
+    """
+    svc: ServiceContainer = get_services()
+    if svc.portfolio_store is None or svc.repo is None:
+        raise HTTPException(503, "stores not ready")
+    try:
+        d = _date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(400, f"invalid date: {date!r}")  # noqa: B904
+
+    rows = svc.portfolio_store.read_snapshot(d)
+    if not rows:
+        raise HTTPException(404, {"error": "no_snapshot", "date": date})
+
+    today_close, prev_close = _load_close_pair(svc.repo, [r.symbol for r in rows], d)
+
+    contribs = []
+    for r in rows:
+        c_t = today_close.get(r.symbol)
+        c_p = prev_close.get(r.symbol)
+        prev_w = float(r.prev_weight or 0.0)
+        if c_t is None or c_p is None or c_p <= 0 or prev_w <= 0:
+            continue
+        ret = c_t / c_p - 1
+        bps = ret * prev_w * 10000
+        contribs.append(
+            {
+                "symbol": r.symbol,
+                "name": r.name,
+                "industry": r.industry,
+                "prev_weight": prev_w,
+                "ret_pct": ret,
+                "contrib_bps": bps,
+            }
+        )
+    contribs.sort(key=lambda x: x["contrib_bps"], reverse=True)
+
+    factor_total: dict[str, float] = {}
+    for r in rows:
+        if not r.top_factors_json:
+            continue
+        try:
+            top_factors = json.loads(r.top_factors_json)
+        except Exception:  # noqa: BLE001
+            continue
+        for f in top_factors:
+            name = f.get("name")
+            c = f.get("contribution", 0.0)
+            if name is None or c is None:
+                continue
+            factor_total[name] = factor_total.get(name, 0.0) + float(c)
+    factor_rank = sorted(factor_total.items(), key=lambda kv: abs(kv[1]), reverse=True)[:8]
+
+    return {
+        "date": date,
+        "n_holdings": len(rows),
+        "n_with_return": len(contribs),
+        "top_contributors": contribs[:5],
+        "top_draggers": list(reversed(contribs[-5:])),
+        "factor_contribution": [{"name": n, "contribution": v} for n, v in factor_rank],
+    }
+
+
+def _load_close_pair(repo, symbols, d):
+    """从 ohlcv parquet 拉 (today_close, prev_trading_day_close) 两个 dict。"""
+    from datetime import timedelta as _td
+
+    import pyarrow.dataset as ds
+
+    ohlcv_dir = getattr(repo, "_ohlcv_dir", None)
+    if ohlcv_dir is None or not ohlcv_dir.exists():
+        return {}, {}
+    start = (d - _td(days=10)).isoformat()
+    end = d.isoformat()
+    dataset = ds.dataset(ohlcv_dir, format="parquet", partitioning="hive")
+    table = dataset.to_table(
+        filter=(ds.field("date") >= start)
+        & (ds.field("date") <= end)
+        & ds.field("symbol").isin(list(symbols)),
+        columns=["date", "symbol", "close"],
+    )
+    df = table.to_pandas()
+    if df.empty:
+        return {}, {}
+    df["date"] = df["date"].astype(str)
+    today_str = d.isoformat()
+    today_df = df[df["date"] == today_str]
+    today = {str(r["symbol"]): float(r["close"]) for _, r in today_df.iterrows()}
+    prev_df = df[df["date"] < today_str]
+    if prev_df.empty:
+        return today, {}
+    latest_prev = prev_df["date"].max()
+    prev_rows = prev_df[prev_df["date"] == latest_prev]
+    prev = {str(r["symbol"]): float(r["close"]) for _, r in prev_rows.iterrows()}
+    return today, prev

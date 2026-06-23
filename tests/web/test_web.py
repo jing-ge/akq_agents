@@ -196,6 +196,56 @@ def test_research_portfolio_attribution_aggregates(client, assets) -> None:
     assert d["portfolio_contribution"]["momentum_5"] == pytest.approx(0.5, abs=1e-9)
 
 
+def test_research_daily_attribution_returns_contributors_draggers_and_factors(client, assets, tmp_path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    store = assets["container"].portfolio_store
+    store.write(
+        as_of_date=date(2026, 6, 23),
+        weights=pd.Series({"AAA": 0.6, "BBB": 0.4}),
+        prev_weights=pd.Series({"AAA": 0.5, "BBB": 0.3}),
+        composite_score=pd.Series({"AAA": 1.2, "BBB": 0.8}),
+        attribution=AttributionResult(
+            as_of_date="2026-06-23",
+            portfolio_contribution={},
+            per_stock={
+                "AAA": [{"name": "quality", "contribution": 0.6}],
+                "BBB": [{"name": "quality", "contribution": -0.1}, {"name": "value", "contribution": -0.4}],
+            },
+            summary="",
+        ),
+        name_map={"AAA": "Alpha", "BBB": "Beta"},
+        industry_map={"AAA": "Tech", "BBB": "Bank"},
+    )
+
+    ohlcv_dir = tmp_path / "ohlcv"
+    (ohlcv_dir / "date=2026-06-20").mkdir(parents=True)
+    (ohlcv_dir / "date=2026-06-23").mkdir(parents=True)
+    pq.write_table(
+        pa.table({"symbol": ["AAA", "BBB"], "close": [100.0, 100.0]}),
+        ohlcv_dir / "date=2026-06-20" / "part-0.parquet",
+    )
+    pq.write_table(
+        pa.table({"symbol": ["AAA", "BBB"], "close": [110.0, 90.0]}),
+        ohlcv_dir / "date=2026-06-23" / "part-0.parquet",
+    )
+    assets["container"].repo._ohlcv_dir = ohlcv_dir
+
+    r = client.get("/api/research/daily-attribution?date=2026-06-23")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["date"] == "2026-06-23"
+    assert d["n_holdings"] == 2
+    assert d["n_with_return"] == 2
+    assert [x["symbol"] for x in d["top_contributors"]] == ["AAA", "BBB"]
+    assert [x["symbol"] for x in d["top_draggers"]] == ["BBB", "AAA"]
+    assert d["top_contributors"][0]["contrib_bps"] == pytest.approx(500.0, abs=1e-9)
+    assert d["top_draggers"][0]["contrib_bps"] == pytest.approx(-300.0, abs=1e-9)
+    assert d["factor_contribution"][0]["name"] == "quality"
+    assert d["factor_contribution"][0]["contribution"] == pytest.approx(0.5, abs=1e-9)
+
+
 # =============================================================
 # Chat API
 # =============================================================
