@@ -57,3 +57,108 @@ def test_build_state_summary_includes_dsl_and_stats(tmp_path: Path) -> None:
     assert "momentum_20" in md
     assert "auto_zscore_close_20_long_a1b2" in md
     assert 500 < len(md) < 8000
+
+
+from akq_agents.services.factors.llm_brainstorm import (
+    LLMFactorBrainstormer, _validate_recipe, _recipe_to_name,
+)
+
+
+def test_validate_recipe_accepts_valid() -> None:
+    assert _validate_recipe({
+        "base": "close", "op": "pct_change", "window": 5, "direction": "long",
+    }) is None
+
+
+def test_validate_recipe_rejects_unknown_op() -> None:
+    err = _validate_recipe({
+        "base": "close", "op": "ema",
+        "window": 5, "direction": "long",
+    })
+    assert err is not None and "op" in err
+
+
+def test_validate_recipe_rejects_unknown_window() -> None:
+    err = _validate_recipe({
+        "base": "close", "op": "pct_change", "window": 7,
+        "direction": "long",
+    })
+    assert err is not None and "window" in err
+
+
+def test_recipe_to_name_is_deterministic() -> None:
+    r = {"base": "close", "op": "zscore", "window": 30, "direction": "long"}
+    assert _recipe_to_name(r) == _recipe_to_name(r)
+    assert _recipe_to_name(r).startswith("llm_")
+
+
+def test_brainstormer_writes_valid_suggestions_to_store(tmp_path: Path) -> None:
+    llm_client = MagicMock()
+    llm_resp = MagicMock()
+    llm_resp.text = '''
+    {"suggestions": [
+        {"recipe": {"base":"close","op":"zscore","window":30,"direction":"long"},
+         "rationale": "中期 zscore 动量"},
+        {"recipe": {"base":"close","op":"ema","window":10,"direction":"long"},
+         "rationale": "新算子（不合法）"}
+    ]}
+    '''
+    llm_resp.prompt_tokens = 100
+    llm_resp.completion_tokens = 50
+    llm_client.chat.return_value = llm_resp
+
+    store = FactorProposalStore(tmp_path / "meta.db")
+    registry = MagicMock(list_all=MagicMock(return_value=[]))
+    evaluator = MagicMock(get_latest=MagicMock(return_value=None))
+
+    brainstormer = LLMFactorBrainstormer(
+        llm_client=llm_client,
+        proposal_store=store,
+        registry=registry,
+        evaluator=evaluator,
+        model="test-model",
+        max_tokens=2000,
+        temperature=1.0,
+    )
+
+    stats = brainstormer.run(n=2)
+
+    assert stats["requested"] == 2
+    assert stats["accepted_into_review"] == 1
+    assert stats["invalid"] == 1
+
+    rows = store.list_recent(status="llm_suggested")
+    assert len(rows) == 1
+    assert "zscore" in rows[0].recipe_json
+    assert "中期 zscore 动量" in (rows[0].reason or "")
+
+
+def test_brainstormer_skips_duplicate_recipe(tmp_path: Path) -> None:
+    """同一 recipe 第二次提议应被识别为重复跳过。"""
+    store = FactorProposalStore(tmp_path / "meta.db")
+    store.upsert(FactorProposal(
+        factor_name=_recipe_to_name({"base":"close","op":"zscore","window":30,"direction":"long"}),
+        recipe_json='{"base":"close","op":"zscore","window":30,"direction":"long"}',
+        direction="long", status="rejected",
+        ic_mean=None, ic_std=None, ir=None, t_stat=None, max_abs_corr=None,
+        reason="too low IR", created_at=now_iso(), evaluated_at=now_iso(),
+    ))
+
+    llm_client = MagicMock()
+    llm_resp = MagicMock(
+        text='{"suggestions":[{"recipe":{"base":"close","op":"zscore","window":30,"direction":"long"},"rationale":"x"}]}',
+        prompt_tokens=10, completion_tokens=10,
+    )
+    llm_client.chat.return_value = llm_resp
+
+    registry = MagicMock(list_all=MagicMock(return_value=[]))
+    evaluator = MagicMock(get_latest=MagicMock(return_value=None))
+
+    brainstormer = LLMFactorBrainstormer(
+        llm_client=llm_client, proposal_store=store,
+        registry=registry, evaluator=evaluator,
+        model="test-model", max_tokens=2000, temperature=1.0,
+    )
+    stats = brainstormer.run(n=1)
+    assert stats["duplicate"] == 1
+    assert stats["accepted_into_review"] == 0

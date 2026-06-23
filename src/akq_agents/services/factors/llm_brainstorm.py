@@ -6,14 +6,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
+from pathlib import Path
 from typing import Any
 
 from akq_agents.services.factors.discovery import _BASES, _OPS, _WINDOWS, _DIRECTIONS
-from akq_agents.services.factors.proposal_store import FactorProposalStore
+from akq_agents.services.factors.proposal_store import (
+    FactorProposal, FactorProposalStore, now_iso, recipe_to_json,
+)
 
 logger = logging.getLogger(__name__)
+
+_PROMPT_PATH = Path(__file__).resolve().parents[2] / "agents" / "prompts" / "factor_brainstorm.md"
 
 
 def build_state_summary(
@@ -99,3 +106,125 @@ def build_state_summary(
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _validate_recipe(recipe: dict) -> str | None:
+    """返回错误信息字符串；None 表示合法。"""
+    if not isinstance(recipe, dict):
+        return "recipe must be dict"
+    for key in ("base", "op", "window", "direction"):
+        if key not in recipe:
+            return f"missing key: {key}"
+    if recipe["base"] not in _BASES:
+        return f"unknown base: {recipe['base']!r} (allowed: {list(_BASES.keys())})"
+    if recipe["op"] not in _OPS:
+        return f"unknown op: {recipe['op']!r} (allowed: {list(_OPS)})"
+    if recipe["window"] not in _WINDOWS:
+        return f"unknown window: {recipe['window']!r} (allowed: {list(_WINDOWS)})"
+    if recipe["direction"] not in _DIRECTIONS:
+        return f"unknown direction: {recipe['direction']!r}"
+    return None
+
+
+def _recipe_to_name(recipe: dict) -> str:
+    """生成稳定的因子名：llm_{op}_{base}_{window}_{direction}_{hash6}。"""
+    canonical = recipe_to_json(recipe)
+    h = hashlib.md5(canonical.encode()).hexdigest()[:6]
+    return f"llm_{recipe['op']}_{recipe['base']}_{recipe['window']}_{recipe['direction']}_{h}"
+
+
+def _parse_llm_response(text: str) -> list[dict]:
+    """从 LLM 返回里提取 suggestions 列表。
+
+    宽容点：允许 ```json ... ``` fence、前后有多余文字。
+    """
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    raw = m.group(1) if m else text
+    if not raw.lstrip().startswith("{"):
+        i = raw.find("{")
+        j = raw.rfind("}")
+        if i < 0 or j < 0:
+            raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
+        raw = raw[i:j + 1]
+    data = json.loads(raw)
+    suggestions = data.get("suggestions")
+    if not isinstance(suggestions, list):
+        raise ValueError(f"LLM output missing 'suggestions' list: keys={list(data.keys())}")
+    return suggestions
+
+
+class LLMFactorBrainstormer:
+    """让 LLM 提因子，写入 factor_proposals 为 llm_suggested 等人工审核。"""
+
+    def __init__(
+        self,
+        *,
+        llm_client: Any,
+        proposal_store: FactorProposalStore,
+        registry: Any,
+        evaluator: Any,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+        timeout_s: int = 60,
+    ) -> None:
+        self._llm = llm_client
+        self._store = proposal_store
+        self._registry = registry
+        self._evaluator = evaluator
+        self._model = model
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._timeout_s = timeout_s
+        self._system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
+
+    def run(self, *, n: int) -> dict[str, int]:
+        """执行一次 brainstorm，返回 stats。"""
+        context = build_state_summary(self._registry, self._evaluator, self._store)
+        user_msg = (
+            f"{context}\n\n---\n\n请给出 **{n}** 个新候选 recipe。"
+            f"严格 JSON 输出，no extra text。"
+        )
+
+        stats = {"requested": n, "accepted_into_review": 0, "invalid": 0, "duplicate": 0, "errors": 0}
+        try:
+            resp = self._llm.chat(
+                model=self._model,
+                system=self._system_prompt,
+                messages=[{"role": "user", "content": user_msg}],
+                tools=None,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+                timeout_s=self._timeout_s,
+            )
+            suggestions = _parse_llm_response(resp.text)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("LLM brainstorm failed: %s", exc)
+            stats["errors"] += 1
+            return stats
+
+        for s in suggestions[:n]:
+            recipe = s.get("recipe") if isinstance(s, dict) else None
+            rationale = s.get("rationale", "") if isinstance(s, dict) else ""
+            err = _validate_recipe(recipe or {})
+            if err is not None:
+                logger.info("invalid LLM recipe: %s", err)
+                stats["invalid"] += 1
+                continue
+            assert isinstance(recipe, dict)
+            name = _recipe_to_name(recipe)
+            if self._store.exists(name):
+                stats["duplicate"] += 1
+                continue
+            self._store.upsert(FactorProposal(
+                factor_name=name,
+                recipe_json=recipe_to_json(recipe),
+                direction=recipe["direction"],
+                status="llm_suggested",
+                ic_mean=None, ic_std=None, ir=None, t_stat=None, max_abs_corr=None,
+                reason=f"LLM suggested: {rationale[:300]}",
+                created_at=now_iso(),
+                evaluated_at=None,
+            ))
+            stats["accepted_into_review"] += 1
+        return stats
