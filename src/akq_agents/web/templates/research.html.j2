@@ -153,6 +153,80 @@
   <div id="proposals-table" class="small"></div>
 </div>
 
+<!-- A2 (M15): Shadow 战况看板 -->
+<div class="card">
+  <h2>Shadow 因子战况
+    <span class="small">OOS 观察中，等待 promote / demote 判决</span>
+  </h2>
+  <p class="small" style="margin:-6px 0 10px;color:var(--fg-mute)">
+    阈值: OOS ≥ 20 天 + |IR| ≥ 0.15 → <b class="status-ok">promote</b>；
+    OOS ≥ 60 天 + |IR| < 0.10 → <b class="status-error">demote</b>；
+    20-60 天宽限期内不达标也继续观察。
+  </p>
+  <div class="toolbar">
+    <button onclick="loadShadowStats()">刷新列表</button>
+    <span id="shadow-stats-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
+  </div>
+  <div id="shadow-stats-table" class="small"></div>
+</div>
+
+<script>
+async function loadShadowStats() {
+  const tbl = document.getElementById('shadow-stats-table');
+  const status = document.getElementById('shadow-stats-status');
+  status.textContent = '加载中...';
+  try {
+    const r = await fetch('/api/research/factors/shadow-stats');
+    const d = await r.json();
+    tbl.innerHTML = renderShadowStats(d.shadows || []);
+    status.textContent = `${d.n || 0} 个 shadow 因子`;
+  } catch (e) {
+    tbl.innerHTML = '<div class="small status-error">加载失败：' + e.message + '</div>';
+    status.textContent = '';
+  }
+}
+
+function renderShadowStats(rows) {
+  if (!rows.length) {
+    return '<div class="small" style="color:var(--fg-mute);padding:8px 0;">暂无 shadow 因子。等 LLM brainstorm 或 auto discovery 产出新候选并被人工接受。</div>';
+  }
+  // 按 verdict 排序: should_demote 优先（最需要处理）→ promote_eligible → edge → no_data → evaluating
+  const order = {'should_demote': 0, 'promote_eligible': 1, 'edge': 2, 'no_data': 3, 'evaluating': 4};
+  rows.sort((a, b) => (order[a.verdict] ?? 5) - (order[b.verdict] ?? 5));
+
+  const verdictMap = {
+    'evaluating': '<span class="metric-dim">评估中（< 20d）</span>',
+    'no_data': '<span class="metric-warn">无 OOS 数据</span>',
+    'promote_eligible': '<span class="status-ok">达标 ✓</span>',
+    'edge': '<span class="metric-warn">边缘观察</span>',
+    'should_demote': '<span class="status-error">该 demote ⚠</span>',
+  };
+
+  let html = '<table class="data-table"><thead><tr>'
+    + '<th>因子名</th><th>来源</th><th>方向</th><th>观察(天)</th><th>OOS 观察次数</th><th>OOS IR</th><th>判定</th>'
+    + '</tr></thead><tbody>';
+  for (const s of rows) {
+    const ir = s.oos_ir != null ? s.oos_ir.toFixed(3) : '—';
+    const days = s.days_observed != null ? s.days_observed : '—';
+    const obs = s.oos_observations != null ? s.oos_observations : '—';
+    const source = s.is_llm ? '<span class="metric-dim">LLM</span>' : '<span class="metric-dim">auto</span>';
+    html += `<tr>
+      <td><code>${s.factor_name}</code></td>
+      <td>${source}</td>
+      <td>${s.direction}</td>
+      <td>${days}</td>
+      <td>${obs}</td>
+      <td>${ir}</td>
+      <td>${verdictMap[s.verdict] || s.verdict}</td>
+    </tr>`;
+  }
+  return html + '</tbody></table>';
+}
+
+// 页面加载时自动拉一次
+window.addEventListener('load', loadShadowStats);
+</script>
+
 <!-- M14: LLM 因子构建建议（人工审核） -->
 <div class="card">
   <h2>LLM 因子构建建议

@@ -290,3 +290,59 @@ def _proposal_store(svc: ServiceContainer):
     if svc.workflow is not None:
         return svc.workflow.services.get("factor_proposal_store")
     return None
+
+
+@router.get("/factors/shadow-stats")
+async def shadow_stats() -> dict[str, Any]:
+    """Shadow 因子战况：每个 shadow 已观察天数、当前 OOS IR、判定。
+
+    判定规则（与 DiscoveryThresholds 对齐）:
+    - evaluating: oos_observations < 20 (评估中)
+    - no_data: oos_observations >= 20 但 oos_ir is None
+    - promote_eligible: |oos_ir| >= 0.15
+    - should_demote: oos_observations >= 60 且 |oos_ir| < 0.10
+    - edge: 中间地带（继续观察）
+    """
+    from datetime import datetime as _dt
+
+    svc: ServiceContainer = get_services()
+    store = svc.proposal_store
+    if store is None:
+        return {"shadows": [], "n": 0}
+    rows = store.list_shadow()
+    now = _dt.now()
+    out = []
+    for r in rows:
+        days_observed = None
+        if r.shadow_started_at:
+            try:
+                shadow_d = _dt.fromisoformat(r.shadow_started_at)
+                days_observed = (now - shadow_d).days
+            except Exception:  # noqa: BLE001
+                days_observed = None
+        out.append({
+            "factor_name": r.factor_name,
+            "direction": r.direction,
+            "shadow_started_at": r.shadow_started_at,
+            "days_observed": days_observed,
+            "oos_observations": r.oos_observations,
+            "oos_ir": r.oos_ir,
+            "ir": r.ir,
+            "is_llm": r.factor_name.startswith("llm_"),
+            "verdict": _shadow_verdict(r.oos_observations, r.oos_ir),
+        })
+    return {"shadows": out, "n": len(out)}
+
+
+def _shadow_verdict(oos_obs, oos_ir):
+    """与 DiscoveryThresholds 阈值对齐 (shadow_min_oos_days=20, shadow_min_oos_ir=0.15,
+    shadow_max_days=60, shadow_min_keep_ir=0.10)。"""
+    if oos_obs is None or oos_obs < 20:
+        return "evaluating"
+    if oos_ir is None:
+        return "no_data"
+    if abs(oos_ir) >= 0.15:
+        return "promote_eligible"
+    if oos_obs >= 60 and abs(oos_ir) < 0.10:
+        return "should_demote"
+    return "edge"
