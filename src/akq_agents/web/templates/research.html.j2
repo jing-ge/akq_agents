@@ -258,6 +258,22 @@ window.addEventListener('load', () => {
   <div id="proposals-table" class="small"></div>
 </div>
 
+<!-- M16-2: 因子相关性热力图 -->
+<div class="card">
+  <h2>因子相关性矩阵
+    <span class="small">cross-section corr 当日截面 — 防止 LLM 推一堆 momentum 变体</span>
+  </h2>
+  <p class="small" style="margin:-6px 0 10px;color:var(--fg-mute)">
+    高度相关（|corr| ≥ 0.7）的因子提供的边际信息小；
+    DSL discovery 内置 max_abs_corr=0.7 阈值会自动拒绝这类候选。
+  </p>
+  <div class="toolbar">
+    <button class="primary" onclick="loadFactorCorrelation()">刷新</button>
+    <span id="corr-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
+  </div>
+  <div id="factor-corr-chart" style="height: 480px;"></div>
+</div>
+
 <!-- A2 (M15): Shadow 战况看板 -->
 <div class="card">
   <h2>Shadow 因子战况
@@ -276,6 +292,73 @@ window.addEventListener('load', () => {
 </div>
 
 <script>
+let _factorCorrChart = null;
+
+async function loadFactorCorrelation() {
+  const status = document.getElementById('corr-status');
+  const chartEl = document.getElementById('factor-corr-chart');
+  status.textContent = '计算中…（首次约 3-5 秒）';
+  try {
+    const r = await fetch('/api/research/factors/correlation');
+    if (!r.ok) {
+      const d = await r.json();
+      status.innerHTML = '<span class="status-error">❌ ' + (d.detail || JSON.stringify(d)) + '</span>';
+      return;
+    }
+    const d = await r.json();
+    if (!d.factors || d.factors.length === 0) {
+      status.textContent = '当前 registry 没有 active 因子';
+      return;
+    }
+    renderFactorCorrelation(chartEl, d);
+    status.textContent = `${d.as_of_date} · ${d.factors.length} 因子 · ${d.n_observations} 只票完整观测`;
+  } catch (e) {
+    status.innerHTML = '<span class="status-error">❌ 网络错误：' + e.message + '</span>';
+  }
+}
+
+function renderFactorCorrelation(el, d) {
+  const cells = [];
+  for (let i = 0; i < d.factors.length; i++) {
+    for (let j = 0; j < d.factors.length; j++) {
+      const v = d.matrix[i][j];
+      cells.push([j, i, (v == null) ? 0 : Number(v.toFixed(3))]);
+    }
+  }
+
+  if (_factorCorrChart) _factorCorrChart.dispose();
+  _factorCorrChart = echarts.init(el);
+  _factorCorrChart.setOption({
+    tooltip: {
+      formatter: (p) => {
+        const fx = d.factors[p.value[0]];
+        const fy = d.factors[p.value[1]];
+        return `${fx}<br>vs<br>${fy}<br><b>corr = ${p.value[2]}</b>`;
+      },
+    },
+    grid: {top: 60, left: 200, right: 50, bottom: 100},
+    xAxis: {
+      type: 'category', data: d.factors, splitArea: {show: true},
+      axisLabel: {rotate: 45, fontSize: 10, color: '#cbd5e1'},
+    },
+    yAxis: {
+      type: 'category', data: d.factors, splitArea: {show: true},
+      axisLabel: {fontSize: 10, color: '#cbd5e1'},
+    },
+    visualMap: {
+      min: -1, max: 1, calculable: true, orient: 'horizontal',
+      left: 'center', bottom: 10,
+      inRange: {color: ['#3b82f6', '#ffffff', '#ef4444']},
+      textStyle: {color: '#cbd5e1'},
+    },
+    series: [{
+      type: 'heatmap', data: cells,
+      label: {show: true, fontSize: 10, color: '#0f172a'},
+      emphasis: {itemStyle: {shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.3)'}},
+    }],
+  });
+}
+
 async function loadShadowStats() {
   const tbl = document.getElementById('shadow-stats-table');
   const status = document.getElementById('shadow-stats-status');
@@ -327,6 +410,10 @@ function renderShadowStats(rows) {
   }
   return html + '</tbody></table>';
 }
+
+window.addEventListener('load', () => {
+  setTimeout(loadFactorCorrelation, 1500);
+});
 
 // 页面加载时自动拉一次
 window.addEventListener('load', loadShadowStats);

@@ -454,3 +454,57 @@ def _load_close_pair(repo, symbols, d):
     prev_rows = prev_df[prev_df["date"] == latest_prev]
     prev = {str(r["symbol"]): float(r["close"]) for _, r in prev_rows.iterrows()}
     return today, prev
+
+
+@router.get("/factors/correlation")
+async def factors_correlation(
+    date: str | None = Query(None, description="YYYY-MM-DD，缺省用最近一日"),
+    lookback_days: int = Query(60, ge=20, le=180),
+) -> dict[str, Any]:
+    """返回 active 因子两两 cross-section 相关性矩阵。"""
+    from datetime import timedelta as _td
+
+    svc: ServiceContainer = get_services()
+    if svc.repo is None or svc.factor_registry is None:
+        raise HTTPException(503, "factor_registry or repo not ready")
+
+    factor_engine = svc.workflow.services.get("factor_engine") if svc.workflow else None
+    if factor_engine is None:
+        raise HTTPException(503, "factor_engine not available")
+
+    factors = svc.factor_registry.list_all()
+    if not factors:
+        return {"factors": [], "matrix": [], "n_observations": 0}
+
+    target_d = _date.fromisoformat(date) if date else _date.today()
+    max_lookback = max((f.lookback_days for f in factors), default=60)
+    start = target_d - _td(days=max(lookback_days, max_lookback * 2))
+
+    try:
+        universe = svc.repo.get_universe(target_d)
+    except Exception:  # noqa: BLE001
+        universe = None
+
+    symbols = list(universe.symbols) if universe is not None else []
+    if symbols:
+        ohlcv = svc.repo.get_ohlcv_loose(symbols, start, target_d)
+    else:
+        ohlcv = svc.repo.get_ohlcv_loose([], start, target_d)
+    if ohlcv.empty:
+        raise HTTPException(404, {"error": "no_ohlcv_data", "date": target_d.isoformat()})
+
+    df = factor_engine.compute(ohlcv, factors)
+    if df.empty:
+        return {"factors": [], "matrix": [], "n_observations": 0}
+
+    corr = df.corr()
+    factor_names = list(corr.columns)
+    matrix = corr.values.tolist()
+
+    return {
+        "as_of_date": target_d.isoformat(),
+        "factors": factor_names,
+        "matrix": matrix,
+        "n_observations": int(df.dropna(how="any").shape[0]),
+        "n_total_symbols": int(df.shape[0]),
+    }
