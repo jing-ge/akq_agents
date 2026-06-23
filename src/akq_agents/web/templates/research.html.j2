@@ -153,6 +153,107 @@
   <div id="proposals-table" class="small"></div>
 </div>
 
+<!-- M14: LLM 因子构建建议（人工审核） -->
+<div class="card">
+  <h2>LLM 因子构建建议
+    <span class="small">大模型提议 → 人工审核 → 通过则进入 OOS 观察</span>
+  </h2>
+  <p class="small" style="margin:-6px 0 10px;color:var(--fg-mute)">
+    每天 20:00 daemon 自动跑一次；也可以点按钮手动触发。
+    审核 <b class="status-ok">接受</b> → status='shadow'（下一轮 discovery 会做 OOS 评估），
+    <b class="status-error">拒绝</b> → status='rejected'。
+  </p>
+  <div class="toolbar" style="margin-bottom:12px;">
+    <button class="primary" onclick="runBrainstorm()" id="btn-brainstorm"
+            title="让大模型基于现状提出 10 个新因子方向（约 5-15 秒）">让 LLM 提 10 个方向</button>
+    <button onclick="loadLLMSuggestions()">刷新列表</button>
+    <span id="brainstorm-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
+  </div>
+  <div id="llm-suggestions-table" class="small"></div>
+</div>
+
+<script>
+async function runBrainstorm() {
+  const btn = document.getElementById('btn-brainstorm');
+  const status = document.getElementById('brainstorm-status');
+  btn.disabled = true; btn.classList.add('is-loading');
+  status.textContent = '调用 LLM 中…（5-15 秒）';
+  try {
+    const r = await fetch('/api/research/factors/brainstorm/run', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({n: 10}),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      status.innerHTML = '<span class="status-error">❌ ' + (d.detail || JSON.stringify(d)) + '</span>';
+      return;
+    }
+    status.innerHTML = '<span class="status-ok">✅ ' + (d.result || '完成') + '</span>';
+    loadLLMSuggestions();
+  } catch (e) {
+    status.innerHTML = '<span class="status-error">❌ 网络错误：' + e.message + '</span>';
+  } finally {
+    btn.disabled = false; btn.classList.remove('is-loading');
+  }
+}
+
+async function loadLLMSuggestions() {
+  const tbl = document.getElementById('llm-suggestions-table');
+  try {
+    const r = await fetch('/api/research/factors/llm-suggestions?limit=50');
+    const d = await r.json();
+    tbl.innerHTML = renderLLMSuggestions(d.suggestions || []);
+  } catch (e) {
+    tbl.innerHTML = '<div class="small status-error">加载失败：' + e.message + '</div>';
+  }
+}
+
+function renderLLMSuggestions(rows) {
+  if (!rows.length) {
+    return '<div class="small" style="color:var(--fg-mute);padding:8px 0;">暂无待审核的 LLM 提议。点上方按钮触发一次。</div>';
+  }
+  let html = '<table class="data-table"><thead><tr>'
+    + '<th>因子名</th><th>recipe</th><th>方向</th><th>LLM 理由</th><th>创建时间</th><th>操作</th>'
+    + '</tr></thead><tbody>';
+  for (const r of rows) {
+    const recipe = r.recipe ? `${r.recipe.base}/${r.recipe.op}/w${r.recipe.window}` : '—';
+    const reason = (r.reason || '').replace(/^LLM suggested:\s*/, '');
+    const created = (r.created_at || '').slice(0, 16).replace('T', ' ');
+    html += `<tr>
+      <td><code>${r.factor_name}</code></td>
+      <td>${recipe}</td>
+      <td>${r.direction}</td>
+      <td title="${escapeHtml(reason)}">${escapeHtml(reason.slice(0, 80))}${reason.length > 80 ? '…' : ''}</td>
+      <td>${created}</td>
+      <td>
+        <button class="primary" onclick="reviewLLM('${r.factor_name}','accept')">接受</button>
+        <button class="warn" onclick="reviewLLM('${r.factor_name}','reject')">拒绝</button>
+      </td>
+    </tr>`;
+  }
+  return html + '</tbody></table>';
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+async function reviewLLM(name, action) {
+  try {
+    const r = await fetch(`/api/research/factors/llm-suggestions/${encodeURIComponent(name)}/${action}`, {method:'POST'});
+    const d = await r.json();
+    if (!r.ok) { alert('失败：' + (d.detail || JSON.stringify(d))); return; }
+    loadLLMSuggestions();
+  } catch (e) { alert('网络错误：' + e.message); }
+}
+
+// 页面加载时自动拉一次
+window.addEventListener('load', loadLLMSuggestions);
+</script>
+
 <!-- M11: 因子推理详情 Modal -->
 <div id="proposal-modal" class="modal-backdrop hidden" onclick="closeProposalModalOnBackdrop(event)">
   <div class="modal-window" role="dialog" aria-modal="true" aria-labelledby="proposal-modal-title">
