@@ -716,6 +716,111 @@ def build_get_paper_track_summary(services: dict[str, Any]) -> ToolSpec:
     )
 
 
+
+def build_factor_postmortem(services: dict[str, Any]) -> ToolSpec:
+    evaluator = services["factor_evaluator"]
+    proposal_store = services.get("factor_proposal_store")
+    registry_obj = services.get("factor_registry")
+
+    def handler(args: dict[str, Any]) -> dict[str, Any]:
+        factor_name = str(args.get("factor_name", "")).strip()
+        days = int(args.get("days", 30))
+        if not factor_name:
+            return {"error": "factor_name required"}
+
+        try:
+            history = evaluator.list_history(factor_name, limit=days)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"list_history failed: {str(exc)[:200]}"}
+
+        history_dicts = [
+            {
+                "as_of": m.as_of_date,
+                "ic": m.ic_mean,
+                "ir": m.ir,
+                "window_days": m.window_days,
+            }
+            for m in history
+        ]
+
+        status = "unknown"
+        if proposal_store is not None:
+            try:
+                for proposal in proposal_store.list_recent(limit=500):
+                    if proposal.factor_name == factor_name:
+                        status = proposal.status
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+        if status == "unknown" and registry_obj is not None:
+            try:
+                for factor in registry_obj.list_all():
+                    if factor.name == factor_name:
+                        status = "registered"
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+
+        irs = [item["ir"] for item in history_dicts if item["ir"] is not None]
+        recent_mean = None
+        earlier_mean = None
+        trend = None
+        if len(irs) >= 5:
+            recent_mean = sum(abs(x) for x in irs[:5]) / 5
+        if len(irs) >= 10:
+            earlier_mean = sum(abs(x) for x in irs[-5:]) / 5
+        if recent_mean is not None and earlier_mean is not None and earlier_mean > 0:
+            ratio = recent_mean / earlier_mean
+            if ratio < 0.6:
+                trend = "decaying"
+            elif ratio > 1.4:
+                trend = "improving"
+            else:
+                trend = "stable"
+
+        return {
+            "factor_name": factor_name,
+            "status": status,
+            "history": history_dicts,
+            "n_observations": len(history_dicts),
+            "recent_5d_mean_abs_ir": recent_mean,
+            "earlier_5d_mean_abs_ir": earlier_mean,
+            "trend": trend,
+        }
+
+    return ToolSpec(
+        name="factor_postmortem",
+        description=(
+            "查询某个因子的近 N 天 IC/IR 历史 + 当前 status + 趋势诊断。"
+            "用途: 帮你判断一个 shadow 因子该 promote / demote / 继续观察。\n"
+            "入参:\n"
+            "- factor_name: 因子名 (如 'momentum_20' 或 'llm_zscore_close_30_long_abc123')\n"
+            "- days: 看多少天历史, 默认 30\n"
+            "返回:\n"
+            "- status: registered/shadow/accepted/rejected/demoted/llm_suggested/unknown\n"
+            "- history: 按 as_of 降序的 [{as_of, ic, ir, window_days}]\n"
+            "- recent_5d_mean_abs_ir / earlier_5d_mean_abs_ir: 用于趋势对比\n"
+            "- trend: decaying / stable / improving / None (数据不足)"
+        ),
+        json_schema={
+            "type": "object",
+            "properties": {
+                "factor_name": {
+                    "type": "string",
+                    "description": "因子名 (如 momentum_20)",
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "看多少天历史, 默认 30",
+                    "default": 30,
+                },
+            },
+            "required": ["factor_name"],
+        },
+        handler=handler,
+    )
+
+
 def register_default_tools(registry: ToolRegistry, services: dict[str, Any]) -> ToolRegistry:
     """注册 P4 v2 的 4 个默认工具 + M5 的 3 个新工具。
 
@@ -748,6 +853,7 @@ def register_default_tools(registry: ToolRegistry, services: dict[str, Any]) -> 
         registry.register(build_run_factor_discovery(services))
     if "factor_evaluator" in services:
         registry.register(build_factor_decay_check(services))   # P1-3
+        registry.register(build_factor_postmortem(services))
     if "trade_list_store" in services:
         registry.register(build_get_today_trade_list(services))  # L-4
     if "paper_trading_store" in services:

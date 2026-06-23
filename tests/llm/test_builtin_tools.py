@@ -199,3 +199,38 @@ def test_chat_agent_with_real_tools_end_to_end(services: dict, tmp_path: Path) -
     tool_msgs = [m for m in msgs if m.role == "tool"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0].tool_name == "get_data_health"
+
+
+
+def test_factor_postmortem_returns_history_and_trend(services: dict) -> None:
+    """factor_postmortem tool 返回历史 + status + 趋势诊断。"""
+    from akq_agents.services.llm.tools.builtin import build_factor_postmortem
+    from akq_agents.services.llm.tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register(build_factor_postmortem(services))
+    out = reg.invoke(
+        "factor_postmortem",
+        args={"factor_name": "momentum_20", "days": 30},
+        session_id="test",
+    )
+    assert "history" in out
+    assert "status" in out
+    assert "trend" in out
+
+
+
+def test_factor_postmortem_handles_unknown_factor(services: dict) -> None:
+    """未知因子应返回 status='unknown' 且 history 为空 list。"""
+    from akq_agents.services.llm.tools.builtin import build_factor_postmortem
+    from akq_agents.services.llm.tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register(build_factor_postmortem(services))
+    out = reg.invoke(
+        "factor_postmortem",
+        args={"factor_name": "nonexistent_factor_xxx", "days": 10},
+        session_id="test",
+    )
+    assert out["status"] == "unknown"
+    assert out["history"] == []
