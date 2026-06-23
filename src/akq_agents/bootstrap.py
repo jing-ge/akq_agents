@@ -54,7 +54,6 @@ from akq_agents.services.portfolio.industry_map import IndustryMapStore
 from akq_agents.services.portfolio.paper_trading import PaperTradingConfig, PaperTradingStore
 from akq_agents.services.portfolio.risk_filter import RiskFilter, RiskFilterConfig
 from akq_agents.services.portfolio.trade_list import HoldingsStore, TradeListStore, TradeListConfig
-from akq_agents.services.storage import StateStore
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = BASE_DIR / "config" / "system.yaml"
@@ -218,7 +217,6 @@ def load_web_config(path: Path = WEB_CONFIG_PATH) -> WebConfig:
 def build_workflow(config_path: Path = CONFIG_PATH):
     config = AppConfig.from_yaml(config_path)
     data_config = load_data_config()
-    state_store = StateStore(config.storage.state_file)
     services = build_services(config, data_config=data_config)
 
     # 让 calendar 一次性 bootstrap：优先在线 AKShare，失败 fallback 用本地 parquet 分区
@@ -226,7 +224,7 @@ def build_workflow(config_path: Path = CONFIG_PATH):
     if repo is not None:
         _bootstrap_calendar_safely(repo)
 
-    return QuantWorkflow(config, services, state_store), config
+    return QuantWorkflow(config, services), config
 
 
 def _bootstrap_calendar_safely(repo) -> None:

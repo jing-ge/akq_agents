@@ -11,10 +11,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class QuantWorkflow:
-    def __init__(self, config, services, store, reports_dir: Path | None = None):
+    def __init__(self, config, services, reports_dir: Path | None = None):
         self.config = config
         self.services = services
-        self.store = store
         reports_path = Path(reports_dir) if reports_dir else _PROJECT_ROOT / "reports"
         analyst = None
         if {"llm_orchestrator", "llm_config"}.issubset(services.keys()):
@@ -35,9 +34,12 @@ class QuantWorkflow:
         ]
 
     def run_once(self, *, recorder=None):
-        """跑一次完整链路。可选传入 StepRecorder 把每个 agent 步骤落到 job_steps 表。"""
-        state = self.store.load()
-        context = AgentContext(state=state)
+        """跑一次完整链路。可选传入 StepRecorder 把每个 agent 步骤落到 job_steps 表。
+
+        agents 之间通过单次 run 内的 context 直接传递（不再持久化到 yaml）。
+        PortfolioAgent 写 portfolio/attribution/portfolio_turnover；AnalystAgent 读它们。
+        """
+        context = AgentContext(state={})
         outputs = {}
         for agent in self.agents:
             if recorder is not None:
@@ -48,7 +50,6 @@ class QuantWorkflow:
                     step_ctx.set_payload(_summarize_agent_output(agent.name, out, context))
             else:
                 outputs[agent.name] = agent.run(context)
-        self.store.save(context.state)
         return outputs
 
     def run_once_and_print(self):

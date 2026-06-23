@@ -52,10 +52,6 @@ class BacktestConfig(BaseModel):
     end_date: str | None = None
 
 
-class StorageConfig(BaseModel):
-    state_file: str = "./runtime_state.yaml"
-
-
 class ServicesConfig(BaseModel):
     use_mock_data: bool = True
     use_mock_backtest: bool = True
@@ -68,7 +64,6 @@ class AppConfig(BaseModel):
     research: ResearchConfig
     risk: RiskConfig
     backtest: BacktestConfig
-    storage: StorageConfig
     services: ServicesConfig
 
     @classmethod

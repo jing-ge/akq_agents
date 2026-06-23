@@ -44,9 +44,6 @@ backtest:
   start_date: "2023-01-01"
   end_date: null
 
-storage:
-  state_file: ./runtime_state.yaml
-
 services:
   use_mock_data: false
   use_mock_backtest: false
