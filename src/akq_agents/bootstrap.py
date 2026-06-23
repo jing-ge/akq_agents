@@ -189,6 +189,18 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             max_iterations=llm_cfg.chat.max_iterations,
         )
 
+        # M14: LLM 因子构建方向 brainstormer
+        from akq_agents.services.factors.llm_brainstorm import LLMFactorBrainstormer
+        services["llm_factor_brainstormer"] = LLMFactorBrainstormer(
+            llm_client=services["llm_client"],
+            proposal_store=services["factor_proposal_store"],
+            registry=services["factor_registry"],
+            evaluator=services["factor_evaluator"],
+            model=llm_cfg.chat.model,
+            max_tokens=llm_cfg.chat.max_tokens,
+            temperature=llm_cfg.chat.temperature,
+        )
+
     return services
 
 

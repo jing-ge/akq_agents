@@ -61,6 +61,20 @@ class DataRefreshConfig(BaseModel):
     timeout_s: int = 600       # 单次拉取超时 10 分钟（批量接口正常 ~15 秒，留 cushion）
 
 
+class FactorBrainstormConfig(BaseModel):
+    """LLM 因子构建方向建议 job（每日 cron 20:00）。
+
+    走 trading_day 白名单。每次产出 n_suggestions 条 status='llm_suggested' 记录，
+    等待人工 /research 页审核。
+    """
+
+    enabled: bool = True
+    hour: int = 20
+    minute: int = 0
+    timeout_s: int = 120
+    n_suggestions: int = 20
+
+
 class SchedulerJobsConfig(BaseModel):
     batch_post_close: BatchJobConfig = Field(default_factory=BatchJobConfig)
     batch_deep_research: BatchJobConfig = Field(
@@ -75,6 +89,7 @@ class SchedulerJobsConfig(BaseModel):
         default_factory=lambda: IntervalJobConfig(interval_minutes=5, timeout_s=5)
     )
     factor_discovery: FactorDiscoveryConfig = Field(default_factory=FactorDiscoveryConfig)
+    factor_brainstorm: FactorBrainstormConfig = Field(default_factory=FactorBrainstormConfig)
     data_refresh: DataRefreshConfig = Field(default_factory=DataRefreshConfig)
 
 
