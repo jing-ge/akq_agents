@@ -78,7 +78,7 @@ const STATUS_CN = {
   pending: '排队中', scheduled: '已排程',
 };
 const LEVEL_CN = { info: '信息', warning: '警告', error: '错误', debug: '调试' };
-const HEALTH_CN = { OK: '正常', WARNING: '警告', FAILED: '异常', UNKNOWN: '未知' };
+const HEALTH_CN = { OK: '正常', WARNING: '警告', DEGRADED: '部分异常', FAILED: '异常', PENDING_TODAY: '待刷新', UNKNOWN: '未知' };
 const JOB_CN = {
   'batch.post_close': '盘后批处理',
   'batch.deep_research': '因子深度研究',
@@ -181,6 +181,8 @@ function renderHealth(d) {
   const healthCn  = tCn(HEALTH_CN, healthRaw, healthRaw);
   const healthCls = healthRaw === 'OK' ? 'metric-good'
                   : healthRaw === 'WARNING' ? 'metric-warn'
+                  : healthRaw === 'PENDING_TODAY' ? 'metric-warn'
+                  : healthRaw === 'DEGRADED' ? 'metric-warn'
                   : healthRaw === 'FAILED' ? 'metric-bad' : 'metric-dim';
 
   // 覆盖率 → 颜色判定
@@ -210,7 +212,9 @@ function renderHealth(d) {
         <div class="small">
           股票池：<b>${dh.universe_size_today ?? '—'}</b> 只 ｜
           今日数据覆盖率：<span class="${covCls}">${covPct}</span>
-          <span class="metric-hint">覆盖率指今天有日线行情的股票占股票池的比例，越接近 100% 越健康</span>
+          ${healthRaw === 'PENDING_TODAY' && dh.next_refresh_attempt
+            ? '<br><span class="metric-hint">今天数据计划于 ' + dh.next_refresh_attempt.replace('T',' ') + ' 自动拉取</span>'
+            : '<span class="metric-hint">覆盖率指今天有日线行情的股票占股票池的比例，越接近 100% 越健康</span>'}
         </div>
       </div>
       <div>

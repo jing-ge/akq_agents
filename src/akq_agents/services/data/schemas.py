@@ -46,7 +46,7 @@ class DataHealth(BaseModel):
     financials_freshness_days: int = -1
     pending_retries: int = 0
     unresolved_errors_24h: int = 0
-    health: Literal["OK", "DEGRADED", "FAILED"] = "FAILED"
+    health: Literal["OK", "DEGRADED", "FAILED", "PENDING_TODAY"] = "FAILED"
 
 
 class RefreshResult(BaseModel):

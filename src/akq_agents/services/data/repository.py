@@ -466,6 +466,10 @@ class DataRepository:
                 health = "OK"
             elif ohlcv_coverage_today > 0:
                 health = "DEGRADED"
+        elif universe_size_today == 0 and self._calendar.is_trading_day(today) and datetime.now().hour < 16:
+            # 交易日 16:00（data.refresh_daily 首次 cron 时刻，见 SchedulerConfig.first_try_hour）
+            # 前数据还没刷是预期状态，不要报 FAILED 误导下游。
+            health = "PENDING_TODAY"
 
         return DataHealth(
             last_full_refresh=last_full_refresh,

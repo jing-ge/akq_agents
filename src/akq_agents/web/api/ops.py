@@ -27,6 +27,10 @@ async def health() -> dict[str, Any]:
                     data_health["ohlcv_coverage_today_raw"] = cov
                     data_health["ohlcv_coverage_today"] = 1.0
                     data_health["coverage_note"] = "今日 spot 拉取数 > universe（含未入池新股）"
+            # P0-followup: 给 UI 多塞两个字段
+            #   today_refresh_status: PENDING / IN_PROGRESS / OK / RETRY / SKIPPED_NON_TRADING_DAY
+            #   next_refresh_attempt: 下一次 data.refresh_daily cron 时刻 (ISO 字符串)
+            _attach_refresh_info(svc, data_health)
         except Exception as exc:  # noqa: BLE001
             data_health = {"error": str(exc)[:200]}
 
@@ -204,6 +208,86 @@ def _count_table(repo, table: str) -> int:
         return int(row[0]) if row else 0
     except Exception:
         return 0
+
+
+def _attach_refresh_info(svc: ServiceContainer, data_health: dict[str, Any]) -> None:
+    """给 data_health 补 today_refresh_status + next_refresh_attempt。
+
+    - today_refresh_status: PENDING / IN_PROGRESS / OK / RETRY / SKIPPED_NON_TRADING_DAY
+    - next_refresh_attempt: 下一次 cron 触发 ISO 时间；非交易日找下一交易日的 first_try
+
+    依赖：repo.is_trading_day + SchedulerConfig（一次性 yaml 解析，~ms 级）
+    全程 try/except 包住，失败时不影响主流程。
+    """
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+    try:
+        from akq_agents.bootstrap import load_scheduler_config
+
+        repo = svc.repo
+        if repo is None:
+            return
+        cfg = load_scheduler_config().jobs.data_refresh
+        now = _dt.now()
+        today = _date.today()
+
+        # 1) today_refresh_status
+        if not repo.is_trading_day(today):
+            data_health["today_refresh_status"] = "SKIPPED_NON_TRADING_DAY"
+        else:
+            # 看 refresh_state 表里今天有没有 status='ok'
+            from akq_agents.services.data.repository import open_meta_db
+
+            with open_meta_db(repo._base_dir / "meta.db") as conn:
+                row = conn.execute(
+                    "SELECT status FROM refresh_state WHERE target_date = ?",
+                    (today.isoformat(),),
+                ).fetchone()
+            if row and row[0] == "ok":
+                data_health["today_refresh_status"] = "OK"
+            elif row and row[0] == "partial":
+                data_health["today_refresh_status"] = "RETRY"
+            elif now.hour < cfg.first_try_hour or (
+                now.hour == cfg.first_try_hour and now.minute < cfg.first_try_minute
+            ):
+                data_health["today_refresh_status"] = "PENDING"
+            else:
+                # 调度窗口内还没出 ok 行 → 仍在重试
+                data_health["today_refresh_status"] = "RETRY"
+
+        # 2) next_refresh_attempt
+        triggers: list[tuple[int, int]] = []
+        base_min = cfg.first_try_hour * 60 + cfg.first_try_minute
+        # 复用 data_refresh.register 同样的窗口生成逻辑
+        for i in range(((cfg.stop_hour - cfg.first_try_hour) * 60 - cfg.first_try_minute)
+                       // cfg.retry_interval_minutes + 1):
+            total = base_min + i * cfg.retry_interval_minutes
+            h, m = divmod(total, 60)
+            if h >= cfg.stop_hour:
+                break
+            triggers.append((h, m))
+
+        nxt: _dt | None = None
+        if repo.is_trading_day(today):
+            now_min = now.hour * 60 + now.minute
+            for h, m in triggers:
+                if h * 60 + m >= now_min:
+                    nxt = _dt.combine(today, _dt.min.time()).replace(hour=h, minute=m)
+                    break
+        if nxt is None:
+            # 找下一个交易日，最多看 10 天
+            d = today + _td(days=1)
+            for _ in range(10):
+                if repo.is_trading_day(d):
+                    nxt = _dt.combine(d, _dt.min.time()).replace(
+                        hour=cfg.first_try_hour, minute=cfg.first_try_minute
+                    )
+                    break
+                d = d + _td(days=1)
+        if nxt is not None:
+            data_health["next_refresh_attempt"] = nxt.isoformat(timespec="minutes")
+    except Exception as exc:  # noqa: BLE001
+        # 不影响主响应，给个 debug 字段
+        data_health["refresh_info_error"] = str(exc)[:200]
 
 
 @router.get("/logs")
