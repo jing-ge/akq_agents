@@ -188,12 +188,18 @@ class DiscoveryThresholds:
     # M7-C: OOS promote 规则
     shadow_min_oos_days: int = 20      # 至少累计 20 个 OOS 交易日观察
     shadow_min_oos_ir: float = 0.15    # OOS IR 仍需 >= 0.15 才 promote
+    # M15-A: shadow 宽限期 — 满 shadow_min_oos_days 但未达标时不立刻 demote，
+    # 继续观察到 shadow_max_days；满 shadow_max_days 仍 |IR| < shadow_min_keep_ir 才 demote。
+    shadow_max_days: int = 60         # 最长观察 60 天
+    shadow_min_keep_ir: float = 0.10  # 60 天后 |IR| < 0.10 就 demote
 
 
 @dataclass
 class DiscoveryStats:
     proposed: int = 0
     accepted: int = 0
+    promoted: int = 0
+    demoted: int = 0
     rejected_low_ic: int = 0
     rejected_low_ir: int = 0
     rejected_high_corr: int = 0
@@ -206,6 +212,8 @@ class DiscoveryStats:
         return {
             "proposed": self.proposed,
             "accepted": self.accepted,
+            "promoted": self.promoted,
+            "demoted": self.demoted,
             "rejected_low_ic": self.rejected_low_ic,
             "rejected_low_ir": self.rejected_low_ir,
             "rejected_high_corr": self.rejected_high_corr,
@@ -668,21 +676,44 @@ class DiscoveryEngine:
                 p.evaluated_at = now_iso()
                 self.proposal_store.upsert(p)
                 stats.accepted_names.append(p.factor_name + " (promoted)")
+                stats.promoted += 1
                 logger.info(
                     "discovery: shadow %s PROMOTED (oos_ir=%.3f over %d days%s)",
                     p.factor_name, oos_ir, len(oos_dates), flip_note,
                 )
             else:
-                p.status = "demoted"
-                p.reason = f"oos_ir_too_low_{oos_ir:.3f}" if oos_ir is not None else "oos_ir_undefined"
-                p.oos_observations = len(oos_dates)
-                p.oos_ir = oos_ir
-                p.evaluated_at = now_iso()
-                self.proposal_store.upsert(p)
-                logger.info(
-                    "discovery: shadow %s DEMOTED (oos_ir=%s over %d days)",
-                    p.factor_name, oos_ir, len(oos_dates),
-                )
+                # M15-A: 不立刻 demote — 看时长 + IR 决定
+                # - oos_days >= shadow_max_days (60) 且 |IR| < shadow_min_keep_ir (0.10):
+                #     真的不行 → demote
+                # - 否则: 继续观察（更新 oos_observations / oos_ir，status 仍 'shadow'）
+                ir_too_low = oos_ir is None or abs(oos_ir) < self.th.shadow_min_keep_ir
+                if len(oos_dates) >= self.th.shadow_max_days and ir_too_low:
+                    p.status = "demoted"
+                    p.reason = (
+                        f"demoted_after_{len(oos_dates)}d_oos_ir={oos_ir:.3f}"
+                        if oos_ir is not None
+                        else f"demoted_after_{len(oos_dates)}d_oos_ir=None"
+                    )
+                    p.ir = oos_ir
+                    p.oos_observations = len(oos_dates)
+                    p.oos_ir = oos_ir
+                    p.evaluated_at = now_iso()
+                    self.proposal_store.upsert(p)
+                    stats.demoted += 1
+                    logger.info(
+                        "discovery: shadow %s DEMOTED (oos_ir=%s over %d days)",
+                        p.factor_name, oos_ir, len(oos_dates),
+                    )
+                else:
+                    # 继续观察
+                    p.oos_observations = len(oos_dates)
+                    p.oos_ir = oos_ir
+                    p.evaluated_at = now_iso()
+                    self.proposal_store.upsert(p)
+                    logger.info(
+                        "discovery: shadow %s 继续观察 (oos_days=%d, oos_ir=%s)",
+                        p.factor_name, len(oos_dates), oos_ir,
+                    )
 
 
 def restore_accepted_factors(
