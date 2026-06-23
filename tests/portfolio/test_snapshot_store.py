@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from akq_agents.services.portfolio.attributor import AttributionResult
 from akq_agents.services.portfolio.snapshot_store import PortfolioSnapshotStore
@@ -135,3 +136,34 @@ def test_write_empty_weights_returns_zero(tmp_path: Path) -> None:
         attribution=_empty_attribution(),
     )
     assert n == 0
+
+
+def test_write_replaces_all_rows_for_same_date(tmp_path: Path) -> None:
+    store = PortfolioSnapshotStore(tmp_path / "meta.db")
+    as_of_date = date(2026, 6, 17)
+
+    first_symbols = [f"{i:06d}" for i in range(1, 51)]
+    first_weights = pd.Series({sym: 0.02 for sym in first_symbols})
+    first_scores = pd.Series({sym: float(i) for i, sym in enumerate(first_symbols, start=1)})
+    store.write(
+        as_of_date=as_of_date,
+        weights=first_weights,
+        composite_score=first_scores,
+        attribution=_empty_attribution(),
+    )
+
+    second_symbols = [f"99{i:04d}" for i in range(1, 31)]
+    second_weight = 1.0 / 30.0
+    second_weights = pd.Series({sym: second_weight for sym in second_symbols})
+    second_scores = pd.Series({sym: float(i) for i, sym in enumerate(second_symbols, start=1)})
+    store.write(
+        as_of_date=as_of_date,
+        weights=second_weights,
+        composite_score=second_scores,
+        attribution=_empty_attribution(),
+    )
+
+    rows = store.read_snapshot(as_of_date)
+    assert len(rows) == 30
+    assert sum(row.weight for row in rows) == pytest.approx(1.0)
+    assert {row.symbol for row in rows} == set(second_symbols)

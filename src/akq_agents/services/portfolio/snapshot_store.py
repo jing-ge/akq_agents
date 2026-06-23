@@ -101,18 +101,18 @@ class PortfolioSnapshotStore:
                 )
             )
         with open_meta_db(self._db) as conn:
+            # C3 fix: replace 当日全部行，避免同日多次 write 导致 weight sum > 1。
+            # 之前 ON CONFLICT 只会更新已存在 symbol，旧 symbol 会残留，
+            # 再叠加新 symbol 后会污染当日组合总权重。
+            conn.execute(
+                "DELETE FROM portfolio_snapshots WHERE as_of_date = ?",
+                (as_of_date.isoformat(),),
+            )
             conn.executemany(
                 """
                 INSERT INTO portfolio_snapshots
                   (as_of_date, symbol, name, industry, weight, prev_weight, composite_score, top_factors_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(as_of_date, symbol) DO UPDATE SET
-                    name=excluded.name,
-                    industry=excluded.industry,
-                    weight=excluded.weight,
-                    prev_weight=excluded.prev_weight,
-                    composite_score=excluded.composite_score,
-                    top_factors_json=excluded.top_factors_json
                 """,
                 rows,
             )
