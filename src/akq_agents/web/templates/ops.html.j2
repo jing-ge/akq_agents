@@ -16,12 +16,9 @@
   <h2>控制台 <span class="small">手动操作 / 后台启停</span></h2>
   <div class="toolbar">
     <span class="group-label">后台守护进程</span>
-    <button class="safe"
-            title="启动后台 daemon：定时跑盘后批处理、因子发现、健康巡检等任务"
-            onclick="doAction(this,'/api/control/daemon/start','POST')">▶ 启动后台</button>
-    <button class="danger"
-            title="停止后台 daemon：所有定时任务暂停，但 Web 控制台不受影响"
-            onclick="doAction(this,'/api/control/daemon/stop','POST')">■ 停止后台</button>
+    <span class="small" style="color:var(--fg-mute)" title="I1 重构后 daemon 由 ./start.sh 管理，不在 Web 启停。状态见上方健康卡片。">
+      由 ./start.sh up / stop 管理
+    </span>
 
     <span class="sep"></span>
 

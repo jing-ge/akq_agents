@@ -82,35 +82,37 @@ cmd_web() {
 }
 
 cmd_daemon_start() {
-    # 通过 web API 启动，让 daemon 跟 web 注册的 pid 文件保持一致
-    if ! is_alive "$WEB_PID"; then
-        echo "[daemon] web 未运行，先 ./start.sh web"
-        exit 1
-    fi
+    # I1 替代 A: 直接 nohup 起 daemon 子进程，不再走 web API。
+    # 之前走 /api/control/daemon/start 让 web subprocess.Popen 起 daemon —— 这是
+    # web 进程承担"运维"职责的反人类链路。现在 start.sh 自己负责。
     if is_alive "$DAEMON_PID"; then
         echo "[daemon] 已经在跑，pid=$(cat "$DAEMON_PID")"
         return 0
     fi
-    echo "[daemon] 通过 web 启动..."
-    curl -sf -X POST "http://${WEB_HOST}:${WEB_PORT}/api/control/daemon/start" \
-        | "$PYTHON" -m json.tool || true
-    sleep 3
+    rotate_log_if_big "$DAEMON_LOG"
+    echo "[daemon] 启动中..."
+    nohup "$PYTHON" -m akq_agents.cli.app daemon start \
+        > "$DAEMON_LOG" 2>&1 &
+    echo $! > "$DAEMON_PID"
+    sleep 2
     if is_alive "$DAEMON_PID"; then
         echo "[daemon] 就绪：pid=$(cat "$DAEMON_PID")，日志 $DAEMON_LOG"
     else
-        echo "[daemon] 可能仍在启动中，过几秒看 ./start.sh status"
+        echo "[daemon] 启动失败，看日志：$DAEMON_LOG"
+        exit 1
     fi
 }
 
 cmd_stop() {
+    # I1 替代 A: 直接 SIGTERM daemon，不再走 web API
+    if is_alive "$DAEMON_PID"; then
+        echo "[daemon] 停止 pid=$(cat "$DAEMON_PID")"
+        kill "$(cat "$DAEMON_PID")" 2>/dev/null || true
+        sleep 1
+        kill -9 "$(cat "$DAEMON_PID")" 2>/dev/null || true
+        rm -f "$DAEMON_PID"
+    fi
     if is_alive "$WEB_PID"; then
-        # 先优雅停 daemon（如果在跑）
-        if is_alive "$DAEMON_PID"; then
-            echo "[daemon] 停止中..."
-            curl -sf -X POST "http://${WEB_HOST}:${WEB_PORT}/api/control/daemon/stop" \
-                > /dev/null || true
-            sleep 2
-        fi
         echo "[web] 停止 pid=$(cat "$WEB_PID")"
         kill "$(cat "$WEB_PID")" 2>/dev/null || true
         sleep 1
@@ -118,14 +120,6 @@ cmd_stop() {
         rm -f "$WEB_PID"
     else
         echo "[web] 未运行"
-    fi
-    # 兜底：杀残留的 daemon
-    if is_alive "$DAEMON_PID"; then
-        echo "[daemon] 强制停止 pid=$(cat "$DAEMON_PID")"
-        kill "$(cat "$DAEMON_PID")" 2>/dev/null || true
-        sleep 1
-        kill -9 "$(cat "$DAEMON_PID")" 2>/dev/null || true
-        rm -f "$DAEMON_PID"
     fi
 }
 
@@ -162,23 +156,6 @@ cmd_logs() {
     tail -f "$WEB_LOG" "$DAEMON_LOG" 2>/dev/null
 }
 
-# 看护循环：每 60 秒检查 web / daemon 是否活，挂了就尝试拉起
-# 用法：nohup ./start.sh watch > data/watcher.log 2>&1 &
-cmd_watch() {
-    echo "== 看护模式启动（每 60 秒一次自检）；Ctrl+C 退出 =="
-    while true; do
-        if ! is_alive "$WEB_PID"; then
-            echo "[$(date '+%H:%M:%S')] web 进程不存在，拉起..."
-            cmd_web 2>&1 | tail -3
-        fi
-        if ! is_alive "$DAEMON_PID"; then
-            echo "[$(date '+%H:%M:%S')] daemon 不存在，拉起..."
-            cmd_daemon_start 2>&1 | tail -3
-        fi
-        sleep 60
-    done
-}
-
 # ---- 入口 ---------------------------------------------------------------
 
 action="${1:-up}"
@@ -207,18 +184,14 @@ case "$action" in
     logs)
         cmd_logs
         ;;
-    watch)
-        cmd_watch
-        ;;
     *)
-        echo "用法: ./start.sh [up|web|daemon|stop|status|logs|watch]"
+        echo "用法: ./start.sh [up|web|daemon|stop|status|logs]"
         echo "  up      启动 web + daemon（默认）"
         echo "  web     只启动 web"
-        echo "  daemon  只启动 daemon（要求 web 在跑）"
+        echo "  daemon  只启动 daemon"
         echo "  stop    停止 daemon + web"
         echo "  status  查看运行状态"
         echo "  logs    tail web + daemon 日志"
-        echo "  watch   看护模式：每 60s 检查 web/daemon 死了自动拉起"
         exit 1
         ;;
 esac
