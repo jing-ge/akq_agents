@@ -630,6 +630,10 @@ class DiscoveryEngine:
                 else:
                     effective_ir = oos_ir
                     flip_note = ""
+                # 保持 registry 里的 factor.name 与 db 主键 factor_name 一致
+                # （否则 LLM 提议的 llm_* 因子在 promote 时会以 auto_* 注册到 registry，
+                # 与 proposal_store 中的 llm_* 分裂，下游 factor_metrics 历史断裂）
+                factor.name = p.factor_name  # type: ignore[attr-defined]
                 try:
                     self.registry.register(factor)
                 except ValueError:

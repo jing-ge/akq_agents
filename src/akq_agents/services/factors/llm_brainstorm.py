@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +122,9 @@ def _validate_recipe(recipe: dict) -> str | None:
         return f"unknown window: {recipe['window']!r} (allowed: {list(_WINDOWS)})"
     if recipe["direction"] not in _DIRECTIONS:
         return f"unknown direction: {recipe['direction']!r}"
+    # 归一化 window：LLM 可能输出 5.0 而非 5；5.0 in (5,...) 为 True 通过校验，
+    # 但 recipe_to_json 会序列化成 "5.0" 让 hash 漂移，导致同含义 recipe 拿到不同 name → dedup 失效。
+    recipe["window"] = int(recipe["window"])
     return None
 
 
@@ -136,17 +138,13 @@ def _recipe_to_name(recipe: dict) -> str:
 def _parse_llm_response(text: str) -> list[dict]:
     """从 LLM 返回里提取 suggestions 列表。
 
-    宽容点：允许 ```json ... ``` fence、前后有多余文字。
+    宽容点：找最外层 {...} 即可（兼容 ```json fence、前后多余文字）。
     """
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    raw = m.group(1) if m else text
-    if not raw.lstrip().startswith("{"):
-        i = raw.find("{")
-        j = raw.rfind("}")
-        if i < 0 or j < 0:
-            raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
-        raw = raw[i:j + 1]
-    data = json.loads(raw)
+    i = text.find("{")
+    j = text.rfind("}")
+    if i < 0 or j < 0:
+        raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
+    data = json.loads(text[i:j + 1])
     suggestions = data.get("suggestions")
     if not isinstance(suggestions, list):
         raise ValueError(f"LLM output missing 'suggestions' list: keys={list(data.keys())}")
