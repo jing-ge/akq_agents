@@ -46,7 +46,6 @@ backtest:
 
 storage:
   state_file: ./runtime_state.yaml
-  sqlite_path: ./akq_agents.db
 
 services:
   use_mock_data: false

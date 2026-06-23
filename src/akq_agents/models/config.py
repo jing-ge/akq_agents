@@ -54,7 +54,6 @@ class BacktestConfig(BaseModel):
 
 class StorageConfig(BaseModel):
     state_file: str = "./runtime_state.yaml"
-    sqlite_path: str = "./akq_agents.db"
 
 
 class ServicesConfig(BaseModel):
