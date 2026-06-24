@@ -255,6 +255,9 @@ htmx.on('#jobs-table', 'htmx:afterRequest', e => {
   try {
     const d = JSON.parse(e.detail.xhr.responseText);
     e.target.innerHTML = renderJobs(d.runs);
+    if (typeof makeSortable === 'function') {
+      e.target.querySelectorAll('table').forEach(t => makeSortable(t));
+    }
   } catch { e.target.innerHTML = '<p>解析失败</p>'; }
 });
 function renderJobs(runs) {
@@ -419,6 +422,9 @@ htmx.on('#events-list', 'htmx:afterRequest', e => {
   try {
     const d = JSON.parse(e.detail.xhr.responseText);
     e.target.innerHTML = renderEvents(d.events);
+    if (typeof makeSortable === 'function') {
+      e.target.querySelectorAll('table').forEach(t => makeSortable(t));
+    }
   } catch { e.target.innerHTML = '<p>解析失败</p>'; }
 });
 function renderEvents(events) {

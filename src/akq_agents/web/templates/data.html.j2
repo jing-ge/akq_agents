@@ -196,6 +196,9 @@ function renderResult(data) {
 
   // 表格
   tableEl.innerHTML = renderTable(data.columns, data.rows);
+  if (typeof makeSortable === 'function') {
+    tableEl.querySelectorAll('table').forEach(t => makeSortable(t));
+  }
 }
 
 function renderKline(el, data) {
