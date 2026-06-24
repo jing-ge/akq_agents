@@ -76,9 +76,22 @@ class PortfolioSnapshotStore:
 
         新股 prev_weight = 0；退市股不出现在本次 weights，所以也不在表中。
         返回写入行数。
+
+        守门: 入口先归一化 weights 到 sum=1.0 (容忍上游算法的数值误差)，
+        防止历史上的 sum=1.04/1.54 类 bug 重现。
         """
         if weights.empty:
             return 0
+        # M18-C2 守门: 防御性归一化，让下游 backtester 永远拿到 sum=1 数据
+        wsum = float(weights.sum())
+        if wsum > 0 and abs(wsum - 1.0) > 0.005:
+            import logging as _l
+            _l.getLogger(__name__).warning(
+                "snapshot_store.write 收到非归一化 weights: sum=%.4f, n=%d, "
+                "as_of_date=%s. 自动归一化到 1.0。",
+                wsum, len(weights), as_of_date,
+            )
+            weights = weights / wsum
         names = name_map or {}
         industries = industry_map or {}
         prev = prev_weights if prev_weights is not None else pd.Series(dtype=float)

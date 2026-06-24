@@ -56,31 +56,36 @@ def test_write_basic(tmp_path: Path) -> None:
 
 def test_write_idempotent_same_day(tmp_path: Path) -> None:
     store = PortfolioSnapshotStore(tmp_path / "meta.db")
-    weights = pd.Series({"A": 1.0})
+    # 第一次写: A=1.0
+    weights1 = pd.Series({"A": 1.0})
     scores = pd.Series({"A": 1.0})
     attr = _empty_attribution()
-    store.write(as_of_date=date(2026, 6, 17), weights=weights, composite_score=scores, attribution=attr)
-    # 再写一次同一日同一 symbol → upsert
-    weights2 = pd.Series({"A": 0.6})
-    store.write(as_of_date=date(2026, 6, 17), weights=weights2, composite_score=scores, attribution=attr)
+    store.write(as_of_date=date(2026, 6, 17), weights=weights1, composite_score=scores, attribution=attr)
+    # 再写一次同一日，权重分布变了 (snapshot_store 会归一化到 1.0)
+    weights2 = pd.Series({"A": 0.6, "B": 0.4})
+    scores2 = pd.Series({"A": 1.0, "B": 0.5})
+    store.write(as_of_date=date(2026, 6, 17), weights=weights2, composite_score=scores2, attribution=attr)
     rows = store.read_snapshot(date(2026, 6, 17))
-    assert len(rows) == 1
-    assert rows[0].weight == 0.6
+    # M15 (C3 fix): write 现在是 'replace 当日全部' 语义 — 应该只剩 A+B 两行
+    assert len(rows) == 2
+    by_sym = {r.symbol: r.weight for r in rows}
+    assert abs(by_sym["A"] - 0.6) < 1e-6
+    assert abs(by_sym["B"] - 0.4) < 1e-6
 
 
 def test_read_prev_weights_skip_today(tmp_path: Path) -> None:
     store = PortfolioSnapshotStore(tmp_path / "meta.db")
-    # 写 6-15 和 6-16
-    for d, w in [(date(2026, 6, 15), 0.3), (date(2026, 6, 16), 0.5)]:
+    # 写 6-15 和 6-16 (单只票 weight=1.0 满足归一化)
+    for d in [date(2026, 6, 15), date(2026, 6, 16)]:
         store.write(
             as_of_date=d,
-            weights=pd.Series({"A": w}),
+            weights=pd.Series({"A": 1.0}),
             composite_score=pd.Series({"A": 1.0}),
             attribution=_empty_attribution(),
         )
     # 取 6-17 之前最近的一日 = 6-16
     prev = store.read_prev_weights(date(2026, 6, 17))
-    assert prev.to_dict() == {"A": 0.5}
+    assert prev.to_dict() == {"A": 1.0}
 
 
 def test_read_prev_weights_empty_when_no_history(tmp_path: Path) -> None:
