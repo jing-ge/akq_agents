@@ -36,6 +36,7 @@ class AnalystAgent(BaseAgent):
         reports_dir: Path,
         safety: SafetyConfig,
         events_fetch: Any | None = None,
+        repo: Any | None = None,
     ) -> None:
         """
         Args:
@@ -45,12 +46,15 @@ class AnalystAgent(BaseAgent):
             safety: SafetyConfig（disclaimer header）
             events_fetch: 可选 events 来源；签名 ``() -> list[dict]``。
                 如未提供，则不在 prompt 中塞 events 列表。
+            repo: 可选 DataRepository；用于直接拉 data_health（context.state 里
+                没人写 data_health，老 5-agent 链路已删）。
         """
         self._orch = orchestrator
         self._cfg = cfg
         self._reports_dir = Path(reports_dir)
         self._safety = safety
         self._events_fetch = events_fetch
+        self._repo = repo
 
     def run(self, context: AgentContext) -> dict[str, Any]:
         if not self._cfg.enabled:
@@ -105,7 +109,17 @@ class AnalystAgent(BaseAgent):
         attribution = context.state.get("attribution") or {}
         port_contrib = attribution.get("portfolio_contribution", {}) if isinstance(attribution, dict) else {}
 
-        data_health = self._summarize_health(context.state.get("data_health"))
+        # data_health：优先从 repo 实时拉（context.state 里无人写）；
+        # repo 不可用时退化到 context.state.get("data_health") 兼容老路径。
+        raw_health = None
+        if self._repo is not None:
+            try:
+                raw_health = self._repo.quality_report().model_dump(mode="json")
+            except Exception:  # noqa: BLE001
+                raw_health = None
+        if raw_health is None:
+            raw_health = context.state.get("data_health")
+        data_health = self._summarize_health(raw_health)
 
         events: list[dict[str, Any]] = []
         if self._events_fetch is not None:

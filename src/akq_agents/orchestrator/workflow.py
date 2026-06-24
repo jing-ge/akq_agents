@@ -23,6 +23,7 @@ class QuantWorkflow:
                 cfg=llm_cfg.analyst,
                 reports_dir=reports_path,
                 safety=llm_cfg.safety,
+                repo=services.get("data_repository"),
             )
         self.agents = [
             agent
