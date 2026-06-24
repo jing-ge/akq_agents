@@ -8,13 +8,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 
 
 class CompositeScorer:
     """因子合成器。"""
 
-    def __init__(self, weighting: str = "equal", evaluator: object | None = None) -> None:
+    def __init__(self, weighting: str = "equal", evaluator: Any | None = None) -> None:
         if weighting not in {"equal", "ir"}:
             raise ValueError(f"weighting must be 'equal' or 'ir', got {weighting!r}")
         self._weighting = weighting

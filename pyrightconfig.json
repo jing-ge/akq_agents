@@ -1,0 +1,18 @@
+{
+  "include": ["src", "tests"],
+  "exclude": [
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "data",
+    "reports",
+    "exports"
+  ],
+  "venvPath": "/opt/anaconda3/envs",
+  "venv": "akq310",
+  "pythonVersion": "3.10",
+  "extraPaths": ["src"],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none"
+}

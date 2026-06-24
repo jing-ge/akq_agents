@@ -22,7 +22,7 @@ from akq_agents.services.environment import EnvironmentDoctor
 
 
 def cmd_run(_: argparse.Namespace) -> None:
-    workflow, _ = build_workflow()
+    workflow, _cfg = build_workflow()
     workflow.run_once_and_print()
 
 

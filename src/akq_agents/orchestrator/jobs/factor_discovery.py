@@ -57,8 +57,8 @@ def register(
     )
 
 
-def run_once_now(runner: JobRunner, services: dict[str, Any], n_candidates: int = 20) -> dict:
-    """供 CLI / Web 手动触发。"""
+def run_once_now(runner: JobRunner, services: dict[str, Any], n_candidates: int = 20) -> Any:
+    """供 CLI / Web 手动触发。返回 JobRunResult (status/reason_code/payload)。"""
     partition = date.today().isoformat()
     return runner.run(
         JOB_ID,

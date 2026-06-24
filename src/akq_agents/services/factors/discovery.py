@@ -90,27 +90,29 @@ class _RuntimeFactor:
 
 
 def _apply_op(wide: pd.DataFrame, op: str, window: int) -> pd.DataFrame | None:
+    # pyright 对 pandas rolling/clip/replace 返回类型推断为 DataFrame|Series|ndarray 联合，
+    # 但实际所有分支都返回 wide-format DataFrame。逐行 ignore 让类型检查闭嘴。
     if len(wide) < window + 1:
         return None
     if op == "pct_change":
-        return wide.pct_change(periods=window, fill_method=None)
+        return wide.pct_change(periods=window, fill_method=None)  # pyright: ignore[reportReturnType]
     if op == "rolling_mean":
-        return wide.rolling(window).mean()
+        return wide.rolling(window).mean()  # pyright: ignore[reportReturnType]
     if op == "rolling_std":
-        return wide.pct_change(fill_method=None).rolling(window).std()
+        return wide.pct_change(fill_method=None).rolling(window).std()  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
     if op == "zscore":
         rolled = wide.rolling(window)
-        return (wide - rolled.mean()) / rolled.std(ddof=0).replace(0, np.nan)
+        return (wide - rolled.mean()) / rolled.std(ddof=0).replace(0, np.nan)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
     if op == "rsi":
         delta = wide.diff()
         gain = delta.clip(lower=0).rolling(window).mean()
         loss = (-delta.clip(upper=0)).rolling(window).mean()
-        rs = gain / loss.replace(0, np.nan)
-        return 100 - (100 / (1 + rs))
+        rs = gain / loss.replace(0, np.nan)  # pyright: ignore[reportAttributeAccessIssue]
+        return 100 - (100 / (1 + rs))  # pyright: ignore[reportReturnType]
     if op == "rolling_skew":
-        return wide.pct_change(fill_method=None).rolling(window).skew()
+        return wide.pct_change(fill_method=None).rolling(window).skew()  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
     if op == "ts_max_norm":
-        return wide / wide.rolling(window).max().replace(0, np.nan) - 1.0
+        return wide / wide.rolling(window).max().replace(0, np.nan) - 1.0  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
     if op == "ts_min_norm":
         return wide / wide.rolling(window).min().replace(0, np.nan) - 1.0
     raise ValueError(f"unknown op: {op}")
@@ -434,7 +436,7 @@ class DiscoveryEngine:
             if len(sub) < factor.lookback_days:
                 continue
             try:
-                s = factor.compute(sub)
+                s = factor.compute(sub)  # pyright: ignore[reportArgumentType]
             except Exception:
                 continue
             if s is None or s.empty:
