@@ -875,6 +875,105 @@ button.danger:hover {
   animation: spin 0.8s linear infinite;
 }
 
+/* ===== KPI overview (研究面板顶部 sticky 总览条) ============= */
+.kpi-overview {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 1px;
+  margin: 4px 0 18px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  backdrop-filter: saturate(140%) blur(8px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.32);
+}
+.kpi-overview .kpi-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 14px 11px;
+  background: linear-gradient(180deg, rgba(20, 24, 32, 0.94), rgba(13, 16, 22, 0.94));
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: var(--fg);
+  transition: background 160ms var(--ease-out), transform 160ms var(--ease-out);
+  position: relative;
+  isolation: isolate;
+}
+.kpi-overview .kpi-tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, var(--accent-soft), transparent 60%);
+  opacity: 0;
+  transition: opacity 200ms var(--ease-out);
+  pointer-events: none;
+  z-index: -1;
+}
+.kpi-overview .kpi-tile:hover {
+  background: linear-gradient(180deg, rgba(28, 34, 46, 0.96), rgba(17, 21, 28, 0.96));
+}
+.kpi-overview .kpi-tile:hover::before { opacity: 1; }
+.kpi-overview .kpi-tile:active { transform: scale(0.985); }
+.kpi-overview .kpi-tile:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.kpi-overview .kpi-tile-lbl {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+.kpi-overview .kpi-tile-val {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--fg);
+}
+.kpi-overview .kpi-tile-sub {
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+.kpi-overview .kpi-tile.is-flash::before {
+  animation: kpi-flash 1100ms ease-out;
+}
+@keyframes kpi-flash {
+  0%   { opacity: 0; }
+  20%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (max-width: 1100px) {
+  .kpi-overview { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 640px) {
+  .kpi-overview { grid-template-columns: repeat(2, 1fr); position: static; }
+}
+
+/* 点击 KPI 后目标卡片轻闪一下 */
+.card.kpi-flash-target {
+  animation: kpi-target-pulse 1.4s ease-out;
+}
+@keyframes kpi-target-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(94, 234, 212, 0); }
+  20%  { box-shadow: 0 0 0 3px var(--accent-glow), 0 0 24px var(--accent-glow); }
+  100% { box-shadow: 0 0 0 0 rgba(94, 234, 212, 0); }
+}
+
 /* ===== KPI strip (NAV 汇总的强对比卡条) ===================== */
 .kpi-strip {
   display: grid;

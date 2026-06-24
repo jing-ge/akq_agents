@@ -3,6 +3,41 @@
 
 {% block content %}
 <h1>研究面板 <span class="small" style="font-weight:400">Research</span></h1>
+
+<!-- KPI 总览条 sticky 顶部，点击平滑滚动到对应卡片 -->
+<div class="kpi-overview" id="kpi-overview" aria-label="今日核心指标总览">
+  <button class="kpi-tile" type="button" data-target="nav-card" title="当日组合净值（扣费后），含日收益">
+    <span class="kpi-tile-lbl">当日 NAV</span>
+    <span class="kpi-tile-val" id="kpi-nav-val">—</span>
+    <span class="kpi-tile-sub" id="kpi-nav-sub">—</span>
+  </button>
+  <button class="kpi-tile" type="button" data-target="nav-card" title="累计超额收益 vs 沪深300">
+    <span class="kpi-tile-lbl">累计超额</span>
+    <span class="kpi-tile-val" id="kpi-excess-val">—</span>
+    <span class="kpi-tile-sub">vs 沪深300</span>
+  </button>
+  <button class="kpi-tile" type="button" data-target="portfolio-card" title="今日推荐组合的持仓数">
+    <span class="kpi-tile-lbl">持仓数</span>
+    <span class="kpi-tile-val" id="kpi-portfolio-val">—</span>
+    <span class="kpi-tile-sub" id="kpi-portfolio-sub">—</span>
+  </button>
+  <button class="kpi-tile" type="button" data-target="trade-list-card" title="今日待执行 BUY 数（未标记完成）">
+    <span class="kpi-tile-lbl">今日 BUY</span>
+    <span class="kpi-tile-val metric-good" id="kpi-buy-val">—</span>
+    <span class="kpi-tile-sub">待执行</span>
+  </button>
+  <button class="kpi-tile" type="button" data-target="trade-list-card" title="今日待执行 SELL 数（未标记完成）">
+    <span class="kpi-tile-lbl">今日 SELL</span>
+    <span class="kpi-tile-val metric-bad" id="kpi-sell-val">—</span>
+    <span class="kpi-tile-sub">待执行</span>
+  </button>
+  <button class="kpi-tile" type="button" data-target="shadow-card" title="OOS 表现已应淘汰、等待 demote 的 shadow 因子数">
+    <span class="kpi-tile-lbl">Shadow 待 demote</span>
+    <span class="kpi-tile-val" id="kpi-shadow-val">—</span>
+    <span class="kpi-tile-sub">需处理</span>
+  </button>
+</div>
+
 <p class="page-intro">
   这个页面用来 <b>查看每日组合、单因子表现、自动发现的新因子</b>。
   <b>组合</b>=今日 AI 推荐的股票篮子（含权重 / 评分 / 行业分布）；
@@ -61,7 +96,7 @@
 
 <div class="grid grid-2 main-row">
   <!-- Portfolio -->
-  <div class="card holdings-compact">
+  <div class="card holdings-compact" id="portfolio-card">
     <h2>今日组合 <span class="small">Portfolio</span></h2>
     <div class="toolbar" style="margin-bottom: 12px;">
       <label>日期：
@@ -100,7 +135,7 @@
 </div>
 
 <!-- M7-A: 组合净值曲线（扣费后 vs 沪深300） -->
-<div class="card">
+<div class="card" id="nav-card">
   <h2>组合净值回测 <span class="small">扣除手续费 / 滑点后的累计净值曲线 vs 沪深300</span></h2>
   <div class="toolbar">
     <button onclick="loadNav()" class="primary">刷新</button>
@@ -287,7 +322,7 @@ window.addEventListener('load', () => {
 </div>
 
 <!-- A2 (M15): Shadow 战况看板 -->
-<div class="card">
+<div class="card" id="shadow-card">
   <h2>Shadow 因子战况
     <span class="small">OOS 观察中，等待 promote / demote 判决</span>
   </h2>
@@ -776,7 +811,120 @@ window.addEventListener('load', () => {
   loadTradeList();
   loadHoldings();
   setupAutoRefresh();
+  setupKpiOverview();
+  loadKpiOverview();
 });
+
+// ===== KPI 总览条 =====================================================
+// 顶部 sticky 6 KPI 一排 — 点击平滑滚动至对应卡片，30s 自动刷新
+function setupKpiOverview() {
+  document.querySelectorAll('.kpi-overview .kpi-tile').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.target;
+      if (!id) return;
+      const card = document.getElementById(id);
+      if (!card) return;
+      // 计算 sticky bar 高度后偏移
+      const stickyH = document.querySelector('.kpi-overview')?.offsetHeight || 0;
+      const top = card.getBoundingClientRect().top + window.pageYOffset - stickyH - 12;
+      window.scrollTo({ top, behavior: 'smooth' });
+      // 高亮目标卡片一秒
+      card.classList.remove('kpi-flash-target');
+      void card.offsetWidth;
+      card.classList.add('kpi-flash-target');
+      setTimeout(() => card.classList.remove('kpi-flash-target'), 1400);
+    });
+  });
+}
+
+async function loadKpiOverview() {
+  // 并行拉所有数据源；任何一个失败仅 fallback 显示 "—"
+  const tasks = [
+    fetch('/api/research/nav?limit=400').then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch('/api/trading/today-list').then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch('/api/research/factors/shadow-stats').then(r => r.ok ? r.json() : null).catch(() => null),
+  ];
+  const [navD, listD, shadowD] = await Promise.all(tasks);
+
+  const setVal = (id, val, sub, cls) => {
+    const v = document.getElementById(id);
+    if (!v) return;
+    v.textContent = val;
+    if (cls !== undefined) {
+      v.classList.remove('metric-good', 'metric-bad', 'metric-warn', 'metric-dim');
+      if (cls) v.classList.add(cls);
+    }
+    if (sub !== undefined) {
+      const subId = id.replace('-val', '-sub');
+      const s = document.getElementById(subId);
+      if (s) s.textContent = sub;
+    }
+  };
+
+  // NAV: 取最后一个有效点
+  if (navD && navD.nav && navD.nav.length) {
+    const last = navD.nav[navD.nav.length - 1];
+    const navVal = last.nav_net;
+    const navStr = navVal != null ? Number(navVal).toFixed(4) : '—';
+    let dailyStr = '—';
+    let dailyCls = '';
+    if (navD.nav.length >= 2) {
+      const prev = navD.nav[navD.nav.length - 2];
+      if (prev && prev.nav_net && navVal != null) {
+        const ret = (navVal - prev.nav_net) / prev.nav_net;
+        const sign = ret >= 0 ? '+' : '';
+        dailyStr = `${sign}${(ret * 100).toFixed(2)}%`;
+        dailyCls = ret >= 0 ? 'metric-good' : 'metric-bad';
+      }
+    }
+    setVal('kpi-nav-val', navStr);
+    const navSub = document.getElementById('kpi-nav-sub');
+    if (navSub) {
+      navSub.textContent = `${last.date} · 日 ${dailyStr}`;
+      navSub.classList.remove('metric-good', 'metric-bad');
+      if (dailyCls) navSub.classList.add(dailyCls);
+    }
+    // 累计超额
+    if (last.benchmark_nav && navVal != null) {
+      const excess = (navVal - last.benchmark_nav) / last.benchmark_nav;
+      const sign = excess >= 0 ? '+' : '';
+      setVal('kpi-excess-val', `${sign}${(excess * 100).toFixed(2)}%`, undefined,
+             excess >= 0 ? 'metric-good' : 'metric-bad');
+    }
+  }
+
+  // Trade list: 用 today-list 既有汇总数 + 持仓数
+  if (listD) {
+    setVal('kpi-buy-val', listD.n_buy != null ? listD.n_buy : '—');
+    setVal('kpi-sell-val', listD.n_sell != null ? listD.n_sell : '—');
+    // 持仓数 = 推荐组合的 holdings = items 总数（含 HOLD），但更准确取 portfolio
+    if (listD.cohort_date) {
+      try {
+        const r = await fetch(`/api/research/portfolio?date=${listD.cohort_date}`);
+        if (r.ok) {
+          const pd = await r.json();
+          const n = (pd.rows || []).length;
+          setVal('kpi-portfolio-val', n);
+          const sub = document.getElementById('kpi-portfolio-sub');
+          if (sub) sub.textContent = listD.cohort_date;
+        }
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  // Shadow 待 demote
+  if (shadowD && shadowD.shadows) {
+    const n = shadowD.shadows.filter(s => s.verdict === 'should_demote').length;
+    setVal('kpi-shadow-val', n, undefined, n > 0 ? 'metric-bad' : 'metric-dim');
+  }
+
+  // 给所有 tile 一次 flash 动画暗示数据已更新
+  document.querySelectorAll('.kpi-overview .kpi-tile').forEach(t => {
+    t.classList.remove('is-flash');
+    void t.offsetWidth;
+    t.classList.add('is-flash');
+  });
+}
 
 // ===== P0-1 Trade List + Holdings =============================
 
@@ -1056,6 +1204,7 @@ async function runAutoRefresh() {
   if (dateSel && dateSel.value) tasks.push(loadPortfolio());
   tasks.push(loadNav());
   tasks.push(loadProposals());
+  tasks.push(loadKpiOverview());
   try { await Promise.allSettled(tasks); } catch (e) { /* ignore */ }
   stampRefresh();
 }
