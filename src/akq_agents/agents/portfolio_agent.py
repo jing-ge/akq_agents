@@ -83,6 +83,12 @@ class PortfolioAgent(BaseAgent):
         elif isinstance(today, str):
             today = date.fromisoformat(today)
 
+        # M19 修 H1+B2 lookahead bias: 因子选股必须用 t-1 close, 不能用 today close.
+        # 实盘 timeline: t-1 收盘 → 算因子 → 出 weights → t 用 close 建仓.
+        # 之前用 today close 算因子, 等于"看到今天涨幅再决定买什么", 制造 ~10-20% 假超额.
+        signal_date = repo._calendar.previous_trading_day(today)
+        logger.info("portfolio: signal_date=%s, target as_of_date=%s", signal_date, today)
+
         try:
             full_universe = repo.get_universe(today)
         except DataNotReady as exc:
@@ -108,21 +114,27 @@ class PortfolioAgent(BaseAgent):
         # Step 3: top 500 by amount_20
         from akq_agents.services.portfolio.combined_universe import build_portfolio_universe
 
+        # M19: 选股相关计算（universe / risk_filter / factor）全部用 signal_date 截断后的 ohlcv,
+        # 避免穿越 today close 信息. 保留原 ohlcv (含 today) 给 paper_trading freeze 用.
+        signal_ohlcv = ohlcv[ohlcv["date"] <= signal_date]
+        if signal_ohlcv.empty:
+            return {"status": "skipped", "reason": "no_history_before_today", "portfolio_size": 0}
+
         portfolio_universe = build_portfolio_universe(
             full_universe_symbols=full_universe.symbols,
-            ohlcv=ohlcv,
+            ohlcv=signal_ohlcv,
             top_n=500,
             window=20,
         )
 
-        # M7-B: 硬风控过滤（新股 / 停牌 / 极价 / 低流动性）
+        # M7-B: 硬风控过滤（新股 / 停牌 / 极价 / 低流动性）— 也用 signal_ohlcv 保证 lag 1 信号
         risk_filter = self._services.get("risk_filter")
         if risk_filter is not None:
-            sub_ohlcv_for_filter = ohlcv[ohlcv["symbol"].isin(list(portfolio_universe))]
+            sub_ohlcv_for_filter = signal_ohlcv[signal_ohlcv["symbol"].isin(list(portfolio_universe))]
             rf_result = risk_filter.apply(
                 candidate_symbols=portfolio_universe,
                 ohlcv=sub_ohlcv_for_filter,
-                as_of_date=today,
+                as_of_date=signal_date,
             )
             if rf_result.excluded:
                 logger.info(
@@ -135,20 +147,23 @@ class PortfolioAgent(BaseAgent):
         if not portfolio_universe:
             return {"status": "skipped", "reason": "empty_portfolio_universe", "portfolio_size": 0}
 
-        # 把 ohlcv 限制到 portfolio_universe
-        sub_ohlcv = ohlcv[ohlcv["symbol"].isin(set(portfolio_universe))]
+        # M19: 因子计算用 signal_ohlcv (≤ signal_date), 不能用 ohlcv (含 today)
+        # 这是 H1+B2 lookahead 修复的核心: 用 t-1 数据算 t 的 weights
+        sub_signal_ohlcv = signal_ohlcv[signal_ohlcv["symbol"].isin(set(portfolio_universe))]
 
         # Step 4-5: factors + preprocess
-        factors = registry.list_active(today)
-        raw = engine.compute(sub_ohlcv, factors)
+        factors = registry.list_active(signal_date)
+        raw = engine.compute(sub_signal_ohlcv, factors)
         directions = registry.factor_directions()
         z = prep.transform(raw, directions)
 
         # Step 6: composite_score
-        composite = scorer.score(z)
+        # M19: 传 signal_date 让 composite IR-EWMA 加权只看历史 IR (不穿越 today IR)
+        composite = scorer.score(z, as_of_date=signal_date)
 
         # Step 7: optimizer
-        vol_20 = _compute_vol_20(sub_ohlcv)
+        # M19: vol_20 也是因子, 用 signal_ohlcv 防穿越
+        vol_20 = _compute_vol_20(sub_signal_ohlcv)
         prev_weights = store.read_prev_weights(today)
         # M9-C: 行业映射（code 和 name）
         ind_store = self._services.get("industry_map_store")
@@ -191,6 +206,9 @@ class PortfolioAgent(BaseAgent):
 
         # P0-2: Paper Trading 冻结当日 cohort + 估值所有历史 cohort（前向证据）
         # today_close 在 paper trading 和 trade list 都用，提前算好
+        # M19: paper freeze 用 today close 是合理的 (盘后 16:30 已能拿到 close_t, 不算 lookahead).
+        # 这里重新构造 sub_ohlcv (含 today 数据) 仅用于取 today_close.
+        sub_ohlcv = ohlcv[ohlcv["symbol"].isin(set(portfolio_universe))]
         today_close: dict[str, float] = {}
         if not sub_ohlcv.empty:
             last_day_df = sub_ohlcv[sub_ohlcv["date"] == today]

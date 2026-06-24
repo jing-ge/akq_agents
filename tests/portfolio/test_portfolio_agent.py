@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -59,7 +59,11 @@ def _make_ohlcv(n_days: int = 80, n_symbols: int = 100) -> pd.DataFrame:
 
 @pytest.fixture
 def repo_mock() -> MagicMock:
-    return MagicMock()
+    repo = MagicMock()
+    # M19: portfolio_agent 现在用 repo._calendar.previous_trading_day 算 signal_date.
+    # mock 简单返回 d-1 自然日 (测试场景里 ohlcv 含足够历史, 不区分交易日/周末).
+    repo._calendar.previous_trading_day.side_effect = lambda d: d - timedelta(days=1)
+    return repo
 
 
 @pytest.fixture
@@ -148,5 +152,6 @@ def test_run_p3_writes_turnover_in_state(services: dict, repo_mock: MagicMock) -
     )
     result2 = agent.run(AgentContext(state={"today": "2026-06-18"}))
     assert result2["status"] == "ok"
-    # 数据没变 → 组合不变 → turnover ≈ 0
-    assert result2["turnover"] < 0.1
+    # M19: 修 lookahead 后, 6/17 跑用 signal=6/16, 6/18 跑用 signal=6/17, 输入差 1 天,
+    # 组合不会完全相同, 但应该接近 (允许 ~20% turnover).
+    assert result2["turnover"] < 0.25

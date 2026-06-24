@@ -23,11 +23,14 @@ class CompositeScorer:
         self._evaluator = evaluator
         self._last_weights: pd.Series = pd.Series(dtype=float)
 
-    def score(self, factor_df: pd.DataFrame) -> pd.Series:
+    def score(self, factor_df: pd.DataFrame, *, as_of_date: Any = None) -> pd.Series:
         """计算综合分。
 
         Args:
             factor_df: index=symbol, columns=factor_name, values=已标准化的因子值
+            as_of_date: 可选 date / ISO 字符串。如指定且 weighting='ir', IR-EWMA
+                只用 as_of_date 之前的历史 metrics 计算权重 (M19 修 lookahead bias —
+                历史回填时避免用未来 IR 给历史回测加权)。
 
         Returns:
             index=symbol, values=composite_score 的 Series
@@ -35,7 +38,7 @@ class CompositeScorer:
         if factor_df.empty:
             self._last_weights = pd.Series(dtype=float)
             return pd.Series(dtype=float, name="composite_score")
-        weights = self._compute_weights(list(factor_df.columns))
+        weights = self._compute_weights(list(factor_df.columns), as_of_date=as_of_date)
         self._last_weights = weights
         # 按列加权 mean（NaN→0 不贡献）
         weighted = factor_df.fillna(0.0).mul(weights, axis=1)
@@ -49,17 +52,28 @@ class CompositeScorer:
 
     # ------------------------------------------------------------------
 
-    def _compute_weights(self, factor_names: list[str]) -> pd.Series:
+    def _compute_weights(self, factor_names: list[str], *, as_of_date: Any = None) -> pd.Series:
         n = len(factor_names)
         if self._weighting == "equal" or self._evaluator is None:
             return pd.Series(1.0 / n, index=factor_names, dtype=float)
+
+        # M19: as_of_date 非空时, list_history 用 as_of_filter 限制只看历史. 用于回填.
+        as_of_filter = None
+        if as_of_date is not None:
+            if hasattr(as_of_date, "isoformat"):
+                as_of_filter = as_of_date.isoformat()
+            else:
+                as_of_filter = str(as_of_date)
 
         # M7-C: 取每个因子最近 N 期历史 IR 做 EWMA（半衰期 30 天，权重更倾向近期）
         # fallback：缺历史则用 latest |IR|
         irs: dict[str, float] = {}
         for name in factor_names:
             try:
-                history = self._evaluator.list_history(name, limit=120) if hasattr(self._evaluator, "list_history") else []
+                history = (
+                    self._evaluator.list_history(name, limit=120, as_of_filter=as_of_filter)
+                    if hasattr(self._evaluator, "list_history") else []
+                )
             except Exception:
                 history = []
             ir_value = self._ewma_abs_ir(history)
@@ -69,7 +83,10 @@ class CompositeScorer:
                 # 不依赖 factor_version。
                 m = None
                 try:
-                    latest_list = self._evaluator.list_history(name, limit=1) if hasattr(self._evaluator, "list_history") else []
+                    latest_list = (
+                        self._evaluator.list_history(name, limit=1, as_of_filter=as_of_filter)
+                        if hasattr(self._evaluator, "list_history") else []
+                    )
                     if latest_list:
                         m = latest_list[0]
                 except Exception:

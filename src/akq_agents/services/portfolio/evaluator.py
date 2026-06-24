@@ -244,19 +244,36 @@ class FactorEvaluator:
         return None if row is None else FactorMetric(*row)
 
     def list_history(
-        self, factor_name: str, *, limit: int = 120
+        self, factor_name: str, *, limit: int = 120, as_of_filter: str | None = None
     ) -> list[FactorMetric]:
-        """列出某 factor 的历史 metrics（跨 version 都返回，调用方按 factor_version 分组渲染）。"""
+        """列出某 factor 的历史 metrics（跨 version 都返回，调用方按 factor_version 分组渲染）。
+
+        as_of_filter: 可选 ISO 日期 (YYYY-MM-DD)。如指定, 只返回 as_of_date < 此日期的 metrics,
+            用于回填历史回测时避免用"未来 IR"算"历史 IR-EWMA 加权"(M19 修 lookahead bias).
+        """
         with open_meta_db(self._db) as conn:
-            rows = conn.execute(
-                """
-                SELECT factor_name, factor_version, as_of_date, window_days,
-                       ic_mean, ic_std, ir, t_stat, status, reason
-                FROM factor_metrics
-                WHERE factor_name = ?
-                ORDER BY factor_version DESC, as_of_date DESC
-                LIMIT ?
-                """,
-                (factor_name, limit),
-            ).fetchall()
+            if as_of_filter is not None:
+                rows = conn.execute(
+                    """
+                    SELECT factor_name, factor_version, as_of_date, window_days,
+                           ic_mean, ic_std, ir, t_stat, status, reason
+                    FROM factor_metrics
+                    WHERE factor_name = ? AND as_of_date < ?
+                    ORDER BY factor_version DESC, as_of_date DESC
+                    LIMIT ?
+                    """,
+                    (factor_name, as_of_filter, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT factor_name, factor_version, as_of_date, window_days,
+                           ic_mean, ic_std, ir, t_stat, status, reason
+                    FROM factor_metrics
+                    WHERE factor_name = ?
+                    ORDER BY factor_version DESC, as_of_date DESC
+                    LIMIT ?
+                    """,
+                    (factor_name, limit),
+                ).fetchall()
         return [FactorMetric(*r) for r in rows]
