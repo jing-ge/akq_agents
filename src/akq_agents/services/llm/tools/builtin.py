@@ -811,8 +811,11 @@ def build_factor_postmortem(services: dict[str, Any]) -> ToolSpec:
             "返回:\n"
             "- status: registered/shadow/accepted/rejected/demoted/llm_suggested/unknown\n"
             "- history: 按 as_of 降序的 [{as_of, ic, ir, window_days}]\n"
+            "- n_observations: 历史 metric 数 (重要! 看 note 判断够不够做结论)\n"
             "- recent_5d_mean_abs_ir / earlier_5d_mean_abs_ir: 用于趋势对比\n"
-            "- trend: decaying / stable / improving / None (数据不足)"
+            "- trend: decaying / stable / improving / None (数据不足)\n"
+            "- note: 数据稀疏时的提示, 比如 'n=3 统计意义不足, 累计 20 天再判'。\n"
+            "  ⚠️ 如果 note 非空, 不要凭 trend 字段就下结论, 把 note 直接告诉用户."
         ),
         json_schema={
             "type": "object",

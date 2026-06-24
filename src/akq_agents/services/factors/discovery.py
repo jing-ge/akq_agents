@@ -619,11 +619,20 @@ class DiscoveryEngine:
             try:
                 recipe = recipe_from_json(p.recipe_json)
                 factor = make_factor(recipe)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                # M18-I5 followup: recipe 解析失败也写状态防 stuck
+                p.oos_observations = len(oos_dates)
+                p.reason = f"recipe_parse_failed: {str(exc)[:100]}"
+                p.evaluated_at = now_iso()
+                self.proposal_store.upsert(p)
                 continue
             try:
                 hist = self._compute_factor_history(factor, ohlcv, all_dates)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                p.oos_observations = len(oos_dates)
+                p.reason = f"compute_history_failed: {str(exc)[:100]}"
+                p.evaluated_at = now_iso()
+                self.proposal_store.upsert(p)
                 continue
             if hist.empty:
                 # M18-I5: 数据稀疏时也要更新 oos_observations + reason，
@@ -648,6 +657,11 @@ class DiscoveryEngine:
             ic_series = _rolling_ic(oos_hist, oos_ret, window=min(len(oos_hist), 60))
             ic_clean = ic_series.dropna()
             if len(ic_clean) < 5:
+                # M18-I5 followup: rolling IC 样本不足也写状态防 stuck
+                p.oos_observations = len(oos_dates)
+                p.reason = f"data_sparse: ic_clean_len={len(ic_clean)} < 5"
+                p.evaluated_at = now_iso()
+                self.proposal_store.upsert(p)
                 continue
             oos_ic_mean = float(ic_clean.mean())
             oos_ic_std = float(ic_clean.std(ddof=1)) if ic_clean.std(ddof=1) > 0 else None
