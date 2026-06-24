@@ -403,6 +403,17 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+// 全局快捷键 'r' → 强制刷新三块 htmx 卡片
+window.addEventListener('hotkey:refresh', () => {
+  if (typeof htmx === 'undefined') return;
+  // htmx.ajax 直接触发一次 GET + 替换 innerHTML（不依赖 hx-trigger 上的 event 名）
+  document.querySelectorAll('[hx-get]').forEach(el => {
+    const url = el.getAttribute('hx-get');
+    if (url) htmx.ajax('GET', url, { target: el, swap: 'innerHTML' });
+  });
+  toast('已触发运维面板刷新', 'ok', { duration: 1500 });
+});
+
 htmx.on('#events-list', 'htmx:afterRequest', e => {
   if (!e.detail.xhr || e.detail.xhr.status !== 200) return;
   try {

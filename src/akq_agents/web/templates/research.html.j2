@@ -806,6 +806,13 @@ window.addEventListener('load', () => {
   setupAutoRefresh();
   setupKpiOverview();
   loadKpiOverview();
+  // 全局快捷键 'r' → 主动刷新研究页所有面板
+  window.addEventListener('hotkey:refresh', () => {
+    runAutoRefresh();
+    loadHoldings();
+    loadTradeList();
+    toast('已刷新研究面板', 'ok', { duration: 1500 });
+  });
 });
 
 // ===== KPI 总览条 =====================================================

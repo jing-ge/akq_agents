@@ -308,6 +308,70 @@
       setTimeout(() => back.querySelector('.confirm-ok').focus(), 30);
     });
   }
+
+  // ============================================================
+  // 全局快捷键
+  //   g+r/o/d/c/l → 跳转 研究 / 运维 / 数据 / 对话 / 日志
+  //   r           → 触发当前页 'hotkey:refresh' 事件
+  //   /           → 聚焦 #hotkey-search
+  //   ? 或 Shift+/ → 弹出帮助 toast
+  // ============================================================
+  (function setupHotkeys() {
+    let gKeyTimer = null;
+    const PAGES = { r: '/research', o: '/ops', d: '/data', c: '/chat', l: '/logs' };
+    document.addEventListener('keydown', (e) => {
+      // input/textarea/select 内不触发
+      const t = e.target;
+      if (!t) return;
+      if (['INPUT','TEXTAREA','SELECT'].includes(t.tagName)) return;
+      if (t.isContentEditable) return;
+      // 已在 modal/confirm 里（confirmDialog 自己处理 Enter/Esc）也不要再触发
+      if (document.querySelector('.confirm-backdrop:not(.is-out)')) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const k = e.key.toLowerCase();
+
+      // 'g' → 进入二段
+      if (k === 'g' && !gKeyTimer) {
+        gKeyTimer = setTimeout(() => { gKeyTimer = null; }, 1500);
+        toast("→ 等待第二个键: r/o/d/c/l", 'ok', { duration: 1400 });
+        return;
+      }
+      if (gKeyTimer) {
+        clearTimeout(gKeyTimer);
+        gKeyTimer = null;
+        if (PAGES[k]) {
+          e.preventDefault();
+          location.href = PAGES[k];
+          return;
+        }
+      }
+
+      // 'r' — 刷新当前页
+      if (k === 'r' && !e.shiftKey) {
+        window.dispatchEvent(new CustomEvent('hotkey:refresh'));
+        return;
+      }
+
+      // '/' — 聚焦页面搜索框
+      if (k === '/' && !e.shiftKey) {
+        const search = document.getElementById('hotkey-search');
+        if (search) {
+          e.preventDefault();
+          search.focus();
+          if (typeof search.select === 'function') search.select();
+        }
+        return;
+      }
+
+      // '?' 帮助
+      if (k === '?' || (e.shiftKey && k === '/')) {
+        e.preventDefault();
+        toast('快捷键: g+r/o/d/c/l 跳转 · r 刷新当前页 · / 聚焦搜索 · ? 查看帮助', 'ok', { duration: 4500 });
+        return;
+      }
+    });
+  })();
   </script>
 
   {% block scripts %}{% endblock %}
