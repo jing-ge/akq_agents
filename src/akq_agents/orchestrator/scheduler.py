@@ -28,6 +28,7 @@ from akq_agents.models.scheduler_config import SchedulerConfig
 from akq_agents.orchestrator.daemon_state_file import DaemonStateFile
 from akq_agents.orchestrator.job_runner import JobRunner
 from akq_agents.orchestrator.jobs import (
+    alert_check,
     batch_deep_research,
     batch_post_close,
     data_refresh,
@@ -222,4 +223,5 @@ class QuantDaemon:
         retry_fetch_errors.register(self._scheduler, self._runner, self._cfg, self._services)
         factor_discovery.register(self._scheduler, self._runner, self._cfg, self._services)
         factor_brainstorm.register(self._scheduler, self._runner, self._cfg, self._services)
+        alert_check.register(self._scheduler, self._runner, self._cfg, self._services)
         health_heartbeat.register(self._scheduler, self._cfg, self._daemon_state_file)

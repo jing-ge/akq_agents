@@ -62,6 +62,11 @@ KNOWN_EVENT_KINDS: frozenset[str] = frozenset(
         "chat.session.created",
         "llm.tool.failed",
         "llm.tool.unknown",
+        # M17 alerter
+        "alert.check.completed",
+        "alert.nav.abnormal",
+        "alert.data.refresh_failed",
+        "alert.factor.decayed",
     }
 )
 

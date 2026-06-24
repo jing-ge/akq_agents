@@ -77,6 +77,18 @@ class FactorBrainstormConfig(BaseModel):
     n_suggestions: int = 20
 
 
+class AlerterConfig(BaseModel):
+    """M17 alerter job：定期巡检几项关键指标，触发条件就写 events.alert.* + macOS notify。"""
+
+    enabled: bool = True
+    interval_minutes: int = 30
+    timeout_s: int = 30
+    # 阈值
+    nav_max_abs_daily_return: float = 0.15  # 单日 |daily_return| > 此值告警 (C3 那种伪净值的兜底)
+    refresh_max_consecutive_failed: int = 2  # data.refresh_daily 连续 N 次 failed
+    factor_decay_min_abs_ir: float = 0.05    # accepted 因子最近 5 天平均 |IR| < 此值告警
+
+
 class SchedulerJobsConfig(BaseModel):
     batch_post_close: BatchJobConfig = Field(default_factory=BatchJobConfig)
     batch_deep_research: BatchJobConfig = Field(
@@ -93,6 +105,7 @@ class SchedulerJobsConfig(BaseModel):
     factor_discovery: FactorDiscoveryConfig = Field(default_factory=FactorDiscoveryConfig)
     factor_brainstorm: FactorBrainstormConfig = Field(default_factory=FactorBrainstormConfig)
     data_refresh: DataRefreshConfig = Field(default_factory=DataRefreshConfig)
+    alerter: AlerterConfig = Field(default_factory=AlerterConfig)
 
 
 class RetentionConfig(BaseModel):
