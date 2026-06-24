@@ -156,7 +156,7 @@ async function loadDailyAttribution() {
     const r = await fetch(`/api/research/daily-attribution?date=${date}`);
     if (!r.ok) {
       const d = await r.json();
-      out.innerHTML = '<div class="small status-error">' + (d.detail || JSON.stringify(d)) + '</div>';
+      out.innerHTML = '<div class="small status-error">' + formatErrorDetail(d) + '</div>';
       status.textContent = '';
       return;
     }
@@ -223,6 +223,18 @@ if (typeof escapeHtml === 'undefined') {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
       '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
     }[c]));
+  }
+}
+
+// HTTP 错误响应展示助手：detail 可能是字符串（FastAPI 默认）或 object（结构化）。
+// 老用法 formatErrorDetail(d) 在 detail 是 object 时会显示 "[object Object]"。
+if (typeof formatErrorDetail === 'undefined') {
+  function formatErrorDetail(d) {
+    if (!d) return 'unknown error';
+    const detail = d.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object') return JSON.stringify(detail);
+    return JSON.stringify(d);
   }
 }
 
@@ -302,7 +314,7 @@ async function loadFactorCorrelation() {
     const r = await fetch('/api/research/factors/correlation');
     if (!r.ok) {
       const d = await r.json();
-      status.innerHTML = '<span class="status-error">❌ ' + (d.detail || JSON.stringify(d)) + '</span>';
+      status.innerHTML = '<span class="status-error">❌ ' + formatErrorDetail(d) + '</span>';
       return;
     }
     const d = await r.json();
@@ -452,7 +464,7 @@ async function runBrainstorm() {
     });
     const d = await r.json();
     if (!r.ok) {
-      status.innerHTML = '<span class="status-error">❌ ' + (d.detail || JSON.stringify(d)) + '</span>';
+      status.innerHTML = '<span class="status-error">❌ ' + formatErrorDetail(d) + '</span>';
       return;
     }
     status.innerHTML = '<span class="status-ok">✅ ' + (d.result || '完成') + '</span>';
@@ -511,7 +523,7 @@ async function reviewLLM(name, action) {
   try {
     const r = await fetch(`/api/research/factors/llm-suggestions/${encodeURIComponent(name)}/${action}`, {method:'POST'});
     const d = await r.json();
-    if (!r.ok) { alert('失败：' + (d.detail || JSON.stringify(d))); return; }
+    if (!r.ok) { alert('失败：' + formatErrorDetail(d)); return; }
     loadLLMSuggestions();
   } catch (e) { alert('网络错误：' + e.message); }
 }
@@ -850,7 +862,7 @@ async function markAllExecuted() {
     const r = await fetch('/api/trading/today-list/mark-all-executed', {method: 'POST'});
     const d = await r.json();
     if (!r.ok) {
-      alert('失败：' + (d.detail || JSON.stringify(d)));
+      alert('失败：' + formatErrorDetail(d));
       return;
     }
     alert(`✅ 已执行 ${d.executed_count} 条`);

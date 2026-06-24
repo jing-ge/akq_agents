@@ -371,7 +371,7 @@ async def daily_attribution(date: str = Query(..., description="YYYY-MM-DD")) ->
 
     rows = svc.portfolio_store.read_snapshot(d)
     if not rows:
-        raise HTTPException(404, {"error": "no_snapshot", "date": date})
+        raise HTTPException(404, f"该日期无组合快照: {date}")
 
     today_close, prev_close = _load_close_pair(svc.repo, [r.symbol for r in rows], d)
 
@@ -476,7 +476,12 @@ async def factors_correlation(
     if not factors:
         return {"factors": [], "matrix": [], "n_observations": 0}
 
-    target_d = _date.fromisoformat(date) if date else _date.today()
+    # 如果 user 不传 date，默认用最近一个 ohlcv parquet partition（不是 today，
+    # 因为当日数据要等 16:00 cron 才会刷出来；今天没数据时 endpoint 不该 404）。
+    if date:
+        target_d = _date.fromisoformat(date)
+    else:
+        target_d = _latest_ohlcv_partition(svc.repo) or _date.today()
     max_lookback = max((f.lookback_days for f in factors), default=60)
     start = target_d - _td(days=max(lookback_days, max_lookback * 2))
 
@@ -491,7 +496,7 @@ async def factors_correlation(
     else:
         ohlcv = svc.repo.get_ohlcv_loose([], start, target_d)
     if ohlcv.empty:
-        raise HTTPException(404, {"error": "no_ohlcv_data", "date": target_d.isoformat()})
+        raise HTTPException(404, f"无可用 OHLCV 数据 ({target_d.isoformat()})；可能尚未拉取或解析失败")
 
     df = factor_engine.compute(ohlcv, factors)
     if df.empty:
@@ -508,3 +513,20 @@ async def factors_correlation(
         "n_observations": int(df.dropna(how="any").shape[0]),
         "n_total_symbols": int(df.shape[0]),
     }
+
+
+def _latest_ohlcv_partition(repo) -> _date | None:
+    """扫 ohlcv parquet 目录找最大日期分区。今日 cron 没跑完时用作 fallback。"""
+    ohlcv_dir = getattr(repo, "_ohlcv_dir", None)
+    if ohlcv_dir is None or not ohlcv_dir.exists():
+        return None
+    candidates = []
+    for p in ohlcv_dir.iterdir():
+        # 分区目录名形如 date=2026-06-23
+        name = p.name
+        if name.startswith("date=") and len(name) == 15:
+            try:
+                candidates.append(_date.fromisoformat(name[5:]))
+            except ValueError:
+                continue
+    return max(candidates) if candidates else None
