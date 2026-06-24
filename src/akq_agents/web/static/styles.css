@@ -719,8 +719,11 @@ button.is-loading::after {
   backdrop-filter: blur(2px);
   z-index: 9998;
   display: flex;
-  align-items: center;
+  /* 用户体验: modal 出现在视线焦点附近, 而不是 viewport 严格 center.
+     20vh 让 modal 顶部距 viewport 顶 20%, 视觉上更接近用户当前操作的按钮位置. */
+  align-items: flex-start;
   justify-content: center;
+  padding-top: 20vh;
   animation: confirm-fade 180ms ease-out;
 }
 .confirm-backdrop.is-out { animation: confirm-fade-out 180ms ease-in forwards; }

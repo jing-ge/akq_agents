@@ -1138,9 +1138,10 @@ async function loadPaperTracking() {
       const old = echarts.getInstanceByDom(chartEl);
       if (old) old.dispose();
       const chart = echarts.init(chartEl);
+      // 散点: x=建仓日, y=最新收益率, 颜色按"已 N 天"映射（新冻结→暖色, 长期→冷色）
       const data = list.cohorts.filter(c => c.latest_return_pct != null).map(c => ({
-        value: [c.cohort_date, (c.latest_return_pct * 100).toFixed(2)],
-        days: c.days_elapsed,
+        // [建仓日, 收益%, 已N天]; visualMap 需要 dimension=2 才能正确映射颜色
+        value: [c.cohort_date, (c.latest_return_pct * 100).toFixed(2), c.days_elapsed || 0],
         excess: c.latest_excess_pct != null ? (c.latest_excess_pct * 100).toFixed(2) : null,
         n: c.n_holdings,
       }));
@@ -1150,7 +1151,7 @@ async function loadPaperTracking() {
           trigger: 'item',
           formatter: (p) => {
             const d = p.data;
-            return `<b>${d.value[0]}</b> 建仓 (${d.days} 天前)<br/>` +
+            return `<b>${d.value[0]}</b> 建仓 (${d.value[2]} 天前)<br/>` +
                    `收益: <b style="color:${d.value[1]>=0?'#5eead4':'#f87171'}">${d.value[1]}%</b><br/>` +
                    (d.excess !== null ? `超额: ${d.excess}%<br/>` : '') +
                    `持仓: ${d.n} 只`;
@@ -1171,7 +1172,9 @@ async function loadPaperTracking() {
         },
         visualMap: {
           show: false,
-          dimension: 'days',
+          // 必须用数字索引, 不能用字符串字段名. data.value=[建仓日, 收益%, 已N天]
+          // dimension=2 → 按"已 N 天"映射颜色 (新冻结=暖色, 长期=冷色)
+          dimension: 2,
           min: 0, max: 250,
           inRange: { color: ['#fbbf24', '#5eead4'] },
         },
