@@ -90,21 +90,37 @@ async function doAction(btn, url, method) {
   if (typeof btn === 'string') { method = url; url = btn; btn = null; }
   const out = document.getElementById('control-output');
   out.className = 'console-output is-busy';
+
+  // 简易进度文字（runLongOperation 写入 statusEl）+ 原始 JSON 输出（console-output）
+  let statusBox = document.getElementById('control-status');
+  if (!statusBox) {
+    statusBox = document.createElement('div');
+    statusBox.id = 'control-status';
+    statusBox.className = 'small';
+    statusBox.style.marginBottom = '6px';
+    out.parentNode.insertBefore(statusBox, out);
+  }
+  statusBox.textContent = '';
   out.textContent = '⏳ 正在执行：' + method + ' ' + url + '\n';
-  if (btn) { btn.classList.add('is-loading'); btn.disabled = true; }
-  try {
-    const r = await fetch(url, { method });
-    const txt = await r.text();
-    let pretty = txt;
-    try { pretty = JSON.stringify(JSON.parse(txt), null, 2); } catch {}
-    out.className = 'console-output ' + (r.ok ? 'is-ok' : 'is-err');
-    const tag = r.ok ? '✅ 执行完成' : '❌ 执行失败';
-    out.textContent = tag + '  [HTTP ' + r.status + ']\n' + pretty;
-  } catch (err) {
+
+  const result = await runLongOperation({
+    button: btn,
+    url, method,
+    statusEl: statusBox,
+    runningMessage: '执行中',
+    successMessage: '执行完成',
+  });
+
+  if (result.ok) {
+    out.className = 'console-output is-ok';
+    out.textContent = '✅ 执行完成\n' + (result.data != null ? JSON.stringify(result.data, null, 2) : '(no body)');
+  } else if (result.error) {
     out.className = 'console-output is-err';
-    out.textContent = '❌ 网络异常：' + err;
-  } finally {
-    if (btn) { btn.classList.remove('is-loading'); btn.disabled = false; }
+    out.textContent = '❌ 网络异常：' + (result.error.message || String(result.error));
+  } else {
+    out.className = 'console-output is-err';
+    out.textContent = '❌ 执行失败 [HTTP ' + (result.status || '?') + ']\n' +
+      (result.data != null ? JSON.stringify(result.data, null, 2) : '');
   }
 }
 

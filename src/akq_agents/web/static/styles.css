@@ -562,6 +562,18 @@ button.is-loading::after {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 内联小 spinner（用于状态文本旁） */
+.lo-spinner {
+  display: inline-block;
+  width: 10px; height: 10px;
+  margin-right: 4px;
+  border: 2px solid var(--accent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -1px;
+}
+
 /* ===== Toolbar / button groups ============================= */
 .toolbar {
   display: flex;

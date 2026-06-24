@@ -139,7 +139,7 @@
   <h2>组合净值回测 <span class="small">扣除手续费 / 滑点后的累计净值曲线 vs 沪深300</span></h2>
   <div class="toolbar">
     <button onclick="loadNav()" class="primary">刷新</button>
-    <button onclick="rebuildNav()" class="warn">重新计算</button>
+    <button id="btn-rebuild-nav" onclick="rebuildNav(this)" class="warn">重新计算</button>
     <span id="nav-summary" class="small"></span>
   </div>
   <div id="nav-chart" class="chart" style="height:300px"></div>
@@ -299,8 +299,9 @@ window.addEventListener('load', () => {
       </select>
     </label>
     <button class="primary" onclick="loadProposals()">刷新列表</button>
-    <button class="warn" onclick="runDiscovery()"
+    <button class="warn" id="btn-discovery" onclick="runDiscovery()"
             title="让 AI 临时生成 20 个新因子配方并回测（约 30~120 秒）">立即跑一轮发现（20 个候选）</button>
+    <span id="discovery-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
   </div>
   <div id="proposals-table" class="small"></div>
 </div>
@@ -487,28 +488,15 @@ window.addEventListener('load', loadShadowStats);
 
 <script>
 async function runBrainstorm() {
-  const btn = document.getElementById('btn-brainstorm');
-  const status = document.getElementById('brainstorm-status');
-  btn.disabled = true; btn.classList.add('is-loading');
-  status.textContent = '调用 LLM 中…（5-15 秒）';
-  try {
-    const r = await fetch('/api/research/factors/brainstorm/run', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({n: 10}),
-    });
-    const d = await r.json();
-    if (!r.ok) {
-      status.innerHTML = '<span class="status-error">❌ ' + formatErrorDetail(d) + '</span>';
-      return;
-    }
-    status.innerHTML = '<span class="status-ok">✅ ' + (d.result || '完成') + '</span>';
-    loadLLMSuggestions();
-  } catch (e) {
-    status.innerHTML = '<span class="status-error">❌ 网络错误：' + e.message + '</span>';
-  } finally {
-    btn.disabled = false; btn.classList.remove('is-loading');
-  }
+  await runLongOperation({
+    button: document.getElementById('btn-brainstorm'),
+    url: '/api/research/factors/brainstorm/run',
+    body: { n: 10 },
+    statusEl: document.getElementById('brainstorm-status'),
+    runningMessage: '调用 LLM 中',
+    successMessage: '完成，正在刷新列表',
+    onSuccess: () => loadLLMSuggestions(),
+  });
 }
 
 async function loadLLMSuggestions() {
@@ -1350,15 +1338,15 @@ async function loadNav() {
   } catch (e) { summaryEl.textContent = '错误: ' + e.message; }
 }
 
-async function rebuildNav() {
-  const summaryEl = document.getElementById('nav-summary');
-  summaryEl.textContent = '重新计算中（可能需要 5-30 秒）...';
-  try {
-    const r = await fetch('/api/research/nav/rebuild', { method: 'POST' });
-    const d = await r.json();
-    console.log('rebuild result', d);
-    await loadNav();
-  } catch (e) { summaryEl.textContent = '错误: ' + e.message; }
+async function rebuildNav(btn) {
+  await runLongOperation({
+    button: btn || document.getElementById('btn-rebuild-nav'),
+    url: '/api/research/nav/rebuild',
+    statusEl: document.getElementById('nav-summary'),
+    runningMessage: '重新计算净值',
+    successMessage: '已重新计算，正在重载曲线',
+    onSuccess: () => { loadNav(); loadKpiOverview(); },
+  });
 }
 
 async function loadProposals() {
@@ -1427,13 +1415,16 @@ async function loadProposals() {
 
 async function runDiscovery() {
   const tableEl = document.getElementById('proposals-table');
-  tableEl.innerHTML = '<div class="loading-skeleton">正在让 AI 生成 20 个新因子并回测，预计 30~120 秒，请稍候…</div>';
-  try {
-    const r = await fetch('/api/control/jobs/factor.discovery/trigger?n_candidates=20', { method: 'POST' });
-    const d = await r.json();
-    console.log('discovery result', d);
-    await loadProposals();
-  } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
+  tableEl.innerHTML = '<div class="loading-skeleton">AI 生成 20 个新因子配方并回测中…（30~120 秒）</div>';
+  await runLongOperation({
+    button: document.getElementById('btn-discovery'),
+    url: '/api/control/jobs/factor.discovery/trigger?n_candidates=20',
+    statusEl: document.getElementById('discovery-status'),
+    runningMessage: 'AI 因子发现中',
+    successMessage: '完成，列表已刷新',
+    onSuccess: () => loadProposals(),
+    onError: () => loadProposals(),
+  });
 }
 
 // ============================================================
