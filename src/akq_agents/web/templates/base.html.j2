@@ -367,7 +367,8 @@
 
       // '/' — 聚焦页面搜索框
       if (k === '/' && !e.shiftKey) {
-        const search = document.getElementById('hotkey-search');
+        const search = document.getElementById('hotkey-search')
+                    || document.querySelector('[data-hotkey-search]');
         if (search) {
           e.preventDefault();
           search.focus();
