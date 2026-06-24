@@ -895,10 +895,16 @@ async function loadKpiOverview() {
     }
   }
 
-  // Trade list: 用 today-list 既有汇总数 + 持仓数
-  if (listD) {
-    setVal('kpi-buy-val', listD.n_buy != null ? listD.n_buy : '—');
-    setVal('kpi-sell-val', listD.n_sell != null ? listD.n_sell : '—');
+  // Trade list: 显示真正待执行的 BUY/SELL（排除 executed），并标注 stale 状态
+  if (listD && listD.items) {
+    const pendingBuy = listD.items.filter(i => i.action === 'BUY' && !i.executed).length;
+    const pendingSell = listD.items.filter(i => i.action === 'SELL' && !i.executed).length;
+    const isStale = listD.is_today === false;
+    const buyStaleCls = isStale ? 'metric-dim' : '';
+    const sellStaleCls = isStale ? 'metric-dim' : '';
+    const staleSub = isStale ? `${listD.cohort_date} 旧清单` : undefined;
+    setVal('kpi-buy-val', pendingBuy, staleSub, buyStaleCls);
+    setVal('kpi-sell-val', pendingSell, staleSub, sellStaleCls);
     // 持仓数 = 推荐组合的 holdings = items 总数（含 HOLD），但更准确取 portfolio
     if (listD.cohort_date) {
       try {
@@ -912,6 +918,10 @@ async function loadKpiOverview() {
         }
       } catch (e) { /* ignore */ }
     }
+  } else {
+    // 接口失败或 items 缺失
+    setVal('kpi-buy-val', '—', '暂无清单', 'metric-dim');
+    setVal('kpi-sell-val', '—', '暂无清单', 'metric-dim');
   }
 
   // Shadow 待 demote
