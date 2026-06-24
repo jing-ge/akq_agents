@@ -549,9 +549,10 @@ async function reviewLLM(name, action) {
   try {
     const r = await fetch(`/api/research/factors/llm-suggestions/${encodeURIComponent(name)}/${action}`, {method:'POST'});
     const d = await r.json();
-    if (!r.ok) { alert('失败：' + formatErrorDetail(d)); return; }
+    if (!r.ok) { toast('失败：' + formatErrorDetail(d), 'error'); return; }
+    toast(`${name} → ${action === 'accept' ? '已接受（进入 shadow 观察）' : '已拒绝'}`, 'ok');
     loadLLMSuggestions();
-  } catch (e) { alert('网络错误：' + e.message); }
+  } catch (e) { toast('网络错误：' + e.message, 'error'); }
 }
 
 // 页面加载时自动拉一次
@@ -1000,18 +1001,25 @@ async function markExecuted(symbol, date, btn) {
 }
 
 async function markAllExecuted() {
-  if (!confirm('确认把今日 trade_list 里所有 BUY/SELL 全部标记已执行？这会更新 holdings 表。')) return;
+  const ok = await confirmDialog(
+    '确认把今日 trade_list 里所有 BUY/SELL 全部标记已执行？\n这会同步更新你的 holdings 持仓表。',
+    { title: '一键标记全部已执行', confirmLabel: '全部执行', danger: true }
+  );
+  if (!ok) return;
   try {
     const r = await fetch('/api/trading/today-list/mark-all-executed', {method: 'POST'});
     const d = await r.json();
     if (!r.ok) {
-      alert('失败：' + formatErrorDetail(d));
+      toast('失败：' + formatErrorDetail(d), 'error');
       return;
     }
-    alert(`✅ 已执行 ${d.executed_count} 条`);
-    location.reload();
+    toast(`已执行 ${d.executed_count} 条交易`, 'ok');
+    // 不再 reload；只刷新相关卡片即可
+    loadTradeList();
+    loadHoldings();
+    loadKpiOverview();
   } catch (e) {
-    alert('网络错误：' + e.message);
+    toast('网络错误：' + e.message, 'error');
   }
 }
 
@@ -1070,11 +1078,15 @@ async function upsertHolding() {
 }
 
 async function deleteHolding(symbol) {
-  if (!confirm(`确定删除 ${symbol}？`)) return;
+  const ok = await confirmDialog(`确定删除持仓 ${symbol}？`, {
+    title: '删除持仓', confirmLabel: '删除', danger: true,
+  });
+  if (!ok) return;
   try {
     await fetch(`/api/trading/holdings/${symbol}`, {method: 'DELETE'});
+    toast(`已删除 ${symbol}`, 'ok');
     await loadHoldings();
-  } catch (e) { alert('删除失败'); }
+  } catch (e) { toast('删除失败：' + e.message, 'error'); }
 }
 
 // ===== P0-2 Forward Track =====================================

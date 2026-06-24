@@ -67,10 +67,13 @@
 let currentSession = null;
 
 async function deleteSession(sid) {
-  if (!confirm(`确定删除会话 ${sid}？此操作不可撤销。`)) return;
+  const ok = await confirmDialog(`确定删除会话 ${sid}？此操作不可撤销。`, {
+    title: '删除会话', confirmLabel: '删除', danger: true,
+  });
+  if (!ok) return;
   try {
     const r = await fetch(`/api/chat/sessions/${sid}`, { method: 'DELETE' });
-    if (!r.ok) { alert('删除失败 HTTP ' + r.status); return; }
+    if (!r.ok) { toast('删除失败 HTTP ' + r.status, 'error'); return; }
     // 从 sidebar 移除该行
     const row = document.querySelector(`#sessions-list > div[data-session-id="${sid}"]`);
     if (row) row.remove();
@@ -83,12 +86,13 @@ async function deleteSession(sid) {
       const empty = document.getElementById('chat-empty');
       if (empty) empty.style.display = '';
     }
-  } catch (e) { alert('删除失败: ' + e.message); }
+    toast('会话已删除', 'ok');
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 async function newSession() {
   const r = await fetch('/api/chat/sessions', { method: 'POST' });
-  if (!r.ok) { alert('创建失败: ' + r.status); return; }
+  if (!r.ok) { toast('创建失败: ' + r.status, 'error'); return; }
   const d = await r.json();
   currentSession = d.session_id;
   document.getElementById('session-title').textContent = '会话 #' + currentSession;

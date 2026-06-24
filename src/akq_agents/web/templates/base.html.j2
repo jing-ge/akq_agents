@@ -239,6 +239,75 @@
     rows.forEach(r => frag.appendChild(r));
     tbody.appendChild(frag);
   }
+
+  // ============================================================
+  // 轻量 toast — toast(message, level='ok'|'warn'|'error', { duration })
+  // ============================================================
+  function toast(message, level, opts) {
+    const lv = (level || 'ok').toLowerCase();
+    const duration = (opts && opts.duration != null) ? opts.duration : 3000;
+    let host = document.getElementById('toast-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'toast-host';
+      host.className = 'toast-host';
+      document.body.appendChild(host);
+    }
+    const el = document.createElement('div');
+    el.className = `toast toast-${lv}`;
+    const icon = lv === 'error' ? '❌' : (lv === 'warn' ? '⚠' : '✓');
+    el.innerHTML = `<span class="toast-icon">${icon}</span><span class="toast-msg"></span>`;
+    el.querySelector('.toast-msg').textContent = typeof message === 'string' ? message : JSON.stringify(message);
+    host.appendChild(el);
+    // exit animation
+    setTimeout(() => {
+      el.classList.add('is-out');
+      setTimeout(() => el.remove(), 280);
+    }, duration);
+    return el;
+  }
+
+  // confirmDialog(message, opts?) → Promise<bool>
+  // opts: { title, confirmLabel, cancelLabel, danger }
+  function confirmDialog(message, opts) {
+    return new Promise(resolve => {
+      const o = opts || {};
+      const title = o.title || '请确认';
+      const confirmLabel = o.confirmLabel || '确定';
+      const cancelLabel = o.cancelLabel || '取消';
+      const danger = !!o.danger;
+      const back = document.createElement('div');
+      back.className = 'confirm-backdrop';
+      back.innerHTML = `
+        <div class="confirm-window" role="dialog" aria-modal="true">
+          <div class="confirm-head">${escapeHtml(title)}</div>
+          <div class="confirm-body"></div>
+          <div class="confirm-actions">
+            <button class="confirm-cancel" type="button">${escapeHtml(cancelLabel)}</button>
+            <button class="confirm-ok ${danger ? 'is-danger' : ''}" type="button">${escapeHtml(confirmLabel)}</button>
+          </div>
+        </div>
+      `;
+      back.querySelector('.confirm-body').textContent = message;
+      document.body.appendChild(back);
+      const cleanup = (val) => {
+        back.classList.add('is-out');
+        setTimeout(() => back.remove(), 180);
+        document.removeEventListener('keydown', keyHandler);
+        resolve(val);
+      };
+      const keyHandler = (e) => {
+        if (e.key === 'Escape') cleanup(false);
+        if (e.key === 'Enter') cleanup(true);
+      };
+      document.addEventListener('keydown', keyHandler);
+      back.querySelector('.confirm-cancel').addEventListener('click', () => cleanup(false));
+      back.querySelector('.confirm-ok').addEventListener('click', () => cleanup(true));
+      back.addEventListener('click', e => { if (e.target === back) cleanup(false); });
+      // 焦点放到确认按钮
+      setTimeout(() => back.querySelector('.confirm-ok').focus(), 30);
+    });
+  }
   </script>
 
   {% block scripts %}{% endblock %}

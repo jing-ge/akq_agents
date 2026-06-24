@@ -607,6 +607,147 @@ button.is-loading::after {
   vertical-align: -1px;
 }
 
+/* ===== Toast (右下角浮起的轻提示) ============================ */
+.toast-host {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 9999;
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(180deg, rgba(28, 34, 46, 0.98), rgba(17, 21, 28, 0.98));
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 11px 16px 11px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  min-width: 220px;
+  max-width: 420px;
+  animation: toast-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.toast.is-out {
+  animation: toast-out 260ms ease-in forwards;
+}
+.toast-ok    { border-left-color: var(--ok); }
+.toast-warn  { border-left-color: var(--warn); }
+.toast-error { border-left-color: var(--err); }
+.toast-icon {
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.toast-ok .toast-icon    { color: var(--ok); }
+.toast-warn .toast-icon  { color: var(--warn); }
+.toast-error .toast-icon { color: var(--err); }
+.toast-msg {
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+@keyframes toast-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+@keyframes toast-out {
+  from { transform: translateX(0); opacity: 1; }
+  to   { transform: translateX(24px); opacity: 0; }
+}
+
+/* ===== confirmDialog 模态 ================================== */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 9, 13, 0.72);
+  backdrop-filter: blur(2px);
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: confirm-fade 180ms ease-out;
+}
+.confirm-backdrop.is-out { animation: confirm-fade-out 180ms ease-in forwards; }
+.confirm-window {
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  width: min(440px, calc(100vw - 32px));
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.85);
+  overflow: hidden;
+  animation: confirm-pop 200ms cubic-bezier(0.2, 1, 0.3, 1);
+}
+.confirm-head {
+  padding: 14px 18px 10px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--fg);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.confirm-body {
+  padding: 16px 18px 18px;
+  color: var(--fg-mute);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 10px 14px 14px;
+  background: var(--bg-1);
+  border-top: 1px solid var(--line);
+}
+.confirm-actions button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 16px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--fg);
+  transition: background 140ms var(--ease-out), border-color 140ms var(--ease-out);
+}
+.confirm-actions button:hover { background: var(--bg-3); border-color: var(--accent); }
+.confirm-actions .confirm-ok {
+  background: var(--accent);
+  color: #0a0d12;
+  font-weight: 600;
+  border-color: var(--accent);
+}
+.confirm-actions .confirm-ok:hover { background: var(--accent-strong); }
+.confirm-actions .confirm-ok.is-danger {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+}
+.confirm-actions .confirm-ok.is-danger:hover {
+  background: #ef4444;
+}
+@keyframes confirm-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes confirm-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes confirm-pop {
+  from { opacity: 0; transform: scale(0.94) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
 /* ===== Toolbar / button groups ============================= */
 .toolbar {
   display: flex;
