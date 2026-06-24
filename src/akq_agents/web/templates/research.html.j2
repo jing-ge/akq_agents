@@ -254,14 +254,6 @@ function renderDailyAttr(d) {
   return html;
 }
 
-if (typeof escapeHtml === 'undefined') {
-  function escapeHtml(s) {
-    return String(s ?? '').replace(/[&<>"']/g, c => ({
-      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-    }[c]));
-  }
-}
-
 // HTTP 错误响应展示助手：detail 可能是字符串（FastAPI 默认）或 object（结构化）。
 // 老用法 formatErrorDetail(d) 在 detail 是 object 时会显示 "[object Object]"。
 if (typeof formatErrorDetail === 'undefined') {
@@ -539,12 +531,6 @@ function renderLLMSuggestions(rows) {
     </tr>`;
   }
   return html + '</tbody></table>';
-}
-
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  }[c]));
 }
 
 async function reviewLLM(name, action) {
@@ -1485,13 +1471,6 @@ const PROP_BADGE_CLS = {
 };
 let _traceChart = null;
 
-function escapeHtmlR(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 async function openProposalModal(factorName) {
   const modal = document.getElementById('proposal-modal');
   const titleEl = document.getElementById('proposal-modal-title');
@@ -1510,7 +1489,7 @@ async function openProposalModal(factorName) {
     if (d.error) throw new Error(d.error);
     renderTraceModal(d, titleEl, badgeEl, bodyEl);
   } catch (e) {
-    bodyEl.innerHTML = `<div class="empty-state"><span class="em">!</span><div class="em-title">加载失败</div><div class="em-hint">${escapeHtmlR(e.message || e)}</div></div>`;
+    bodyEl.innerHTML = `<div class="empty-state"><span class="em">!</span><div class="em-title">加载失败</div><div class="em-hint">${escapeHtml(e.message || e)}</div></div>`;
   }
 }
 
@@ -1548,19 +1527,19 @@ function renderTraceModal(d, titleEl, badgeEl, bodyEl) {
     : '<div class="small" style="color:var(--fg-dim)">暂无历史评估数据（需要 ≥2 条 factor_metrics 记录才能画 IR 时序）</div>';
 
   // 配方
-  const recipeJson = escapeHtmlR(JSON.stringify(d.recipe || {}, null, 2));
+  const recipeJson = escapeHtml(JSON.stringify(d.recipe || {}, null, 2));
 
   bodyEl.innerHTML = `
     <div class="modal-section">
       <h3>配方 / Recipe</h3>
-      <div class="plain">${escapeHtmlR(d.plain_description || '—')}</div>
+      <div class="plain">${escapeHtml(d.plain_description || '—')}</div>
       <details><summary>原始 recipe JSON</summary><pre>${recipeJson}</pre></details>
     </div>
 
     <div class="modal-section">
       <h3>决策路径 / Decisions</h3>
       ${decisionsHtml}
-      ${d.reason ? `<div class="small" style="color:var(--fg-mute);margin-top:4px;">评估结论：<code>${escapeHtmlR(d.reason)}</code></div>` : ''}
+      ${d.reason ? `<div class="small" style="color:var(--fg-mute);margin-top:4px;">评估结论：<code>${escapeHtml(d.reason)}</code></div>` : ''}
     </div>
 
     <div class="modal-section">
@@ -1625,10 +1604,10 @@ function renderDecision(dec) {
     <div class="trace-step ${cls}">
       <div class="icon ${cls}">${icon}</div>
       <div class="body">
-        <div class="step-name">${escapeHtmlR(dec.step || '')}</div>
-        <div class="step-result">${escapeHtmlR(dec.result || '')}</div>
+        <div class="step-name">${escapeHtml(dec.step || '')}</div>
+        <div class="step-result">${escapeHtml(dec.result || '')}</div>
       </div>
-      ${dec.threshold ? `<div class="threshold">${escapeHtmlR(dec.threshold)}</div>` : '<div></div>'}
+      ${dec.threshold ? `<div class="threshold">${escapeHtml(dec.threshold)}</div>` : '<div></div>'}
     </div>
   `;
 }

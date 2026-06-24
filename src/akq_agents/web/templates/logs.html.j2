@@ -56,13 +56,6 @@ let _lastSig = '';        // 最近一次响应签名，用于 diff 出新增行
 let _lastLineCount = 0;
 let _logAutoStick = true; // 用户滚到底部时自动跟随
 
-function escapeHtmlL(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 function classifyLogLine(line) {
   // 在前 ~120 个字符里识别等级关键词
   const head = line.slice(0, 160).toUpperCase();
@@ -81,7 +74,7 @@ function buildLogHtml(lines, startNo, freshFromIdx) {
     const cls = classifyLogLine(line);
     const fresh = (freshFromIdx != null && i >= freshFromIdx) ? ' is-fresh' : '';
     const no = (startNo + i).toString().padStart(4, ' ');
-    return `<div class="log-line ${cls}${fresh}"><span class="lno">${no}</span><span class="msg">${escapeHtmlL(line)}</span></div>`;
+    return `<div class="log-line ${cls}${fresh}"><span class="lno">${no}</span><span class="msg">${escapeHtml(line)}</span></div>`;
   }).join('');
 }
 
@@ -102,7 +95,7 @@ async function refreshLogs(force) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     if (d.exists === false) {
-      viewer.innerHTML = `<div class="logs-empty">日志文件不存在：<code>${escapeHtmlL(d.path || source)}</code>。后台没启动过或路径不正确。</div>`;
+      viewer.innerHTML = `<div class="logs-empty">日志文件不存在：<code>${escapeHtml(d.path || source)}</code>。后台没启动过或路径不正确。</div>`;
       meta.innerHTML = `<span class="live-dot"></span>${source} · 文件不存在`;
       return;
     }
@@ -132,7 +125,7 @@ async function refreshLogs(force) {
     const pad = n => String(n).padStart(2, '0');
     meta.innerHTML = `<span class="live-dot"></span>${source} · ${arr.length} 行 · ${fileSizeKb} · ${pad(ts.getHours())}:${pad(ts.getMinutes())}:${pad(ts.getSeconds())}`;
   } catch (e) {
-    meta.innerHTML = `<span class="live-dot"></span>${source} · 加载失败：${escapeHtmlL(e.message || e)}`;
+    meta.innerHTML = `<span class="live-dot"></span>${source} · 加载失败：${escapeHtml(e.message || e)}`;
   }
 }
 

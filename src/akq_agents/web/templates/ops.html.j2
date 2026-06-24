@@ -397,15 +397,6 @@ function togglePayload(id, btn) {
   btn.textContent = opening ? '▾ 收起输出' : '▸ 查看输出';
 }
 
-function escapeHtml(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 // 全局快捷键 'r' → 强制刷新三块 htmx 卡片
 window.addEventListener('hotkey:refresh', () => {
   if (typeof htmx === 'undefined') return;
