@@ -38,6 +38,9 @@
   --err-soft: rgba(248, 113, 113, 0.14);
   --info: #60a5fa;          /* blue */
   --info-soft: rgba(96, 165, 250, 0.14);
+
+  /* —— Layout tokens ————————————————————————— */
+  --nav-h: 56px;            /* nav 实际高度（padding 12*2 + 文本 ≈ 56） */
   --neutral: #94a3b8;
   --neutral-soft: rgba(148, 163, 184, 0.14);
 
@@ -1115,8 +1118,8 @@ button.danger:hover {
 /* ===== KPI overview (研究面板顶部 sticky 总览条) ============= */
 .kpi-overview {
   position: sticky;
-  top: 0;
-  z-index: 50;
+  top: var(--nav-h, 56px);
+  z-index: 49;
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 1px;
