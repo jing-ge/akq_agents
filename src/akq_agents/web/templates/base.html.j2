@@ -20,7 +20,10 @@
     <a href="/logs" class="{% if page == 'logs' %}active{% endif %}" title="实时滚动查看 daemon / web / 回测引擎物理日志">日志 Logs</a>
     <a href="/chat" class="{% if page == 'chat' %}active{% endif %}" title="跟 AI 对话查询系统状态或操作">对话 Chat</a>
     <span class="spacer"></span>
-    <span class="disclaimer">本控制台仅供研究参考，不构成投资建议；不执行任何交易指令。</span>
+    <details class="nav-disclaimer" title="本控制台仅供研究参考，不构成投资建议；不执行任何交易指令。">
+      <summary>ⓘ</summary>
+      <span>本控制台仅供研究参考，不构成投资建议；不执行任何交易指令。</span>
+    </details>
   </nav>
   <div id="data-freshness-bar" class="freshness-bar"></div>
   <main>

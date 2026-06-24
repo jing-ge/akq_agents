@@ -192,6 +192,54 @@ nav .disclaimer {
   letter-spacing: 0.01em;
 }
 
+/* 折叠的 disclaimer：默认只显 ⓘ 图标，hover/click 才展开 */
+nav .nav-disclaimer {
+  position: relative;
+  font-size: 11px;
+  color: var(--fg-dim);
+  cursor: help;
+}
+nav .nav-disclaimer summary {
+  list-style: none;
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-2);
+  color: var(--fg-mute);
+  font-size: 12px;
+  user-select: none;
+  transition: background 140ms var(--ease-out), color 140ms var(--ease-out);
+}
+nav .nav-disclaimer summary::-webkit-details-marker { display: none; }
+nav .nav-disclaimer summary::marker { content: ''; }
+nav .nav-disclaimer:hover summary,
+nav .nav-disclaimer[open] summary {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+nav .nav-disclaimer span {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: max-content;
+  max-width: 320px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  letter-spacing: 0.01em;
+  box-shadow: 0 8px 24px -4px rgba(0,0,0,0.5);
+  z-index: 100;
+  pointer-events: none;
+}
+
 /* ===== Layout ============================================== */
 main {
   max-width: 1380px;

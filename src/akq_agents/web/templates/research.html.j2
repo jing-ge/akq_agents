@@ -50,7 +50,7 @@
 
 <div class="refresh-bar">
   <label class="refresh-toggle">
-    <input type="checkbox" id="auto-refresh">
+    <input type="checkbox" id="auto-refresh" checked>
     <span class="refresh-dot"></span>
     自动刷新 <span class="small">（30 秒）</span>
   </label>
@@ -71,7 +71,7 @@
     <a href="#" onclick="document.getElementById('holdings-editor').scrollIntoView({behavior:'smooth'}); return false;">校准我的实际持仓 ↓</a>
   </p>
   <div class="toolbar" style="gap:6px; margin-bottom:8px;">
-    <button class="primary" onclick="markAllExecuted()" title="把今日 trade_list 里所有 BUY/SELL 一键标记已执行 + 更新 holdings (HOLD 不动)">全部执行</button>
+    <button class="warn" onclick="markAllExecuted()" title="把今日 trade_list 里所有 BUY/SELL 一键标记已执行 + 更新 holdings (HOLD 不动)">全部执行</button>
   </div>
   <div id="trade-list-summary" class="small"></div>
   <div id="trade-list-table" style="margin-top:10px; max-height:540px; overflow:auto"></div>
@@ -278,6 +278,8 @@ window.addEventListener('load', () => {
   const today = new Date().toISOString().slice(0, 10);
   const di = document.getElementById('attr-date');
   if (di && !di.value) di.value = today;
+  // 延迟 1.5s 自动加载一次今日异动诊断（仿 correlation 的延迟加载）
+  setTimeout(() => { try { loadDailyAttribution(); } catch (e) {} }, 1500);
 });
 </script>
 
@@ -397,12 +399,12 @@ function renderFactorCorrelation(el, d) {
     visualMap: {
       min: -1, max: 1, calculable: true, orient: 'horizontal',
       left: 'center', bottom: 10,
-      inRange: {color: ['#3b82f6', '#ffffff', '#ef4444']},
+      inRange: {color: ['#60a5fa', '#161a23', '#f87171']},
       textStyle: {color: '#cbd5e1'},
     },
     series: [{
       type: 'heatmap', data: cells,
-      label: {show: true, fontSize: 10, color: '#0f172a'},
+      label: {show: true, fontSize: 10, color: '#e6e9f0'},
       emphasis: {itemStyle: {shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.3)'}},
     }],
   });
@@ -1228,9 +1230,9 @@ async function runAutoRefresh() {
 function setupAutoRefresh() {
   const cb = document.getElementById('auto-refresh');
   if (!cb) return;
-  // 恢复上次状态
+  // 反向读 localStorage：默认勾选；只有显式存过 '0' 才不勾
   try {
-    if (localStorage.getItem(AUTO_REFRESH_KEY) === '1') cb.checked = true;
+    if (localStorage.getItem(AUTO_REFRESH_KEY) === '0') cb.checked = false;
   } catch (e) { /* ignore */ }
   applyAutoRefresh(cb.checked);
   cb.addEventListener('change', () => {
