@@ -880,6 +880,13 @@ async function loadKpiOverview() {
       setVal('kpi-excess-val', `${sign}${(excess * 100).toFixed(2)}%`, undefined,
              excess >= 0 ? 'metric-good' : 'metric-bad');
     }
+  } else {
+    // NAV 数据为空：灰化 + 显示原因摘要
+    const reason = navD && navD.summary && navD.summary.reason
+      ? String(navD.summary.reason)
+      : '尚无 NAV 数据';
+    setVal('kpi-nav-val', '暂无', reason, 'metric-dim');
+    setVal('kpi-excess-val', '暂无', reason, 'metric-dim');
   }
 
   // Trade list: 显示真正待执行的 BUY/SELL（排除 executed），并标注 stale 状态
