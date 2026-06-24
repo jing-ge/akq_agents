@@ -64,9 +64,14 @@ class CompositeScorer:
                 history = []
             ir_value = self._ewma_abs_ir(history)
             if ir_value is None:
-                # 退化用 latest
+                # M18-I4: 退化用 latest — 之前 get_latest(name, 1) 把 1 当 factor_version,
+                # 任何因子升级到 v2 后这条 fallback 立即返回 None。改用 list_history(limit=1)
+                # 不依赖 factor_version。
+                m = None
                 try:
-                    m = self._evaluator.get_latest(name, 1)
+                    latest_list = self._evaluator.list_history(name, limit=1) if hasattr(self._evaluator, "list_history") else []
+                    if latest_list:
+                        m = latest_list[0]
                 except Exception:
                     m = None
                 if m is not None and m.ir is not None:

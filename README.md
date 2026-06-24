@@ -68,6 +68,10 @@
        → 等用户在 /research 页 ✓接受 / ✗拒绝
 
 每 5 分钟  retry.fetch_errors / health_heartbeat
+
+每 30 分钟 alert.check
+       → 巡检 3 条规则: NAV 单日异动 / data refresh 连续失败 / accepted 因子衰减
+       → 触发时写 events.alert.* + macOS 系统通知（24h cooldown）
 ```
 
 ## 快速开始
@@ -153,6 +157,18 @@ PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app \
 | LLMFactorBrainstormer | 每天 20:00 看现状提新因子 recipe |
 
 LLM 网关：本地 Anthropic gateway `http://127.0.0.1:18931`（需另行启动）。
+
+### 自动告警 (M17 alerter)
+
+daemon 每 30 分钟巡检 3 条规则，触发时写 `events.alert.*` + 调 `osascript` 发 macOS 系统通知（24 小时 cooldown 防止刷屏）：
+
+| 规则 | 阈值 | events kind |
+|---|---|---|
+| NAV 单日异动 | `\|daily_return_net\| > 15%` | `alert.nav.abnormal` (level=error) |
+| 数据刷新连续失败 | `data.refresh_daily` 最近 2 次都 failed | `alert.data.refresh_failed` (error) |
+| 因子衰减 | accepted/builtin 因子近 30 天平均 `\|IR\| < 0.05` | `alert.factor.decayed` (warning) |
+
+阈值在 `config/scheduler.yaml` 里 `alerter.*` 字段可调。`/ops` 页 events 流可看完整历史。
 
 ### Web 控制台
 

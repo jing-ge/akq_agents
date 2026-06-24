@@ -626,11 +626,22 @@ class DiscoveryEngine:
             except Exception:
                 continue
             if hist.empty:
+                # M18-I5: 数据稀疏时也要更新 oos_observations + reason，
+                # 否则 shadow stuck 永远不 promote 也不 demote, 占用 shadow 池槽位
+                p.oos_observations = len(oos_dates)
+                p.reason = "data_sparse: factor history empty"
+                p.evaluated_at = now_iso()
+                self.proposal_store.upsert(p)
                 continue
             # 只看 OOS 期间
             oos_hist = hist.loc[hist.index.isin(oos_dates)]
             oos_ret = forward_returns.loc[forward_returns.index.isin(oos_dates)]
             if len(oos_hist) < 5:
+                # M18-I5: 同上, OOS 样本不足也写状态防 stuck
+                p.oos_observations = len(oos_dates)
+                p.reason = f"data_sparse: oos_hist_len={len(oos_hist)} < 5"
+                p.evaluated_at = now_iso()
+                self.proposal_store.upsert(p)
                 continue
             # 复用 evaluator._rolling_ic 算 IR
             from akq_agents.services.portfolio.evaluator import _rolling_ic

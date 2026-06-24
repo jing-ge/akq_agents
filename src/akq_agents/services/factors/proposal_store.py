@@ -95,6 +95,19 @@ class FactorProposalStore:
             ).fetchone()
         return row is not None
 
+    def exists_recipe(self, recipe_json: str) -> str | None:
+        """M18-I3: 按 recipe 内容查重 (跨 auto_/llm_ 命名空间)。
+
+        返回已存在的 factor_name (任意一个), 没有则 None。
+        用途: brainstormer 提议时避免 LLM 让人重做已经 auto discovery 拒绝过的同 recipe。
+        """
+        with open_meta_db(self._db) as conn:
+            row = conn.execute(
+                "SELECT factor_name FROM factor_proposals WHERE recipe_json = ? LIMIT 1",
+                (recipe_json,),
+            ).fetchone()
+        return row[0] if row else None
+
     def upsert(self, proposal: FactorProposal) -> None:
         with open_meta_db(self._db) as conn:
             conn.execute(

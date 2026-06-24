@@ -211,12 +211,24 @@ class LLMFactorBrainstormer:
                 continue
             assert isinstance(recipe, dict)
             name = _recipe_to_name(recipe)
+            recipe_json_str = recipe_to_json(recipe)
+            # M18-I3: 跨 auto_/llm_ 命名空间查重 — 同 recipe 即使被 auto discovery
+            # 拒绝过 (auto_xxx 名), 也不要让 LLM 重做一遍 (llm_xxx 名)
+            existing_name = self._store.exists_recipe(recipe_json_str)
+            if existing_name is not None:
+                logger.info(
+                    "LLM 提议的 recipe 已存在 (existing=%s, would-be=%s), 跳过",
+                    existing_name, name,
+                )
+                stats["duplicate"] += 1
+                continue
+            # 兜底: 同名 (理论上不会进入这里因为 hash 包含 recipe)
             if self._store.exists(name):
                 stats["duplicate"] += 1
                 continue
             self._store.upsert(FactorProposal(
                 factor_name=name,
-                recipe_json=recipe_to_json(recipe),
+                recipe_json=recipe_json_str,
                 direction=recipe["direction"],
                 status="llm_suggested",
                 ic_mean=None, ic_std=None, ir=None, t_stat=None, max_abs_corr=None,

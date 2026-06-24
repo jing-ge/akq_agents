@@ -33,6 +33,27 @@ scheduler:
       minute: 0
       timeout_s: 120
       n_suggestions: 20
+    # M18-I7: 之前 default 隐式生效，现显式化让 ops 一目了然
+    factor_discovery:
+      enabled: true
+      interval_minutes: 120  # 每 2 小时一次（交易日白名单）
+      timeout_s: 900
+      n_candidates_per_run: 20
+    data_refresh:
+      enabled: true
+      first_try_hour: 16
+      first_try_minute: 0
+      retry_interval_minutes: 30
+      stop_hour: 22
+      timeout_s: 600
+    # M17 alerter: 每 30 分钟巡检 NAV / data refresh / 因子衰减
+    alerter:
+      enabled: true
+      interval_minutes: 30
+      timeout_s: 30
+      nav_max_abs_daily_return: 0.15      # 单日 |return| > 15% 告警
+      refresh_max_consecutive_failed: 2    # data refresh 连续 2 次 failed 告警
+      factor_decay_min_abs_ir: 0.05        # accepted/builtin 因子 30 天 |IR| 均值 < 0.05 告警
   retention:
     events_days: 30
     job_runs_days: 90

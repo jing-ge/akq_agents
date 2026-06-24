@@ -778,14 +778,26 @@ def build_factor_postmortem(services: dict[str, Any]) -> ToolSpec:
             else:
                 trend = "stable"
 
+        # M18-I11: 数据稀疏时给 LLM 明确提示, 避免它编造结论
+        n = len(history_dicts)
+        if n == 0:
+            note = "无任何历史 metric，可能因子刚 accept 或还未跑过 evaluator。建议先等 1-2 周再来看。"
+        elif n < 5:
+            note = f"仅 {n} 个观察日，统计意义不足。建议至少累计 20 天再判断 promote/demote。"
+        elif n < 10:
+            note = f"{n} 个观察日，trend 字段已计算但样本仍偏少，结论仅供参考。"
+        else:
+            note = None
+
         return {
             "factor_name": factor_name,
             "status": status,
             "history": history_dicts,
-            "n_observations": len(history_dicts),
+            "n_observations": n,
             "recent_5d_mean_abs_ir": recent_mean,
             "earlier_5d_mean_abs_ir": earlier_mean,
             "trend": trend,
+            "note": note,
         }
 
     return ToolSpec(
