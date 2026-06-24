@@ -56,6 +56,13 @@ let CATALOG = {};
 
 window.addEventListener('load', loadCatalog);
 
+// 全局快捷键 'r' → 刷新目录
+window.addEventListener('hotkey:refresh', () => {
+  window.dispatchEvent(new CustomEvent('hotkey:refresh:ack'));
+  loadCatalog();
+  if (typeof toast === 'function') toast('已刷新目录', 'ok', { duration: 1500 });
+});
+
 async function loadCatalog() {
   try {
     const r = await fetch('/api/data/catalog');

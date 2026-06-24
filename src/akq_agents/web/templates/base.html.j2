@@ -352,7 +352,16 @@
 
       // 'r' — 刷新当前页
       if (k === 'r' && !e.shiftKey) {
+        let handled = false;
+        const ack = () => { handled = true; };
+        window.addEventListener('hotkey:refresh:ack', ack, { once: true });
         window.dispatchEvent(new CustomEvent('hotkey:refresh'));
+        setTimeout(() => {
+          window.removeEventListener('hotkey:refresh:ack', ack);
+          if (!handled && typeof toast === 'function') {
+            toast('本页无刷新动作', 'warn', { duration: 1500 });
+          }
+        }, 50);
         return;
       }
 
@@ -363,6 +372,8 @@
           e.preventDefault();
           search.focus();
           if (typeof search.select === 'function') search.select();
+        } else if (typeof toast === 'function') {
+          toast('本页无搜索框', 'warn', { duration: 1500 });
         }
         return;
       }

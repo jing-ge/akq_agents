@@ -409,6 +409,7 @@ function escapeHtml(s) {
 // 全局快捷键 'r' → 强制刷新三块 htmx 卡片
 window.addEventListener('hotkey:refresh', () => {
   if (typeof htmx === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('hotkey:refresh:ack'));
   // htmx.ajax 直接触发一次 GET + 替换 innerHTML（不依赖 hx-trigger 上的 event 名）
   document.querySelectorAll('[hx-get]').forEach(el => {
     const url = el.getAttribute('hx-get');

@@ -810,6 +810,7 @@ window.addEventListener('load', () => {
   loadKpiOverview();
   // 全局快捷键 'r' → 主动刷新研究页所有面板
   window.addEventListener('hotkey:refresh', () => {
+    window.dispatchEvent(new CustomEvent('hotkey:refresh:ack'));
     runAutoRefresh();
     loadHoldings();
     loadTradeList();

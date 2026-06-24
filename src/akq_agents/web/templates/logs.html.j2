@@ -181,5 +181,12 @@ window.addEventListener('load', () => {
 window.addEventListener('beforeunload', () => {
   if (_logTimer) clearInterval(_logTimer);
 });
+
+// 全局快捷键 'r' → 强制刷新一次日志
+window.addEventListener('hotkey:refresh', () => {
+  window.dispatchEvent(new CustomEvent('hotkey:refresh:ack'));
+  refreshLogs(true);
+  if (typeof toast === 'function') toast('已刷新日志', 'ok', { duration: 1500 });
+});
 </script>
 {% endblock %}
