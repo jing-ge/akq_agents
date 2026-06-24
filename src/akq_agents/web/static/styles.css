@@ -713,6 +713,14 @@ button.is-loading::after {
   from { transform: translateX(0); opacity: 1; }
   to   { transform: translateX(24px); opacity: 0; }
 }
+.toast.toast-bump {
+  animation: toast-bump 320ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes toast-bump {
+  0%   { transform: translateX(0)    scale(1); }
+  35%  { transform: translateX(-4px) scale(1.03); }
+  100% { transform: translateX(0)    scale(1); }
+}
 
 /* ===== confirmDialog 模态 ================================== */
 .confirm-backdrop {

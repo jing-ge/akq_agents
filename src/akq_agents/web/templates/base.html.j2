@@ -249,6 +249,8 @@
   function toast(message, level, opts) {
     const lv = (level || 'ok').toLowerCase();
     const duration = (opts && opts.duration != null) ? opts.duration : 3000;
+    const text = typeof message === 'string' ? message : JSON.stringify(message);
+    const key = lv + '|' + text;
     let host = document.getElementById('toast-host');
     if (!host) {
       host = document.createElement('div');
@@ -256,14 +258,39 @@
       host.className = 'toast-host';
       document.body.appendChild(host);
     }
+    // 去重: 同内容同级别已存在 → 重置倒计时 + 抖动提示
+    const existing = host.querySelector(`.toast[data-key="${CSS.escape(key)}"]:not(.is-out)`);
+    if (existing) {
+      if (existing._dismissTimer) clearTimeout(existing._dismissTimer);
+      existing.classList.remove('toast-bump');
+      // 触发动画重启
+      void existing.offsetWidth;
+      existing.classList.add('toast-bump');
+      existing._dismissTimer = setTimeout(() => {
+        existing.classList.add('is-out');
+        setTimeout(() => existing.remove(), 280);
+      }, duration);
+      return existing;
+    }
+    // 数量上限 3: 超出移除最早的
+    const MAX = 3;
+    const alive = Array.from(host.querySelectorAll('.toast:not(.is-out)'));
+    if (alive.length >= MAX) {
+      for (let i = 0; i <= alive.length - MAX; i++) {
+        const old = alive[i];
+        if (old._dismissTimer) clearTimeout(old._dismissTimer);
+        old.classList.add('is-out');
+        setTimeout(() => old.remove(), 280);
+      }
+    }
     const el = document.createElement('div');
     el.className = `toast toast-${lv}`;
+    el.dataset.key = key;
     const icon = lv === 'error' ? '❌' : (lv === 'warn' ? '⚠' : '✓');
     el.innerHTML = `<span class="toast-icon">${icon}</span><span class="toast-msg"></span>`;
-    el.querySelector('.toast-msg').textContent = typeof message === 'string' ? message : JSON.stringify(message);
+    el.querySelector('.toast-msg').textContent = text;
     host.appendChild(el);
-    // exit animation
-    setTimeout(() => {
+    el._dismissTimer = setTimeout(() => {
       el.classList.add('is-out');
       setTimeout(() => el.remove(), 280);
     }, duration);
