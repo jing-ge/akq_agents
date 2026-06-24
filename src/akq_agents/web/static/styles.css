@@ -324,6 +324,39 @@ thead th {
   border-bottom: 1px solid var(--line-strong);
   white-space: nowrap;
 }
+/* 可排序列 — 鼠标悬停反馈 + 升降序标记 */
+thead th.sortable {
+  cursor: pointer;
+  user-select: none;
+  padding-right: 22px;
+  position: sticky;
+  top: 0;
+}
+thead th.sortable::after {
+  content: '↕';
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 9.5px;
+  color: var(--fg-dim);
+  opacity: 0.4;
+  transition: opacity 140ms var(--ease-out), color 140ms var(--ease-out);
+}
+thead th.sortable:hover { background: var(--bg-3); color: var(--fg); }
+thead th.sortable:hover::after { opacity: 0.75; }
+thead th.sortable.sort-asc::after,
+thead th.sortable.sort-desc::after {
+  opacity: 1;
+  color: var(--accent);
+}
+thead th.sortable.sort-asc::after  { content: '▲'; font-size: 8.5px; }
+thead th.sortable.sort-desc::after { content: '▼'; font-size: 8.5px; }
+thead th.sortable.sort-asc,
+thead th.sortable.sort-desc {
+  color: var(--fg);
+  background: linear-gradient(180deg, var(--bg-3), var(--bg-2));
+}
 tbody td {
   padding: 9px 12px;
   border-bottom: 1px solid var(--line);

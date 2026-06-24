@@ -159,6 +159,86 @@
       }
     }
   }
+
+  // 给表格 <th> 加可点击排序：前端排序，三态（升 / 降 / 取消）。
+  // 用法: makeSortable(tableEl) — 自动给所有 <th> 加监听
+  // 单元格的"原始可比值"取自:
+  //   1) <td data-sort-value="..."> 显式指定
+  //   2) 单元格文本（自动识别百分比 / 千分位 / 货币符号 / 数字；其它当字符串）
+  function makeSortable(tableEl) {
+    if (!tableEl || tableEl.dataset.sortableInit === '1') return;
+    tableEl.dataset.sortableInit = '1';
+    const ths = tableEl.querySelectorAll('thead th');
+    ths.forEach((th, idx) => {
+      // 跳过明确禁用的列（th 上加 data-no-sort）
+      if (th.dataset.noSort === '1') return;
+      th.classList.add('sortable');
+      th.addEventListener('click', () => sortTableBy(tableEl, idx, th));
+    });
+  }
+
+  function _cellSortValue(td) {
+    if (!td) return { kind: 'str', v: '' };
+    if (td.dataset && td.dataset.sortValue != null) {
+      const raw = td.dataset.sortValue;
+      const n = parseFloat(raw);
+      if (!isNaN(n) && isFinite(n)) return { kind: 'num', v: n };
+      return { kind: 'str', v: raw };
+    }
+    let txt = (td.innerText || td.textContent || '').trim();
+    if (txt === '' || txt === '—' || txt === '-') return { kind: 'num', v: -Infinity, missing: true };
+    // 去掉 ¥ , % 后试数字
+    const cleaned = txt.replace(/[,¥%\s]/g, '').replace(/^[+]/, '');
+    const n = parseFloat(cleaned);
+    if (!isNaN(n) && isFinite(n) && /^[+-]?\d/.test(cleaned)) {
+      return { kind: 'num', v: n };
+    }
+    return { kind: 'str', v: txt.toLowerCase() };
+  }
+
+  function sortTableBy(tableEl, colIdx, th) {
+    const tbody = tableEl.tBodies[0];
+    if (!tbody) return;
+    const rows = Array.from(tbody.rows);
+    // 第一次保存原始顺序
+    if (!tbody.dataset.origCaptured) {
+      rows.forEach((r, i) => r.dataset.origIdx = String(i));
+      tbody.dataset.origCaptured = '1';
+    }
+    // 当前模式：none → asc → desc → none ...
+    const current = th.dataset.sortMode || 'none';
+    const next = current === 'none' ? 'asc' : (current === 'asc' ? 'desc' : 'none');
+    // 清同表格其它 th 状态
+    tableEl.querySelectorAll('thead th').forEach(other => {
+      if (other !== th) {
+        other.classList.remove('sort-asc', 'sort-desc');
+        other.dataset.sortMode = 'none';
+      }
+    });
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (next === 'asc') th.classList.add('sort-asc');
+    if (next === 'desc') th.classList.add('sort-desc');
+    th.dataset.sortMode = next;
+
+    if (next === 'none') {
+      // 还原
+      rows.sort((a, b) => Number(a.dataset.origIdx) - Number(b.dataset.origIdx));
+    } else {
+      const sign = next === 'asc' ? 1 : -1;
+      rows.sort((a, b) => {
+        const av = _cellSortValue(a.cells[colIdx]);
+        const bv = _cellSortValue(b.cells[colIdx]);
+        // missing 永远沉底
+        if (av.missing && !bv.missing) return 1;
+        if (bv.missing && !av.missing) return -1;
+        if (av.kind === 'num' && bv.kind === 'num') return (av.v - bv.v) * sign;
+        return String(av.v).localeCompare(String(bv.v)) * sign;
+      });
+    }
+    const frag = document.createDocumentFragment();
+    rows.forEach(r => frag.appendChild(r));
+    tbody.appendChild(frag);
+  }
   </script>
 
   {% block scripts %}{% endblock %}

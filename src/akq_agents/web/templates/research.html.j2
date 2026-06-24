@@ -191,15 +191,16 @@ async function loadDailyAttribution() {
     const r = await fetch(`/api/research/daily-attribution?date=${date}`);
     if (!r.ok) {
       const d = await r.json();
-      out.innerHTML = '<div class="small status-error">' + formatErrorDetail(d) + '</div>';
+      renderFetchError(out, { detail: d.detail, status: r.status });
       status.textContent = '';
       return;
     }
     const d = await r.json();
     out.innerHTML = renderDailyAttr(d);
+    out.querySelectorAll('table').forEach(t => makeSortable(t));
     status.textContent = `${d.n_with_return || 0}/${d.n_holdings} 只票有完整收益数据`;
   } catch (e) {
-    out.innerHTML = '<div class="small status-error">网络错误：' + e.message + '</div>';
+    renderFetchError(out, e);
     status.textContent = '';
   }
 }
@@ -415,9 +416,10 @@ async function loadShadowStats() {
     const r = await fetch('/api/research/factors/shadow-stats');
     const d = await r.json();
     tbl.innerHTML = renderShadowStats(d.shadows || []);
+    makeSortable(tbl.querySelector('table'));
     status.textContent = `${d.n || 0} 个 shadow 因子`;
   } catch (e) {
-    tbl.innerHTML = '<div class="small status-error">加载失败：' + e.message + '</div>';
+    renderFetchError(tbl, e);
     status.textContent = '';
   }
 }
@@ -505,8 +507,9 @@ async function loadLLMSuggestions() {
     const r = await fetch('/api/research/factors/llm-suggestions?limit=50');
     const d = await r.json();
     tbl.innerHTML = renderLLMSuggestions(d.suggestions || []);
+    makeSortable(tbl.querySelector('table'));
   } catch (e) {
-    tbl.innerHTML = '<div class="small status-error">加载失败：' + e.message + '</div>';
+    renderFetchError(tbl, e);
   }
 }
 
@@ -606,14 +609,15 @@ async function loadPortfolio() {
   try {
     const r = await fetch(`/api/research/portfolio?date=${date}`);
     if (r.status === 404) { summary.textContent = '该日期暂无组合快照'; return; }
-    if (!r.ok) { summary.textContent = '加载失败'; return; }
+    if (!r.ok) { renderFetchError(tableEl, { status: r.status, detail: await r.text() }); summary.textContent = ''; return; }
     const d = await r.json();
     summary.textContent = d.summary;
     tableEl.innerHTML = renderPortfolioTable(d.rows);
+    makeSortable(tableEl.querySelector('table'));
     renderIndustryChart(d.industry_breakdown);
     // 同时加载归因
     loadAttribution(date);
-  } catch (e) { summary.textContent = '错误: ' + e.message; }
+  } catch (e) { renderFetchError(tableEl, e); summary.textContent = ''; }
 }
 function renderPortfolioTable(rows) {
   if (!rows || !rows.length) return '<p class="small">该日期组合为空</p>';
@@ -729,7 +733,7 @@ async function loadFactor() {
   tableEl.innerHTML = '<div class="loading-skeleton">读取因子表现…</div>';
   try {
     const r = await fetch(`/api/research/factors/${name}/metrics?limit=120`);
-    if (!r.ok) { tableEl.innerHTML = '加载失败'; return; }
+    if (!r.ok) { renderFetchError(tableEl, { status: r.status, detail: await r.text() }); return; }
     const d = await r.json();
     if (!d.metrics || !d.metrics.length) {
       tableEl.innerHTML = '<p class="small">暂无表现数据。请先到「运维」页点【重算因子表现（IC / IR）】跑一次。</p>';
@@ -784,7 +788,7 @@ async function loadFactor() {
       },
       series: series,
     });
-  } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
+  } catch (e) { renderFetchError(tableEl, e); }
 }
 
 // 自动加载第一个日期 / 因子
@@ -979,8 +983,11 @@ async function loadTradeList() {
       </tr>`).join('')}</tbody></table></details>`;
     }
     tblEl.innerHTML = html;
+    // 给两个表格都加排序（主表 + 折叠的 HOLD 表）
+    tblEl.querySelectorAll('table.trade-table').forEach(t => makeSortable(t));
   } catch (e) {
-    sumEl.textContent = '加载失败: ' + e.message;
+    renderFetchError(sumEl, e);
+    tblEl.innerHTML = '';
   }
 }
 
@@ -1027,8 +1034,9 @@ async function loadHoldings() {
       <td class="small">${h.note || ''}</td>
       <td><button onclick="deleteHolding('${h.symbol}')" class="small">删除</button></td>
     </tr>`).join('')}</tbody></table>`;
+    makeSortable(tblEl.querySelector('table'));
   } catch (e) {
-    tblEl.innerHTML = '加载失败';
+    renderFetchError(tblEl, e);
   }
 }
 
@@ -1166,9 +1174,10 @@ async function loadPaperTracking() {
         <td class="${c.latest_return_pct>=0?'metric-good':'metric-bad'}">${c.latest_return_pct != null ? (c.latest_return_pct*100).toFixed(2)+'%' : '-'}</td>
         <td class="${c.latest_excess_pct>=0?'metric-good':'metric-bad'}">${c.latest_excess_pct != null ? (c.latest_excess_pct*100).toFixed(2)+'%' : '-'}</td>
       </tr>`).join('')}</tbody></table>`;
+      makeSortable(tblEl.querySelector('table'));
     }
   } catch (e) {
-    sumEl.textContent = '加载失败: ' + e.message;
+    renderFetchError(sumEl, e);
   }
 }
 
@@ -1229,7 +1238,7 @@ async function loadNav() {
   summaryEl.textContent = '加载中...';
   try {
     const r = await fetch('/api/research/nav');
-    if (!r.ok) { summaryEl.textContent = '加载失败'; return; }
+    if (!r.ok) { renderFetchError(statsEl, { status: r.status, detail: await r.text() }); summaryEl.textContent = ''; return; }
     const d = await r.json();
     if (!d.nav || !d.nav.length) {
       summaryEl.textContent = '暂无净值数据';
@@ -1335,7 +1344,7 @@ async function loadNav() {
         },
       ],
     });
-  } catch (e) { summaryEl.textContent = '错误: ' + e.message; }
+  } catch (e) { renderFetchError(statsEl, e); summaryEl.textContent = ''; }
 }
 
 async function rebuildNav(btn) {
@@ -1410,7 +1419,8 @@ async function loadProposals() {
       </td>
       <td class="small">${r.evaluated_at || r.created_at}</td>
     </tr>`;}).join('')}</tbody></table>`;
-  } catch (e) { tableEl.innerHTML = '错误: ' + e.message; }
+    makeSortable(tableEl.querySelector('table'));
+  } catch (e) { renderFetchError(tableEl, e); }
 }
 
 async function runDiscovery() {
