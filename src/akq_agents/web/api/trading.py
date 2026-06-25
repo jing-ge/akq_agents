@@ -189,7 +189,8 @@ async def today_trade_list(date: str | None = None) -> dict[str, Any]:
         "staleness_days": staleness_days,
         "stale_warning": None if is_today else (
             f"⚠️ 当前清单生成于 {staleness_days} 天前（{target_date.isoformat()}），"
-            f"今日盘后 15:30 会自动刷新；当前清单仅供参考，不代表今日盘中实时建议。"
+            f"今日盘后 16:30 会自动刷新（需为交易日）；"
+            f"盘中（9:30–16:30）系统不重算组合，因子需收盘价才能定。当前清单仅供参考。"
         ),
         "n": len(items),
         "n_buy": n_buy,
