@@ -111,12 +111,16 @@ class CompositeScorer:
 
     @staticmethod
     def _ewma_abs_ir(history: list) -> float | None:
-        """EWMA half-life=30 天的 |IR|。history 按时间 DESC（最新在前）。"""
+        """EWMA half-life=30 天的 |IR|，对负 IR 截断到 0（与 fallback 路径一致）。
+
+        若长期 IR 为负 (反向预测能力)，应当不再贡献组合权重，而非用 |IR| 当成"还不错"。
+        和 line 95 的 ``max(float(m.ir), 0.0)`` 保持一致的语义。
+        """
         if not history:
             return None
         # 取最近 90 条
         sub = history[:90]
-        irs = [abs(float(m.ir)) for m in sub if getattr(m, "ir", None) is not None]
+        irs = [max(float(m.ir), 0.0) for m in sub if getattr(m, "ir", None) is not None]
         if not irs:
             return None
         # EWMA: 权重 = 0.5 ** (i / 30)，i=0 表示最新

@@ -52,6 +52,7 @@
 {% block scripts %}
 <script>
 let CURRENT_SPEC = null;
+let _fetchRequestId = 0;  // 每次 fetchData 递增；响应回来时校验是否仍是最新请求
 let CATALOG = {};
 
 window.addEventListener('load', loadCatalog);
@@ -132,6 +133,8 @@ function renderForm(params) {
 
 async function fetchData() {
   if (!CURRENT_SPEC) return;
+  const myReqId = ++_fetchRequestId;
+  const myApi = CURRENT_SPEC.api;
   const args = {};
   for (const p of CURRENT_SPEC.params) {
     const el = document.getElementById('param-' + p.name);
@@ -140,15 +143,17 @@ async function fetchData() {
   const status = document.getElementById('data-status');
   status.style.display = '';
   status.className = 'console-output small is-busy';
-  status.textContent = '> POST /api/data/fetch  api=' + CURRENT_SPEC.api + '\n参数: ' + JSON.stringify(args) + '\n\n拉取中…';
+  status.textContent = '> POST /api/data/fetch  api=' + myApi + '\n参数: ' + JSON.stringify(args) + '\n\n拉取中…';
 
   try {
     const r = await fetch('/api/data/fetch', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({api: CURRENT_SPEC.api, args}),
+      body: JSON.stringify({api: myApi, args}),
     });
     const data = await r.json();
+    // 用户在这个请求 await 期间切换了接口/又点了一次 → 丢弃旧响应
+    if (myReqId !== _fetchRequestId) return;
     if (!r.ok) {
       status.className = 'console-output small status-error';
       status.textContent += '\n❌ 失败: ' + (data.detail || JSON.stringify(data));
@@ -159,6 +164,7 @@ async function fetchData() {
     status.textContent = '✅ 拉取完成' + cachedTag + ' · 共 ' + data.n_total + ' 行，展示 ' + data.n_rows + ' 行';
     renderResult(data);
   } catch (e) {
+    if (myReqId !== _fetchRequestId) return;
     status.className = 'console-output small status-error';
     status.textContent += '\n❌ 网络错误: ' + e.message;
   }
@@ -295,7 +301,7 @@ function guessYCols(cols, x, rows) {
 function renderTable(cols, rows) {
   if (!rows || !rows.length) return '<div class="empty-state"><div class="empty-state-icon">∅</div><div>无数据</div></div>';
   let html = '<table><thead><tr>';
-  for (const c of cols) html += '<th>' + c + '</th>';
+  for (const c of cols) html += '<th>' + escapeHtml(c) + '</th>';
   html += '</tr></thead><tbody>';
   for (const r of rows) {
     html += '<tr>';
@@ -309,7 +315,8 @@ function renderTable(cols, rows) {
           display = num.toLocaleString('en', {maximumFractionDigits: 4});
         }
       }
-      html += '<td>' + (display === null || display === undefined ? '-' : display) + '</td>';
+      const cell = display === null || display === undefined ? '-' : String(display);
+      html += '<td>' + escapeHtml(cell) + '</td>';
     }
     html += '</tr>';
   }

@@ -99,7 +99,8 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
     close = sub_ohlcv.pivot_table(
         index="date", columns="symbol", values="close", aggfunc="last"
     ).sort_index()
-    forward_returns = close.pct_change().shift(-1)
+    # fill_method=None: 停牌日不要 pad 填充，避免把停牌天 return 算成 0 稀释 IC
+    forward_returns = close.pct_change(fill_method=None).shift(-1)
 
     metrics_written = 0
     for factor in registry.list_all():

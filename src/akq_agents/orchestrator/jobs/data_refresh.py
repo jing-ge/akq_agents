@@ -25,6 +25,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from akq_agents.models.scheduler_config import SchedulerConfig
 from akq_agents.orchestrator.job_runner import JobRunner
+from akq_agents.services.data.exceptions import QualityCheckFailed
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
 
     # 真正拉取（refresh_daily_fast 内部还会再做一次 cache 检查 = 双保险）
     result = repo.refresh_daily_fast(today)
-    return {
+    payload = {
         "skipped": False,
         "target_date": str(result.target_date),
         "fetched": result.fetched,
@@ -107,6 +108,11 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
         "quality_passed": result.quality_passed,
         "duration_s": result.duration_s,
     }
+    # quality_passed=False (akshare 接口异常 / 数据空 / schema drift) 必须 raise，
+    # 否则 JobRunner 会把它当 'ok' 写入 → alerter 看不到 + 后续 retry cron 被幂等吞掉。
+    if not result.quality_passed and not getattr(result, "skipped_non_trading_day", False):
+        raise QualityCheckFailed({"refresh_daily_fast": False})
+    return payload
 
 
 def _check_cached(repo, d: date) -> int | None:

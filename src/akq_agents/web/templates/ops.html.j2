@@ -6,7 +6,7 @@
 <p class="page-intro">
   这个页面用来 <b>查看系统运行状态、启停后台守护进程、手动触发任务</b>。
   正常使用流程：
-  <b>1)</b> 先确认上方"后台守护进程"是 <span class="metric-good">运行中</span>，没运行就点【启动后台】；
+  <b>1)</b> 先确认上方"后台守护进程"是 <span class="metric-good">运行中</span>，没运行就在终端执行 <code>./start.sh up</code>；
   <b>2)</b> 想立刻产出今天的组合 / 因子结果，就点【立即跑一次完整流程】；
   <b>3)</b> 下方卡片实时展示 <b>数据健康度</b>、<b>最近任务</b>、<b>事件流</b>。
 </p>
@@ -130,46 +130,56 @@ async function refreshDataAsync(btn) {
   out.className = 'console-output is-busy';
   out.textContent = '⏳ 启动后台数据拉取...\n';
   if (btn) { btn.classList.add('is-loading'); btn.disabled = true; }
+  const restoreBtn = () => {
+    if (btn) { btn.classList.remove('is-loading'); btn.disabled = false; }
+  };
   try {
     const r = await fetch('/api/control/data/refresh', { method: 'POST' });
     const startData = await r.json();
     if (!r.ok) {
       out.className = 'console-output is-err';
       out.textContent = '❌ 启动失败 [HTTP ' + r.status + ']\n' + JSON.stringify(startData, null, 2);
+      restoreBtn();
       return;
     }
     out.textContent = '📥 后台拉取已启动\n  目标日期: ' + (startData.target_date || '-') +
                       '\n  开始时间: ' + (startData.started_at || '-') +
                       '\n\n⏳ 轮询进度中...';
-    // 每 2 秒轮询一次状态
+    // 每 2 秒轮询一次状态；按钮持续 disabled 直到 poll 终态（成功/失败/网络错）
     const startTs = Date.now();
     const poll = async () => {
-      const sr = await fetch('/api/control/data/refresh/status');
-      const sd = await sr.json();
-      const elapsed = Math.floor((Date.now() - startTs) / 1000);
-      if (sd.running) {
-        out.textContent = '📥 后台拉取中...\n  目标日期: ' + sd.target_date +
-                          '\n  开始时间: ' + sd.started_at +
-                          '\n  已耗时: ' + elapsed + ' 秒\n\n（通常 10-30 秒完成；批量接口 ~15 秒）';
-        setTimeout(poll, 2000);
-      } else {
-        if (sd.error) {
-          out.className = 'console-output is-err';
-          out.textContent = '❌ 拉取失败\n  目标: ' + sd.target_date +
-                            '\n  错误: ' + sd.error;
+      try {
+        const sr = await fetch('/api/control/data/refresh/status');
+        const sd = await sr.json();
+        const elapsed = Math.floor((Date.now() - startTs) / 1000);
+        if (sd.running) {
+          out.textContent = '📥 后台拉取中...\n  目标日期: ' + sd.target_date +
+                            '\n  开始时间: ' + sd.started_at +
+                            '\n  已耗时: ' + elapsed + ' 秒\n\n（通常 10-30 秒完成；批量接口 ~15 秒）';
+          setTimeout(poll, 2000);
         } else {
-          out.className = 'console-output is-ok';
-          const res = sd.result || {};
-          out.textContent = '✅ 拉取完成\n' + JSON.stringify(res, null, 2);
+          if (sd.error) {
+            out.className = 'console-output is-err';
+            out.textContent = '❌ 拉取失败\n  目标: ' + sd.target_date +
+                              '\n  错误: ' + sd.error;
+          } else {
+            out.className = 'console-output is-ok';
+            const res = sd.result || {};
+            out.textContent = '✅ 拉取完成\n' + JSON.stringify(res, null, 2);
+          }
+          restoreBtn();
         }
+      } catch (e) {
+        out.className = 'console-output is-err';
+        out.textContent = '❌ 轮询失败: ' + e.message;
+        restoreBtn();
       }
     };
     setTimeout(poll, 2000);
   } catch (err) {
     out.className = 'console-output is-err';
     out.textContent = '❌ 网络异常：' + err;
-  } finally {
-    if (btn) { btn.classList.remove('is-loading'); btn.disabled = false; }
+    restoreBtn();
   }
 }
 
@@ -217,7 +227,7 @@ function renderHealth(d) {
         <div class="stat-num">${dm.is_alive
           ? '<span class="pill alive">运行中</span>'
           : '<span class="pill dead">未运行</span>'}</div>
-        <div class="small">${dm.state ? '上次心跳：' + (dm.state.last_heartbeat || '—') : '后台没在跑，请点击「启动后台」'}</div>
+        <div class="small">${dm.state ? '上次心跳：' + (dm.state.last_heartbeat || '—') : '后台没在跑，请在终端执行 <code>./start.sh up</code>'}</div>
       </div>
       <div>
         <div class="stat-label">数据健康度</div>

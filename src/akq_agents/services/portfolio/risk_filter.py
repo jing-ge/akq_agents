@@ -80,8 +80,16 @@ class RiskFilter:
             if len(sub) < cfg.min_listing_days:
                 excluded[sym] = f"NEW_LISTING_LT_{cfg.min_listing_days}D"
                 continue
-            # 2) 当日（last row）停牌：volume 或 amount == 0
-            last = sub.iloc[-1]
+            # 2) 当日（精确按 as_of_date）停牌：volume 或 amount == 0
+            #    之前用 sub.iloc[-1] 当"当日"，若该股 as_of_date 当天停牌(无数据),
+            #    iloc[-1] 取的是更早一天的成交记录 → 判断为未停牌 → 漏检
+            # date 列存的是 ISO 字符串 (category)，转字符串比较
+            as_of_str = as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date)
+            same_day = sub[sub["date"].astype(str) == as_of_str]
+            if same_day.empty:
+                excluded[sym] = "SUSPENDED"
+                continue
+            last = same_day.iloc[-1]
             last_volume = float(last.get("volume", 0) or 0)
             last_amount = float(last.get("amount", 0) or 0)
             if last_volume <= 0 or last_amount <= 0:

@@ -600,7 +600,14 @@ async function loadPortfolio() {
     if (r.status === 404) { summary.textContent = '该日期暂无组合快照'; return; }
     if (!r.ok) { renderFetchError(tableEl, { status: r.status, detail: await r.text() }); summary.textContent = ''; return; }
     const d = await r.json();
-    summary.textContent = d.summary;
+    // 用户切到非"最新"日期时，标注一下，避免和顶部「今日 KPI」口径混淆
+    const dateSel = document.getElementById('portfolio-date');
+    const latestDate = dateSel.options.length > 0 ? dateSel.options[0].value : null;
+    const isHistorical = latestDate && date !== latestDate;
+    const historicalTag = isHistorical
+      ? ` <span style="color:#fbbf24;font-weight:600">⚠️ 历史快照 (${date})，与顶部今日 KPI 不是同一天</span>`
+      : '';
+    summary.innerHTML = escapeHtml(d.summary) + historicalTag;
     tableEl.innerHTML = renderPortfolioTable(d.rows);
     makeSortable(tableEl.querySelector('table'));
     renderIndustryChart(d.industry_breakdown);
@@ -731,7 +738,7 @@ async function loadFactor() {
     tableEl.innerHTML = `<p class="small">共 ${d.n} 条记录（按版本与日期倒序）</p>`;
     if (typeof echarts === 'undefined') return;
     const chart = echarts.init(document.getElementById('ic-chart'));
-    // 按 factor_version 分组
+    // 按 factor_version 分组；d.metrics 后端按日期 DESC 给的，先收集再 reverse 转 ASC
     const groups = {};
     d.metrics.forEach(m => {
       const k = `v${m.factor_version}`;
@@ -740,16 +747,29 @@ async function loadFactor() {
       groups[k].irs.push(m.ir);
       groups[k].ics.push(m.ic_mean);
     });
+    // 反转为 ASC 与 xAxis 顺序对齐（之前 xAxis 单独 reverse 但 series 没 reverse，导致曲线和日期错位）
+    Object.values(groups).forEach(g => {
+      g.dates.reverse(); g.irs.reverse(); g.ics.reverse();
+    });
+    // 用所有版本的日期并集做 x 轴（多版本时间段不完全重叠），用 dates 数组对齐
+    const allDatesSet = new Set();
+    Object.values(groups).forEach(g => g.dates.forEach(d => allDatesSet.add(d)));
+    const allDates = Array.from(allDatesSet).sort();
     const series = [];
     const palette = ['#5eead4', '#60a5fa', '#fbbf24', '#a78bfa', '#34d399', '#fb923c'];
     let ci = 0;
     Object.entries(groups).forEach(([k, g]) => {
+      // 按 allDates 重新对齐：缺失填 null（echarts 会断线）
+      const dateToIr = new Map(g.dates.map((d, i) => [d, g.irs[i]]));
+      const dateToIc = new Map(g.dates.map((d, i) => [d, g.ics[i]]));
+      const irsAligned = allDates.map(d => dateToIr.has(d) ? dateToIr.get(d) : null);
+      const icsAligned = allDates.map(d => dateToIc.has(d) ? dateToIc.get(d) : null);
       const c1 = palette[ci % palette.length]; ci++;
       const c2 = palette[ci % palette.length]; ci++;
       series.push({ name: `IR（信息比率）${k}`, type: 'line', smooth: true, showSymbol: false,
-                    lineStyle: { color: c1, width: 2 }, itemStyle: { color: c1 }, data: g.irs });
+                    lineStyle: { color: c1, width: 2 }, itemStyle: { color: c1 }, data: irsAligned });
       series.push({ name: `IC（信息系数）${k}`, type: 'line', smooth: true, showSymbol: false,
-                    lineStyle: { color: c2, width: 1.5, type: 'dashed' }, itemStyle: { color: c2 }, data: g.ics });
+                    lineStyle: { color: c2, width: 1.5, type: 'dashed' }, itemStyle: { color: c2 }, data: icsAligned });
     });
     chart.setOption({
       backgroundColor: 'transparent',
@@ -765,7 +785,7 @@ async function loadFactor() {
       grid: { left: 50, right: 24, top: 44, bottom: 32 },
       xAxis: {
         type: 'category',
-        data: d.metrics.map(m => m.as_of_date).reverse(),
+        data: allDates,
         axisLabel: { color: '#6b748a', fontSize: 10 },
         axisLine: { lineStyle: { color: '#2e3648' } },
       },
@@ -784,8 +804,12 @@ async function loadFactor() {
 window.addEventListener('load', () => {
   const dateSel = document.getElementById('portfolio-date');
   if (dateSel.value) loadPortfolio();
+  dateSel.addEventListener('change', loadPortfolio);
   const factorSel = document.getElementById('factor-name');
   if (factorSel.value) loadFactor();
+  factorSel.addEventListener('change', loadFactor);
+  const proposalStatusSel = document.getElementById('proposal-status');
+  if (proposalStatusSel) proposalStatusSel.addEventListener('change', loadProposals);
   loadProposals();
   loadNav();
   loadPaperTracking();
@@ -1231,6 +1255,12 @@ async function loadPaperTracking() {
     }
   } catch (e) {
     renderFetchError(sumEl, e);
+    // 失败时同时清掉 table / dispose chart，避免残留旧数据让用户误以为还是最新
+    if (tblEl) tblEl.innerHTML = '';
+    if (chartEl && typeof echarts !== 'undefined') {
+      const old = echarts.getInstanceByDom(chartEl);
+      if (old) old.dispose();
+    }
   }
 }
 

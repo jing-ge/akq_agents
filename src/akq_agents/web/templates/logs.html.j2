@@ -167,6 +167,12 @@ window.addEventListener('load', () => {
   // 切换 source / lines 立即刷新
   document.getElementById('log-source').addEventListener('change', () => { _lastSig = ''; _lastLineCount = 0; refreshLogs(true); });
   document.getElementById('log-lines').addEventListener('change', () => { _lastSig = ''; _lastLineCount = 0; refreshLogs(true); });
+  // grep 输入：debounce 350ms 后自动刷新，不必等用户按 Enter
+  let _grepDebounce = null;
+  document.getElementById('log-grep').addEventListener('input', () => {
+    if (_grepDebounce) clearTimeout(_grepDebounce);
+    _grepDebounce = setTimeout(() => { _lastSig = ''; _lastLineCount = 0; refreshLogs(true); }, 350);
+  });
   refreshLogs(true);
   _logTimer = setInterval(() => refreshLogs(false), LOG_POLL_MS);
 });
