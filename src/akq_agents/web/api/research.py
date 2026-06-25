@@ -13,6 +13,30 @@ from akq_agents.web.deps import ServiceContainer, get_services
 router = APIRouter()
 
 
+def _backfill_names(svc: Any, items: list[dict[str, Any]]) -> None:
+    """对每个 item 兜底 name：若 item['name'] 空，从 stock_name_store 查一下补上。
+
+    用于 portfolio_snapshots 等历史表 name 列为空的场景（P1 期 name_map={} 没填）。
+
+    svc 只需暴露 ``svc.workflow.services``（ServiceContainer 或鸭子类型替身均可）。
+    """
+    if not items:
+        return
+    workflow = svc.workflow
+    name_store = workflow.services.get("stock_name_store") if workflow else None
+    if name_store is None:
+        return
+    # 只在至少一个 name 缺失时才查 store，避免热路径不必要 IO
+    if all(it.get("name") for it in items):
+        return
+    name_map = name_store.load_all()
+    if not name_map:
+        return
+    for it in items:
+        if not it.get("name"):
+            it["name"] = name_map.get(str(it.get("symbol")), "")
+
+
 # ---------------- Portfolio ----------------
 
 
@@ -46,6 +70,7 @@ async def portfolio(date: str = Query(..., description="YYYY-MM-DD")) -> dict[st
             }
         )
     turnover = _compute_turnover_from_rows(rows)
+    _backfill_names(svc, out_rows)
     return {
         "as_of_date": date,
         "n": len(rows),
@@ -412,12 +437,18 @@ async def daily_attribution(date: str = Query(..., description="YYYY-MM-DD")) ->
             factor_total[name] = factor_total.get(name, 0.0) + float(c)
     factor_rank = sorted(factor_total.items(), key=lambda kv: abs(kv[1]), reverse=True)[:8]
 
+    # 兜底 contributor/dragger 的中文简称（snapshot 表 name 列历史为空）
+    top_contrib = contribs[:5]
+    top_drag = list(reversed(contribs[-5:]))
+    _backfill_names(svc, top_contrib)
+    _backfill_names(svc, top_drag)
+
     return {
         "date": date,
         "n_holdings": len(rows),
         "n_with_return": len(contribs),
-        "top_contributors": contribs[:5],
-        "top_draggers": list(reversed(contribs[-5:])),
+        "top_contributors": top_contrib,
+        "top_draggers": top_drag,
         "factor_contribution": [{"name": n, "contribution": v} for n, v in factor_rank],
     }
 

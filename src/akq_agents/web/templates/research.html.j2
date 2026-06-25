@@ -1061,12 +1061,12 @@ async function loadHoldings() {
     tblEl.innerHTML = `<table><thead><tr>
       <th>代码</th><th>股数</th><th>成本价</th><th>更新时间</th><th>备注</th><th>操作</th>
     </tr></thead><tbody>${d.holdings.map(h => `<tr>
-      <td><code>${h.symbol}</code></td>
+      <td><code>${h.symbol}</code>${h.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(h.name)}</div>` : ''}</td>
       <td>${Number(h.shares).toLocaleString('en')}</td>
       <td>${h.avg_cost != null ? Number(h.avg_cost).toFixed(2) : '-'}</td>
       <td class="small">${h.updated_at}</td>
       <td class="small">${h.note || ''}</td>
-      <td><button onclick="deleteHolding('${h.symbol}')" class="small">删除</button></td>
+      <td><button data-name="${h.name ? escapeHtml(h.name) : ''}" onclick="deleteHolding('${h.symbol}', this.dataset.name)" class="small">删除</button></td>
     </tr>`).join('')}</tbody></table>`;
     makeSortable(tblEl.querySelector('table'));
   } catch (e) {
@@ -1108,8 +1108,9 @@ async function upsertHolding() {
   }
 }
 
-async function deleteHolding(symbol) {
-  const ok = await confirmDialog(`确定删除持仓 ${symbol}？`, {
+async function deleteHolding(symbol, name) {
+  const label = name ? `${symbol} ${name}` : symbol;
+  const ok = await confirmDialog(`确定删除持仓 ${label}？`, {
     title: '删除持仓', confirmLabel: '删除', danger: true,
   });
   if (!ok) return;
@@ -1119,7 +1120,7 @@ async function deleteHolding(symbol) {
       const d = await r.json().catch(() => ({}));
       throw new Error(formatErrorDetail(d) || ('HTTP ' + r.status));
     }
-    toast(`已删除 ${symbol}`, 'ok');
+    toast(`已删除 ${name ? symbol + ' ' + name : symbol}`, 'ok');
     await loadHoldings();
     loadTradeList();
     loadKpiOverview();

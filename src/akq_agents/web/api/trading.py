@@ -109,6 +109,15 @@ async def list_holdings() -> dict[str, Any]:
     if store is None:
         return {"holdings": [], "n": 0}
     rows = store.list_all()
+
+    # 拼股票中文简称（UI 展示用）
+    name_store = workflow.services.get("stock_name_store") if workflow else None
+    if name_store is not None and rows:
+        name_map = name_store.load_all()
+        if name_map:
+            for h in rows:
+                h["name"] = name_map.get(str(h.get("symbol")), "")
+
     total_shares = sum(float(r["shares"]) for r in rows)
     return {"holdings": rows, "n": len(rows), "total_shares": total_shares}
 
