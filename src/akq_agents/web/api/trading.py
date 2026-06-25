@@ -178,19 +178,34 @@ async def today_trade_list(date: str | None = None) -> dict[str, Any]:
     total_sell_amt = sum(abs(it["delta_amount"]) for it in items if it["action"] == "SELL")
 
     # 修复 oracle #3：标注 staleness 让前端 / LLM 都能感知
+    # M20: 区分 cohort_date (系统在哪一天算出这个组合) vs execution_date (用户该哪天下单).
+    # daemon 在 t 16:30 算组合 (cohort_date=t), 但 t 已盘后无法下单 — 实际建议执行日是 t+1.
+    # 所以 "今日清单" = cohort_date+1 ≤ today (用户今天还能照这清单下单).
     today_actual = _date.today()
-    staleness_days = (today_actual - target_date).days
+    repo = workflow.services.get("data_repository") if workflow else None
+    if repo is not None and hasattr(repo, "_calendar"):
+        execution_date = repo._calendar.next_trading_day(target_date)
+    else:
+        # repo 不可用兜底: 用自然日 +1
+        from datetime import timedelta as _td
+        execution_date = target_date + _td(days=1)
+    # 用户视角的 "是不是今日清单":
+    #   cohort=6/24 → execution=6/25, 用户今天 (6/25) 看 = 今日清单
+    #   cohort=6/24 → execution=6/25, 用户后天 (6/26) 看 = 1 天前
+    # staleness 用 today_actual - execution_date (天数), 0 = 今日, > 0 = 过期
+    staleness_days = max(0, (today_actual - execution_date).days)
     is_today = staleness_days == 0
 
     return {
         "cohort_date": target_date.isoformat(),
+        "execution_date": execution_date.isoformat(),
         "today": today_actual.isoformat(),
         "is_today": is_today,
         "staleness_days": staleness_days,
         "stale_warning": None if is_today else (
-            f"⚠️ 当前清单生成于 {staleness_days} 天前（{target_date.isoformat()}），"
-            f"今日盘后 16:30 会自动刷新（需为交易日）；"
-            f"盘中（9:30–16:30）系统不重算组合，因子需收盘价才能定。当前清单仅供参考。"
+            f"⚠️ 当前清单建议执行日是 {execution_date.isoformat()}，距今 {staleness_days} 天前。"
+            f"今日盘后 16:30 会自动算出新组合（需为交易日）；"
+            f"盘中（9:30–16:30）系统不重算组合，因子需收盘价才能定。"
         ),
         "n": len(items),
         "n_buy": n_buy,

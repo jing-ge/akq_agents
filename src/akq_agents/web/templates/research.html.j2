@@ -897,7 +897,7 @@ async function loadKpiOverview() {
     const isStale = listD.is_today === false;
     const buyStaleCls = isStale ? 'metric-dim' : '';
     const sellStaleCls = isStale ? 'metric-dim' : '';
-    const staleSub = isStale ? `${listD.cohort_date} 旧清单` : undefined;
+    const staleSub = isStale ? `${listD.execution_date || listD.cohort_date} 旧清单` : undefined;
     setVal('kpi-buy-val', pendingBuy, staleSub, buyStaleCls);
     setVal('kpi-sell-val', pendingSell, staleSub, sellStaleCls);
     // 持仓数 = 推荐组合的 holdings = items 总数（含 HOLD），但更准确取 portfolio
@@ -952,7 +952,7 @@ async function loadTradeList() {
     sumEl.innerHTML = `
       ${d.stale_warning ? `<div class="stale-banner">${d.stale_warning}</div>` : ''}
       <div class="kpi-strip">
-        <div><span class="small">建议日期</span><span class="stat-num">${d.cohort_date}${d.is_today ? '' : ' <span class="small" style="color:#fbbf24">(非今日)</span>'}</span></div>
+        <div title="execution_date: 该按此清单下单的日; cohort_date: 系统算出该清单的日(收盘后)"><span class="small">建议执行日</span><span class="stat-num">${d.execution_date || d.cohort_date}${d.is_today ? '' : ' <span class="small" style="color:#fbbf24">(非今日)</span>'}</span><span class="small" style="color:var(--fg-dim)">(算于 ${d.cohort_date} 盘后)</span></div>
         <div><span class="small">买入</span><span class="stat-num metric-good">${d.n_buy}</span></div>
         <div><span class="small">卖出</span><span class="stat-num metric-bad">${d.n_sell}</span></div>
         <div><span class="small">不动</span><span class="stat-num">${d.n_hold}</span></div>
