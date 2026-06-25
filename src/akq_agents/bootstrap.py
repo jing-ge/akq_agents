@@ -51,6 +51,7 @@ from akq_agents.services.portfolio import (
 )
 from akq_agents.services.portfolio.backtester import BacktestConfig, PortfolioBacktester
 from akq_agents.services.portfolio.industry_map import IndustryMapStore
+from akq_agents.services.data.stock_names import StockNameStore
 from akq_agents.services.portfolio.paper_trading import PaperTradingConfig, PaperTradingStore
 from akq_agents.services.portfolio.risk_filter import RiskFilter, RiskFilterConfig
 from akq_agents.services.portfolio.trade_list import HoldingsStore, TradeListStore, TradeListConfig
@@ -88,6 +89,8 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
         services["portfolio_snapshot_store"] = PortfolioSnapshotStore(meta_db_path)
         # M9-C 行业映射 store
         services["industry_map_store"] = IndustryMapStore(meta_db_path)
+        # 股票代码 → 中文简称（UI 展示用）
+        services["stock_name_store"] = StockNameStore(meta_db_path)
         # P0-2: Paper Trading 前向跟踪
         services["paper_trading_store"] = PaperTradingStore(
             meta_db_path,

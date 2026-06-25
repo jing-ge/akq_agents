@@ -952,7 +952,7 @@ async function loadTradeList() {
     sumEl.innerHTML = `
       ${d.stale_warning ? `<div class="stale-banner">${d.stale_warning}</div>` : ''}
       <div class="kpi-strip">
-        <div title="execution_date: 该按此清单下单的日; cohort_date: 系统算出该清单的日(收盘后)"><span class="small">建议执行日</span><span class="stat-num">${d.execution_date || d.cohort_date}${d.is_today ? '' : ' <span class="small" style="color:#fbbf24">(非今日)</span>'}</span><span class="small" style="color:var(--fg-dim)">(算于 ${d.cohort_date} 盘后)</span></div>
+        <div style="grid-column: span 2" title="execution_date: 该按此清单下单的日; cohort_date: 系统算出该清单的日(收盘后)"><span class="small">建议执行日</span><span class="stat-num" style="white-space:nowrap">${d.execution_date || d.cohort_date}</span>${d.is_today ? '' : ' <span class="small" style="color:#fbbf24">(非今日)</span>'} <span class="small" style="color:var(--fg-dim)">(算于 ${d.cohort_date} 盘后)</span></div>
         <div><span class="small">买入</span><span class="stat-num metric-good">${d.n_buy}</span></div>
         <div><span class="small">卖出</span><span class="stat-num metric-bad">${d.n_sell}</span></div>
         <div><span class="small">不动</span><span class="stat-num">${d.n_hold}</span></div>
@@ -976,7 +976,7 @@ async function loadTradeList() {
       <th>当前价</th><th>原因</th><th>操作</th>
     </tr></thead><tbody>${tradable.map(it => `<tr>
       <td>${actBadge(it.action)}</td>
-      <td><code>${it.symbol}</code></td>
+      <td><code>${it.symbol}</code>${it.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(it.name)}</div>` : ''}</td>
       <td class="small">${it.industry || '-'}</td>
       <td>${fmt(it.current_shares, 0)} → ${fmt(it.target_shares, 0)}</td>
       <td class="${it.delta_shares>=0?'metric-good':'metric-bad'}">${it.delta_shares>=0?'+':''}${fmt(it.delta_shares, 0)}</td>
@@ -990,7 +990,7 @@ async function loadTradeList() {
       html += `<table class="trade-table" style="margin-top:8px"><thead><tr>
         <th>代码</th><th>行业</th><th>股数</th><th>当前价</th><th>原因</th>
       </tr></thead><tbody>${holdItems.map(it => `<tr>
-        <td><code>${it.symbol}</code></td>
+        <td><code>${it.symbol}</code>${it.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(it.name)}</div>` : ''}</td>
         <td class="small">${it.industry || '-'}</td>
         <td>${fmt(it.current_shares, 0)}</td>
         <td>${fmt(it.current_price, 2)}</td>

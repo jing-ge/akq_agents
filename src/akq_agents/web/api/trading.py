@@ -186,6 +186,14 @@ async def today_trade_list(date: str | None = None) -> dict[str, Any]:
             items = store.list_cohort(target_date)
             fallback_used = target_date != requested_date
 
+    # 拼 stock name（代码 + 中文简称同时显示，避免用户只看到 6 位代码）
+    name_store = workflow.services.get("stock_name_store") if workflow else None
+    if name_store is not None and items:
+        name_map = name_store.load_all()
+        if name_map:
+            for it in items:
+                it["name"] = name_map.get(str(it.get("symbol")), "")
+
     # 汇总
     n_buy = sum(1 for it in items if it["action"] == "BUY")
     n_sell = sum(1 for it in items if it["action"] == "SELL")
