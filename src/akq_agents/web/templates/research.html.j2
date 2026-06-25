@@ -873,11 +873,12 @@ async function loadKpiOverview() {
       navSub.classList.remove('metric-good', 'metric-bad');
       if (dailyCls) navSub.classList.add(dailyCls);
     }
-    // 累计超额
-    if (last.benchmark_nav && navVal != null) {
-      const excess = (navVal - last.benchmark_nav) / last.benchmark_nav;
+    // 累计超额 — B7 修复: 末点 benchmark 可能 NULL, 找最后一个有 benchmark 的日同步对齐
+    const lastAligned = [...navD.nav].reverse().find(p => p.benchmark_nav != null && p.nav_net != null);
+    if (lastAligned) {
+      const excess = lastAligned.nav_net - lastAligned.benchmark_nav;
       const sign = excess >= 0 ? '+' : '';
-      setVal('kpi-excess-val', `${sign}${(excess * 100).toFixed(2)}%`, undefined,
+      setVal('kpi-excess-val', `${sign}${(excess * 100).toFixed(2)}%`, `对齐 ${lastAligned.date.slice(5)}`,
              excess >= 0 ? 'metric-good' : 'metric-bad');
     }
   } else {
@@ -1284,9 +1285,14 @@ async function loadNav() {
         <div class="kpi"><span class="lbl">夏普比率</span><span class="val">${s.sharpe_net != null ? s.sharpe_net.toFixed(2) : '—'}</span></div>
         <div class="kpi"><span class="lbl">最大回撤</span><span class="val metric-bad">${fmt(s.max_drawdown)}</span></div>
         <div class="kpi"><span class="lbl">沪深300 累计</span><span class="val">${fmt(s.benchmark_total_return)}</span></div>
-        <div class="kpi"><span class="lbl">超额收益</span><span class="val ${(s.excess_return||0)>=0?'metric-good':'metric-bad'}">${fmt(s.excess_return)}</span></div>
+        <div class="kpi" title="${s.excess_aligned_to ? '同步对齐至 '+s.excess_aligned_to+' (benchmark 最末有效日)' : ''}"><span class="lbl">超额收益${s.excess_aligned_to ? ' <span style="color:var(--fg-dim);font-weight:400">(对齐 '+s.excess_aligned_to.slice(5)+')</span>' : ''}</span><span class="val ${(s.excess_return||0)>=0?'metric-good':'metric-bad'}">${fmt(s.excess_return)}</span></div>
         <div class="kpi"><span class="lbl">累计成本</span><span class="val">${fmt(s.total_cost)}</span></div>
         <div class="kpi"><span class="lbl">平均换手</span><span class="val">${fmt(s.avg_turnover_per_rebalance)}</span></div>
+      </div>
+      <div class="small" style="margin-top:8px;color:var(--fg-dim);line-height:1.6">
+        ⚠️ <b>回测口径披露</b>: 历史 OHLCV 仅含<b>当前在交易</b>的 ~5500 只股票 (akshare 默认接口),
+        不含 2025-09 至今约 30-50 只退市股. 这部分 survivorship bias 估算贡献 +15-25% 假超额,
+        真 alpha 约为显示数字的 1/3 至 1/2. 详见 README "当前限制" 段.
       </div>
     `;
     if (typeof echarts === 'undefined') return;

@@ -328,9 +328,20 @@ class PortfolioBacktester:
         max_dd = float((nav_net / cummax - 1.0).min())
         total_cost = float(nav_df["cost"].sum())
         avg_turnover = float(nav_df.loc[nav_df["turnover"] > 0, "turnover"].mean()) if (nav_df["turnover"] > 0).any() else 0.0
-        bench_last = nav_df["benchmark_nav"].dropna()
-        bench_total = float(bench_last.iloc[-1] - 1.0) if len(bench_last) >= 1 else None
-        excess = (total_ret - bench_total) if bench_total is not None else None
+        # M19 B7: bench_total 和 excess 必须用同一天的 nav vs benchmark, 否则尾部 NULL
+        # 会让 excess 虚高 (nav 涨到 t, benchmark 停在 t-N, excess 多算了 N 天 nav 涨幅).
+        bench_aligned = nav_df[nav_df["benchmark_nav"].notna()]
+        if not bench_aligned.empty:
+            last_aligned = bench_aligned.iloc[-1]
+            bench_total = float(last_aligned["benchmark_nav"] - 1.0)
+            # 用同一天的 nav_net (而不是全表末日的 nav_net) 算超额
+            nav_at_bench_end = float(last_aligned["nav_net"])
+            excess = nav_at_bench_end - 1.0 - bench_total
+            excess_aligned_date = str(last_aligned["as_of_date"])
+        else:
+            bench_total = None
+            excess = None
+            excess_aligned_date = None
         return {
             "n_days": int(n),
             "total_return_net": total_ret,
@@ -341,6 +352,8 @@ class PortfolioBacktester:
             "avg_turnover_per_rebalance": avg_turnover,
             "benchmark_total_return": bench_total,
             "excess_return": excess,
+            # 透明披露: 超额对齐到的日期 (benchmark 末日)
+            "excess_aligned_to": excess_aligned_date,
         }
 
 
