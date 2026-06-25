@@ -102,12 +102,23 @@ async def post_message(session_id: str, body: SendMessageRequest) -> StreamingRe
         raise HTTPException(503, detail="llm not configured")
     if not body.content.strip():
         raise HTTPException(400, detail="content required")
-    if len(body.content) > svc.web_config.chat.max_message_chars if svc.web_config else 4000:
+    max_chars = svc.web_config.chat.max_message_chars if svc.web_config else 4000
+    if len(body.content) > max_chars:
         raise HTTPException(400, detail="content too long")
 
     chat_cfg = svc.llm_config.chat
     model = body.model or chat_cfg.model
     history = _build_history(svc, session_id, limit=chat_cfg.history_window)
+
+    # 记下本轮开始前已有的 tool 消息数，等 run_chat_turn 结束后只发"新增"的，避免跨轮泄漏
+    # 已知限制：list_messages ORDER BY ts ASC LIMIT 10000，单 session 累计 > 10000 条 message
+    # 时会取不到尾部新增的 tool 行（前端漏推 tool_use 事件）。同 session 并发也会让 tool_count_before
+    # 串。这两种场景目前都不会被正常用户触发，先以注释标记。
+    tool_count_before = 0
+    if svc.llm_store is not None:
+        tool_count_before = sum(
+            1 for m in svc.llm_store.list_messages(session_id, limit=10000) if m.role == "tool"
+        )
 
     async def event_stream():
         # keepalive ping
@@ -127,12 +138,13 @@ async def post_message(session_id: str, body: SendMessageRequest) -> StreamingRe
             yield f"event: error\ndata: {json.dumps(payload)}\n\n"
             return
 
-        # 抓 LLM 本轮新写入的工具调用消息（role='tool'）
+        # 只发送本轮新增的 tool 调用（避免历史泄漏）
         if svc.llm_store is not None:
-            tool_msgs = [m for m in svc.llm_store.list_messages(session_id, limit=200) if m.role == "tool"]
-            # 仅本轮的：tool_msgs[-N:]（粗略：发送所有 tool 调用让前端自决）
-            recent_tools = tool_msgs[-chat_cfg.max_iterations:] if tool_msgs else []
-            for tm in recent_tools:
+            all_tool_msgs = [
+                m for m in svc.llm_store.list_messages(session_id, limit=10000) if m.role == "tool"
+            ]
+            new_tools = all_tool_msgs[tool_count_before:]
+            for tm in new_tools:
                 yield f"event: tool_use\ndata: {json.dumps({'name': tm.tool_name, 'args': json.loads(tm.tool_args) if tm.tool_args else None, 'result': json.loads(tm.tool_result) if tm.tool_result else None}, ensure_ascii=False)}\n\n"
 
         yield f"event: assistant\ndata: {json.dumps({'content': text}, ensure_ascii=False)}\n\n"

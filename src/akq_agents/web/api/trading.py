@@ -82,17 +82,21 @@ def _recompute_today_trade_list() -> dict[str, Any]:
 
     from akq_agents.services.portfolio.trade_list import generate_trade_list
 
-    items = generate_trade_list(
-        cohort_date=target_date,
-        target_weights=weights,
-        current_close=today_close,
-        holdings=holdings_dict,
-        composite_scores=composite,
-        industry_map=industry_name_map,
-        yesterday_weights=prev_weights,
-        cfg=tl_cfg,
-    )
-    tl_store.upsert_cohort(target_date, items)
+    try:
+        items = generate_trade_list(
+            cohort_date=target_date,
+            target_weights=weights,
+            current_close=today_close,
+            holdings=holdings_dict,
+            composite_scores=composite,
+            industry_map=industry_name_map,
+            yesterday_weights=prev_weights,
+            cfg=tl_cfg,
+        )
+        tl_store.upsert_cohort(target_date, items)
+    except Exception as exc:
+        logger.exception("recompute trade_list failed")
+        return {"recomputed": False, "error": f"generate failed: {exc}"}
     return {"recomputed": True, "cohort_date": target_date.isoformat(), "n_items": len(items)}
 
 
@@ -122,6 +126,15 @@ async def upsert_holding(symbol: str, payload: dict[str, Any]) -> dict[str, Any]
     if avg_cost is not None:
         avg_cost = float(avg_cost)
     note = payload.get("note")
+
+    # P1-2: 新建持仓时必须给 avg_cost，否则下游 PnL/盈亏会 NaN
+    if shares > 0:
+        existing = store.get_shares(symbol)
+        if existing <= 0 and avg_cost is None:
+            raise HTTPException(
+                400,
+                detail="新建持仓必须提供 avg_cost（成本价）；如不知道可填当前价。"
+            )
     store.upsert(symbol, shares, avg_cost=avg_cost, note=note)
 
     # L-1: 持仓改了 → 重算今日 trade_list
@@ -161,7 +174,9 @@ async def today_trade_list(date: str | None = None) -> dict[str, Any]:
     if store is None:
         return {"items": [], "n": 0}
     target_date = _date.fromisoformat(date) if date else _date.today()
+    requested_date = target_date
     items = store.list_cohort(target_date)
+    fallback_used = False
 
     if not items:
         # 找最近一天有清单的日期作为回退
@@ -169,6 +184,7 @@ async def today_trade_list(date: str | None = None) -> dict[str, Any]:
         if dates:
             target_date = _date.fromisoformat(dates[0])
             items = store.list_cohort(target_date)
+            fallback_used = target_date != requested_date
 
     # 汇总
     n_buy = sum(1 for it in items if it["action"] == "BUY")
@@ -183,30 +199,46 @@ async def today_trade_list(date: str | None = None) -> dict[str, Any]:
     # 所以 "今日清单" = cohort_date+1 ≤ today (用户今天还能照这清单下单).
     today_actual = _date.today()
     repo = workflow.services.get("data_repository") if workflow else None
+    from datetime import timedelta as _td
+    execution_date = target_date + _td(days=1)  # 兜底：自然日 +1
     if repo is not None and hasattr(repo, "_calendar"):
-        execution_date = repo._calendar.next_trading_day(target_date)
-    else:
-        # repo 不可用兜底: 用自然日 +1
-        from datetime import timedelta as _td
-        execution_date = target_date + _td(days=1)
+        try:
+            execution_date = repo._calendar.next_trading_day(target_date)
+        except Exception:
+            # calendar 越界 (cohort 是已知日历最后一天) 时退回兜底，避免接口 500
+            logger.warning("next_trading_day(%s) failed, fallback to +1 calendar day", target_date)
     # 用户视角的 "是不是今日清单":
     #   cohort=6/24 → execution=6/25, 用户今天 (6/25) 看 = 今日清单
     #   cohort=6/24 → execution=6/25, 用户后天 (6/26) 看 = 1 天前
-    # staleness 用 today_actual - execution_date (天数), 0 = 今日, > 0 = 过期
-    staleness_days = max(0, (today_actual - execution_date).days)
-    is_today = staleness_days == 0
+    #   用户传 ?date=未来 → execution 也在未来, raw_delta<0, 标记为"未来清单"
+    raw_delta = (today_actual - execution_date).days
+    staleness_days = max(0, raw_delta)
+    is_today = raw_delta == 0
+    is_future = raw_delta < 0
+
+    if is_today:
+        stale_warning = None
+    elif is_future:
+        stale_warning = (
+            f"⚠️ 当前清单建议执行日是 {execution_date.isoformat()}，尚未到达执行日。"
+            f"请到当天再查看。"
+        )
+    else:
+        stale_warning = (
+            f"⚠️ 当前清单建议执行日是 {execution_date.isoformat()}，距今 {staleness_days} 天前。"
+            f"今日盘后 16:30 会自动算出新组合（需为交易日）；"
+            f"盘中（9:30–16:30）系统不重算组合，因子需收盘价才能定。"
+        )
 
     return {
         "cohort_date": target_date.isoformat(),
+        "requested_date": requested_date.isoformat(),
+        "fallback_used": fallback_used,
         "execution_date": execution_date.isoformat(),
         "today": today_actual.isoformat(),
         "is_today": is_today,
         "staleness_days": staleness_days,
-        "stale_warning": None if is_today else (
-            f"⚠️ 当前清单建议执行日是 {execution_date.isoformat()}，距今 {staleness_days} 天前。"
-            f"今日盘后 16:30 会自动算出新组合（需为交易日）；"
-            f"盘中（9:30–16:30）系统不重算组合，因子需收盘价才能定。"
-        ),
+        "stale_warning": stale_warning,
         "n": len(items),
         "n_buy": n_buy,
         "n_sell": n_sell,
@@ -243,15 +275,27 @@ async def mark_all_executed(date: str | None = None) -> dict[str, Any]:
     target_date = _date.fromisoformat(date) if date else _date.today()
     items = tl_store.list_cohort(target_date)
     n_executed = 0
+    n_failed = 0
+    failed_symbols: list[str] = []
     for it in items:
         action = it.get("action")
         if action not in ("BUY", "SELL"):
             continue
         if it.get("executed"):
             continue
-        tl_store.mark_executed(target_date, it["symbol"], holdings_store=h_store)
-        n_executed += 1
-    return {"status": "ok", "executed_count": n_executed}
+        try:
+            tl_store.mark_executed(target_date, it["symbol"], holdings_store=h_store)
+            n_executed += 1
+        except Exception:
+            logger.exception("mark_executed failed for %s", it.get("symbol"))
+            n_failed += 1
+            failed_symbols.append(it.get("symbol", "?"))
+    return {
+        "status": "ok" if n_failed == 0 else "partial",
+        "executed_count": n_executed,
+        "failed_count": n_failed,
+        "failed_symbols": failed_symbols,
+    }
 
 
 @router.get("/dates")

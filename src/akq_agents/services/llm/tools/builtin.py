@@ -215,8 +215,9 @@ def build_get_factor_proposals(services: dict[str, Any]) -> ToolSpec:
     def handler(args: dict[str, Any]) -> dict[str, Any]:
         limit = int(args.get("limit", 20))
         status = args.get("status") or None
-        if status and status not in {"accepted", "rejected", "pending"}:
-            return {"error": "INVALID_ARGUMENTS", "detail": "status must be accepted/rejected/pending"}
+        _valid_status = {"accepted", "rejected", "pending", "shadow", "demoted", "llm_suggested"}
+        if status and status not in _valid_status:
+            return {"error": "INVALID_ARGUMENTS", "detail": f"status must be one of {sorted(_valid_status)}"}
         rows = store.list_recent(limit=limit, status=status)
         return {
             "counts": store.counts(),
@@ -243,7 +244,10 @@ def build_get_factor_proposals(services: dict[str, Any]) -> ToolSpec:
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "default": 20},
-                "status": {"type": "string", "enum": ["accepted", "rejected", "pending"]},
+                "status": {
+                    "type": "string",
+                    "enum": ["accepted", "rejected", "pending", "shadow", "demoted", "llm_suggested"],
+                },
             },
             "required": [],
         },
@@ -655,17 +659,27 @@ def build_attribute_nav_drop(services: dict[str, Any]) -> ToolSpec:
 def build_get_today_trade_list(services: dict[str, Any]) -> ToolSpec:
     """返回当前 holdings 推算出的今日 BUY/SELL/HOLD 清单。"""
     tl_store = services["trade_list_store"]
+    repo = services.get("data_repository")
 
     def handler(_args: dict[str, Any]) -> dict[str, Any]:
         dates = tl_store.list_dates(limit=1)
         if not dates:
             return {"error": "NO_TRADE_LIST"}
         from datetime import date as _date
+        from datetime import timedelta as _td
 
-        target = _date.fromisoformat(dates[0])
+        cohort = _date.fromisoformat(dates[0])
         today_actual = _date.today()
-        staleness_days = (today_actual - target).days
-        items = tl_store.list_cohort(target)
+        # 与 GET /trading/today-list 口径一致：用 execution_date (cohort 后下一交易日) 算 staleness
+        execution_date = cohort + _td(days=1)  # 兜底：自然日 +1
+        if repo is not None and hasattr(repo, "_calendar"):
+            try:
+                execution_date = repo._calendar.next_trading_day(cohort)
+            except Exception:
+                # calendar 越界时退回兜底，避免 LLM 工具整体失败
+                pass
+        staleness_days = max(0, (today_actual - execution_date).days)
+        items = tl_store.list_cohort(cohort)
         n_buy = sum(1 for it in items if it["action"] == "BUY")
         n_sell = sum(1 for it in items if it["action"] == "SELL")
         n_hold = sum(1 for it in items if it["action"] == "HOLD")
@@ -676,7 +690,8 @@ def build_get_today_trade_list(services: dict[str, Any]) -> ToolSpec:
             for it in items if it["action"] != "HOLD"
         ][:30]
         out = {
-            "cohort_date": target.isoformat(),
+            "cohort_date": cohort.isoformat(),
+            "execution_date": execution_date.isoformat(),
             "today": today_actual.isoformat(),
             "is_today": staleness_days == 0,
             "staleness_days": staleness_days,
@@ -687,9 +702,9 @@ def build_get_today_trade_list(services: dict[str, Any]) -> ToolSpec:
         }
         if staleness_days > 0:
             out["stale_warning"] = (
-                f"⚠️ 注意：此清单生成于 {staleness_days} 天前（cohort_date={target.isoformat()}），"
+                f"⚠️ 注意：此清单建议执行日是 {execution_date.isoformat()}（距今 {staleness_days} 天前），"
                 f"今天是 {today_actual.isoformat()}。回答用户时必须明确告知"
-                f"「当前清单非今日，仅供参考，今日盘后将自动刷新」，不要让用户误以为是今日实时建议。"
+                f"「当前清单非今日，仅供参考，今日盘后将自动刷新（需为交易日）」，不要让用户误以为是今日实时建议。"
             )
         return out
 

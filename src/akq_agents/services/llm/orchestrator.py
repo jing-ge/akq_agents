@@ -138,7 +138,7 @@ class LLMOrchestrator:
                 latency_ms=latency_ms, tool_calls=n_tools, status="ok",
             )
 
-            # 持久化本轮 assistant 消息（即便 tool_use_only 也写：内容含 text + 工具请求）
+            # 持久化本轮 assistant 消息（即便 tool_use_only 也写：内容含 text + 工具请求摘要）
             self._persist_assistant(session_id, resp)
 
             # 把 assistant 完整 content（含 tool_use blocks）加入 messages，保留协议状态
@@ -177,11 +177,11 @@ class LLMOrchestrator:
                 status="truncated", reason_code="TOOL_LOOP_EXCEEDED",
                 error_msg=f"exceeded {self._max_iters} iterations",
             )
-            last_text = (last_text or "") + "\n\n[已达 ToolUse 循环上限，输出可能不完整]"
+            truncated_note = "\n\n[已达 ToolUse 循环上限，输出可能不完整]"
+            # 只在内存 last_text 加 note 返回给前端；循环内已 _persist_assistant 过最后一轮的内容
+            # 不再 append 到 DB，避免 truncated 路径下数据库里出现两条 assistant
+            last_text = (last_text or "") + truncated_note
 
-        # 持久化最终 assistant
-        if last_text:
-            self._store.append_message(session_id=session_id, role="assistant", content=last_text)
         _ = iters
         return last_text
 

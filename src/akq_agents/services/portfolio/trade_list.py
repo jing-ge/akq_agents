@@ -136,6 +136,15 @@ class HoldingsStore:
             row = conn.execute("SELECT shares FROM holdings WHERE symbol = ?", (str(symbol),)).fetchone()
         return float(row[0]) if row else 0.0
 
+    def get_avg_cost(self, symbol: str) -> float | None:
+        with open_meta_db(self._db) as conn:
+            row = conn.execute(
+                "SELECT avg_cost FROM holdings WHERE symbol = ?", (str(symbol),)
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return float(row[0])
+
     def as_dict(self) -> dict[str, float]:
         with open_meta_db(self._db) as conn:
             rows = conn.execute("SELECT symbol, shares FROM holdings").fetchall()
@@ -179,16 +188,17 @@ class TradeListStore:
         ]
         with open_meta_db(self._db) as conn:
             # 先删掉这一天里不在新清单里的 symbol（持仓删除后清空旧 SELL 等）
+            # 但保留 executed=1 的记录（用户已执行的历史不应被 recompute 抹掉）
             if new_symbols:
                 placeholders = ",".join("?" for _ in new_symbols)
                 conn.execute(
-                    f"DELETE FROM trade_list_cohorts WHERE cohort_date = ? AND symbol NOT IN ({placeholders})",
+                    f"DELETE FROM trade_list_cohorts WHERE cohort_date = ? AND symbol NOT IN ({placeholders}) AND executed = 0",
                     (cohort_date.isoformat(), *new_symbols),
                 )
             else:
-                # 完全空：清掉这一天所有的
+                # 完全空：清掉这一天所有未执行的
                 conn.execute(
-                    "DELETE FROM trade_list_cohorts WHERE cohort_date = ?",
+                    "DELETE FROM trade_list_cohorts WHERE cohort_date = ? AND executed = 0",
                     (cohort_date.isoformat(),),
                 )
             if rows:
@@ -257,27 +267,70 @@ class TradeListStore:
         *,
         holdings_store: HoldingsStore | None = None,
     ) -> None:
-        """标记某条已执行；可选同时把 target_shares 同步到 holdings。"""
+        """标记某条已执行；可选同时把 target_shares 同步到 holdings。
+
+        avg_cost 计算（B2 修复）：
+        - BUY 加仓 / 建仓：新 avg_cost = 加权平均成本（按本次 current_price 成交）
+        - SELL 减仓：avg_cost 不变（已有成本不变，卖出不影响剩余成本基准）
+        - SELL 清仓 (target=0)：upsert(shares=0) 会删行，avg_cost 也一并消失
+        - HOLD / 无价格：不动 avg_cost
+
+        ``current_shares`` 用**实时 holdings**（不是 cohort 快照），避免用户在 cohort 生成
+        后手工改持仓时被覆盖掉真实成本/股数。若实时 shares ≥ target_shares，说明用户已自
+        购，仅 mark executed，不再回写 holdings。
+        """
         target_shares: float | None = None
+        current_price: float | None = None
+        action: str | None = None
         with open_meta_db(self._db) as conn:
             if holdings_store is not None:
                 row = conn.execute(
-                    "SELECT target_shares FROM trade_list_cohorts WHERE cohort_date=? AND symbol=?",
+                    "SELECT target_shares, current_price, action "
+                    "FROM trade_list_cohorts WHERE cohort_date=? AND symbol=?",
                     (cohort_date.isoformat(), str(symbol)),
                 ).fetchone()
                 if row is not None:
                     target_shares = float(row[0])
+                    current_price = float(row[1]) if row[1] is not None else None
+                    action = row[2]
             conn.execute(
                 "UPDATE trade_list_cohorts SET executed=1 WHERE cohort_date=? AND symbol=?",
                 (cohort_date.isoformat(), str(symbol)),
             )
             conn.commit()
-        if holdings_store is not None and target_shares is not None:
-            holdings_store.upsert(
-                str(symbol),
-                shares=target_shares,
-                note=f"executed cohort {cohort_date.isoformat()}",
-            )
+
+        if holdings_store is None or target_shares is None:
+            return
+
+        # 用实时 holdings 作为 base_shares（B2 边界 1 修复）
+        real_current = holdings_store.get_shares(str(symbol))
+        if real_current >= target_shares and action == "BUY":
+            # 用户已自购到目标（或超过），不需要再回写 holdings；仅 mark executed 即可
+            return
+
+        new_avg_cost: float | None = None
+        if action == "BUY" and current_price is not None and current_price > 0:
+            buy_shares = target_shares - real_current
+            if buy_shares > 0:
+                old_avg = holdings_store.get_avg_cost(str(symbol))
+                if old_avg is None or real_current <= 0:
+                    # 新建仓
+                    new_avg_cost = current_price
+                else:
+                    # 加权平均：(老股数*老成本 + 加仓股数*当前价) / 总股数
+                    total_shares = real_current + buy_shares
+                    if total_shares > 0:
+                        new_avg_cost = (
+                            real_current * old_avg + buy_shares * current_price
+                        ) / total_shares
+        # SELL / HOLD 不动 avg_cost（upsert 里 COALESCE 会保留旧值）
+
+        holdings_store.upsert(
+            str(symbol),
+            shares=target_shares,
+            avg_cost=new_avg_cost,
+            note=f"executed cohort {cohort_date.isoformat()}",
+        )
 
 
 def generate_trade_list(
