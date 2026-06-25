@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import datetime
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -21,6 +21,14 @@ from akq_agents.orchestrator.job_runner import JobRunner
 logger = logging.getLogger(__name__)
 
 JOB_ID = "factor.discovery"
+
+
+def _partition_for_now() -> str:
+    """每小时一个 partition — discovery 是"无状态产候选"任务，不是 daily 幂等。
+
+    用 hour 桶让 IntervalTrigger(minutes=120) 真正每 2h 跑一次，而不是当天首次后全 noop。
+    """
+    return datetime.now().strftime("%Y-%m-%dT%H")
 
 
 def register(
@@ -39,10 +47,9 @@ def register(
     n_candidates = getattr(job_cfg, "n_candidates_per_run", 20)
 
     def _run() -> None:
-        partition = date.today().isoformat()
         runner.run(
             JOB_ID,
-            partition,
+            _partition_for_now(),
             lambda: _do(services, n_candidates=n_candidates),
             timeout_s=job_cfg.timeout_s,
         )
@@ -59,10 +66,9 @@ def register(
 
 def run_once_now(runner: JobRunner, services: dict[str, Any], n_candidates: int = 20) -> Any:
     """供 CLI / Web 手动触发。返回 JobRunResult (status/reason_code/payload)。"""
-    partition = date.today().isoformat()
     return runner.run(
         JOB_ID,
-        partition,
+        _partition_for_now(),
         lambda: _do(services, n_candidates=n_candidates),
         timeout_s=600,
     )

@@ -104,7 +104,7 @@ SIGTERM / SIGINT / `daemon.request_stop()` 触发：
 
 格式：`<domain>.<noun>.<verb_past>`，全部小写 + 点分。
 
-完整注册表见 `src/akq_agents/orchestrator/state_store.py:KNOWN_EVENT_KINDS`。写入未在注册表中的 kind 会发 warning 但仍然落库，便于前向兼容。
+完整注册表见 `src/akq_agents/orchestrator/state_store.py:KNOWN_EVENT_KIND_PREFIXES`（按域前缀放行）。写入未匹配任何前缀的 kind 会发 warning 但仍然落库，便于前向兼容。
 
 域：`batch / retry / data / factor / portfolio / analyst / chat / llm / daemon`  
 动词过去分词：`completed / failed / skipped / timeout / crashed / interrupted / started / stopped / generated / degraded / activated / deactivated / bootstrap / evaluated / missing / blocked / unknown`

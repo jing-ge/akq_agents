@@ -213,7 +213,8 @@ def test_cleanup_retention(store: SchedulerStateStore) -> None:
 
 
 def test_known_event_kinds_includes_all_needed() -> None:
-    """跨 spec 一致性自检：P3/P4 用到的 kind 必须在 enum 里。"""
+    """跨 spec 一致性自检：P3/P4 用到的 kind 必须在白名单前缀里。"""
+    from akq_agents.orchestrator.state_store import _kind_is_known
     must_have = {
         "batch.post_close.completed",
         "retry.fetch_errors.completed",
@@ -227,4 +228,5 @@ def test_known_event_kinds_includes_all_needed() -> None:
         "daemon.started",
         "daemon.stopped",
     }
-    assert must_have.issubset(KNOWN_EVENT_KINDS)
+    for kind in must_have:
+        assert _kind_is_known(kind), f"{kind} not matched by KNOWN_EVENT_KIND_PREFIXES"

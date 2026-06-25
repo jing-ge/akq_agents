@@ -133,6 +133,15 @@ async def data_refresh_trigger(target_date: str | None = None) -> dict[str, Any]
     if svc.repo is None:
         raise HTTPException(503, "data_repository not ready")
 
+    # 校验 target_date 必须在抢锁之前，否则非法日期会把 running 永久卡 True
+    if target_date:
+        try:
+            tdate = date.fromisoformat(target_date)
+        except ValueError:
+            raise HTTPException(400, f"invalid target_date: {target_date!r}, expect YYYY-MM-DD")
+    else:
+        tdate = date.today()
+
     with _data_refresh_lock:
         if _data_refresh_state["running"]:
             return {
@@ -144,13 +153,12 @@ async def data_refresh_trigger(target_date: str | None = None) -> dict[str, Any]
             "running": True,
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "finished_at": None,
-            "target_date": target_date or date.today().isoformat(),
+            "target_date": tdate.isoformat(),
             "result": None,
             "error": None,
         })
 
     repo = svc.repo
-    tdate = date.fromisoformat(target_date) if target_date else date.today()
 
     def _worker():
         try:

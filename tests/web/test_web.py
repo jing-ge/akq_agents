@@ -369,3 +369,24 @@ def test_server_module_passes_workers_1(monkeypatch) -> None:
     assert called["workers"] == 1
     assert called["host"] == "127.0.0.1"
     assert called["port"] == 8765
+
+
+# =============================================================
+# B3: /control/data/refresh 非法日期不应卡 running
+# =============================================================
+
+
+def test_data_refresh_invalid_target_date_returns_400_not_stuck(client) -> None:
+    """B3 回归: target_date 格式非法时应直接 400，不能写 running=True 然后让后续都返回 already_running。"""
+    # 1) 非法 target_date → 400
+    r1 = client.post("/api/control/data/refresh?target_date=not-a-date")
+    assert r1.status_code == 400
+    body = r1.json()
+    assert "invalid target_date" in (body.get("detail") or body.get("error") or "")
+
+    # 2) 立刻再发合法请求，不应被锁住返回 already_running
+    r2 = client.post("/api/control/data/refresh?target_date=2026-06-25")
+    # 这里允许 200 (started) 或 503 (repo not ready in test) — 但绝不能是 already_running
+    assert r2.status_code in (200, 503)
+    if r2.status_code == 200:
+        assert r2.json().get("status") != "already_running"

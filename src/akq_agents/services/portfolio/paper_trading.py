@@ -205,18 +205,20 @@ class PaperTradingStore:
 
             return_pct = (total_value - assumed_capital) / assumed_capital if assumed_capital > 0 else 0.0
 
-            # benchmark：优先用 cohort_close_lookup（外部传入的 ohlcv 反查），
-            # 否则尝试用 _read_close_on_date（只能拿到持仓票，benchmark 通常拿不到）
+            # benchmark：必须依赖外部传入的 cohort_close_lookup（一般是从 ohlcv 反查）。
+            # 不再 fallback 到 paper_trades 表查 frozen_price——因为 freeze 时只按组合 weights
+            # 写持仓票，benchmark (000300) 永远不在 paper_trades 里，fallback 永远 None。
             bench_return_pct = None
             excess_return_pct = None
-            if bench_close_today is not None:
-                if cohort_close_lookup is not None:
-                    bench_at_cohort = cohort_close_lookup(self._cfg.benchmark_symbol, cohort_d)
-                else:
-                    bench_at_cohort = self._read_close_on_date(self._cfg.benchmark_symbol, cohort_d)
+            if bench_close_today is not None and cohort_close_lookup is not None:
+                bench_at_cohort = cohort_close_lookup(self._cfg.benchmark_symbol, cohort_d)
                 if bench_at_cohort is not None and bench_at_cohort > 0:
                     bench_return_pct = (bench_close_today - bench_at_cohort) / bench_at_cohort
                     excess_return_pct = return_pct - bench_return_pct
+            elif bench_close_today is not None and cohort_close_lookup is None:
+                logger.warning(
+                    "update_track_perf: cohort_close_lookup missing, benchmark excess will be None"
+                )
 
             days_elapsed = (as_of_date - cohort_d).days
             with open_meta_db(self._db) as conn:
@@ -238,16 +240,6 @@ class PaperTradingStore:
             stats["updated"] += 1
 
         return stats
-
-    def _read_close_on_date(self, symbol: str, d: date) -> float | None:
-        """从 paper_trades 表里反查某 symbol 在某日的 frozen_price；
-        没有就返回 None（调用方决定如何处理）。"""
-        with open_meta_db(self._db) as conn:
-            row = conn.execute(
-                "SELECT frozen_price FROM paper_trades WHERE cohort_date = ? AND symbol = ? LIMIT 1",
-                (d.isoformat(), str(symbol)),
-            ).fetchone()
-        return float(row[0]) if row else None
 
     # ------------------------------------------------------------------
     # 3) 读

@@ -26,49 +26,36 @@ logger = logging.getLogger(__name__)
 
 
 # P2 附录 C：events.kind 命名规范注册表
-# 任何新 kind 必须在这里登记，否则 _validate_kind 会发 warning。
-KNOWN_EVENT_KINDS: frozenset[str] = frozenset(
-    {
-        # P2 自身
-        "batch.post_close.completed",
-        "batch.post_close.failed",
-        "batch.post_close.skipped",
-        "batch.post_close.timeout",
-        "batch.post_close.crashed",
-        "batch.post_close.interrupted",
-        "batch.deep_research.completed",
-        "batch.deep_research.failed",
-        "batch.deep_research.skipped",
-        "batch.deep_research.timeout",
-        "batch.deep_research.crashed",
-        "batch.deep_research.interrupted",
-        "retry.fetch_errors.completed",
-        "retry.fetch_errors.failed",
-        "data.refresh.completed",
-        "data.refresh.failed",
-        "daemon.started",
-        "daemon.stopped",
-        # P3
-        "factor.metric.deactivated",
-        "factor.metric.activated",
-        "factor.metric.bootstrap",
-        "factor.metric.evaluated",
-        "factor.data.missing",
-        "portfolio.snapshot.generated",
-        "portfolio.optimizer.fallback",
-        # P4
-        "analyst.brief.generated",
-        "analyst.brief.degraded",
-        "chat.session.created",
-        "llm.tool.failed",
-        "llm.tool.unknown",
-        # M17 alerter
-        "alert.check.completed",
-        "alert.nav.abnormal",
-        "alert.data.refresh_failed",
-        "alert.factor.decayed",
-    }
+# 任何新 kind 必须以下面某个前缀开头，否则 _validate_kind 会发 warning。
+# 用前缀而非精确匹配，避免每加一个 {job_id}.crashed/.failed/... 都要改这里。
+KNOWN_EVENT_KIND_PREFIXES: tuple[str, ...] = (
+    # P2 调度系统
+    "batch.",            # batch.post_close.* / batch.deep_research.*
+    "retry.",            # retry.fetch_errors.*
+    "data.",             # data.refresh.* / data.refresh_daily.*
+    "daemon.",           # daemon.started / daemon.stopped
+    "health.",           # health.heartbeat.*
+    # P3 factor pipeline
+    "factor.",           # factor.metric.* / factor.discovery.* / factor.brainstorm.* / factor.promote_shadows_failed
+    "portfolio.",        # portfolio.snapshot.* / portfolio.optimizer.* / portfolio.backtester.*
+    "trade_list.",       # trade_list.generation_failed
+    "paper_trading.",    # paper_trading.update_failed
+    # P4 LLM / chat
+    "analyst.",          # analyst.brief.*
+    "chat.",             # chat.session.*
+    "llm.",              # llm.tool.*
+    # M17 alerter
+    "alert.",            # alert.check.* / alert.nav.* / alert.data.* / alert.factor.*
 )
+
+
+def _kind_is_known(kind: str) -> bool:
+    return any(kind.startswith(p) for p in KNOWN_EVENT_KIND_PREFIXES)
+
+
+# 兼容旧 import（如有外部代码 import KNOWN_EVENT_KINDS）— 改为基于前缀的虚拟集合
+# 实际校验走 _kind_is_known
+KNOWN_EVENT_KINDS: frozenset[str] = frozenset()  # deprecated; 用 KNOWN_EVENT_KIND_PREFIXES
 
 
 _JOB_RUNS_SCHEMA = """
@@ -285,8 +272,8 @@ class SchedulerStateStore:
             )
 
     def _validate_kind(self, kind: str) -> None:
-        if kind not in KNOWN_EVENT_KINDS:
-            logger.warning("events.kind %r not in P2 附录 C registry; writing anyway", kind)
+        if not _kind_is_known(kind):
+            logger.warning("events.kind %r not in P2 附录 C registry prefixes; writing anyway", kind)
 
     def list_events(
         self,

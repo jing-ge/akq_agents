@@ -98,8 +98,31 @@ async function newSession() {
   document.getElementById('session-title').textContent = '会话 #' + currentSession;
   document.getElementById('chat-window').innerHTML = '';
   document.getElementById('chat-send').disabled = false;
-  highlightSession(null);
+  prependSessionToSidebar(d.session_id);
+  highlightSession(d.session_id);
   document.getElementById('chat-input').focus();
+}
+
+// 把新建的会话行 prepend 到 sidebar（避免刷新页面才能看到）
+function prependSessionToSidebar(sid) {
+  const list = document.getElementById('sessions-list');
+  if (!list) return;
+  // 如已存在（重复触发）不重建
+  if (list.querySelector(`div[data-session-id="${sid}"]`)) return;
+  // 移除空状态
+  const empty = list.querySelector('.empty-state');
+  if (empty) empty.remove();
+  const row = document.createElement('div');
+  row.setAttribute('data-session-id', sid);
+  row.className = 'session-row';
+  row.innerHTML = `
+    <div onclick="loadSession('${sid}')" style="flex:1; cursor:pointer; overflow:hidden;">
+      <code>${sid}</code>
+      <div class="small">刚刚 ｜ 共 0 条消息</div>
+    </div>
+    <button class="session-del" onclick="event.stopPropagation(); deleteSession('${sid}')" title="删除会话">×</button>
+  `;
+  list.insertBefore(row, list.firstChild);
 }
 
 async function loadSession(sid) {
@@ -253,17 +276,22 @@ async function askQuick(btn) {
       const winEl = document.getElementById('chat-window');
       if (winEl) winEl.innerHTML = '';
       document.getElementById('chat-send').disabled = false;
+      prependSessionToSidebar(d.session_id);
+      highlightSession(d.session_id);
     } else { return; }
   }
   document.getElementById('chat-input').value = q;
   sendMessage();
 }
 
+let _sending = false;
+
 async function sendMessage() {
-  if (!currentSession) return;
+  if (_sending || !currentSession) return;
   const input = document.getElementById('chat-input');
   const content = input.value.trim();
   if (!content) return;
+  _sending = true;
   // 移除空状态占位（如果还在）
   const empty = document.getElementById('chat-empty');
   if (empty) empty.remove();
@@ -313,6 +341,7 @@ async function sendMessage() {
   } catch (e) {
     addMessage('assistant', '[网络错误] ' + e.message);
   } finally {
+    _sending = false;
     input.disabled = false;
     document.getElementById('chat-send').disabled = false;
     input.focus();
@@ -327,6 +356,7 @@ let _historyCursor = -1;     // -1 = 当前未浏览历史
 _inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
+    if (_sending || _inputEl.disabled) return;  // 防止 in-flight 时重复入栈
     const t = _inputEl.value.trim();
     if (t) {
       _historyStack.push(t);
