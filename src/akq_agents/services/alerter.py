@@ -40,6 +40,7 @@ class Alerter:
         nav_max_abs_daily_return: float = 0.15,
         refresh_max_consecutive_failed: int = 2,
         factor_decay_min_abs_ir: float = 0.05,
+        factor_metrics_max_stale_days: int = 3,
         notify_cooldown_hours: int = 24,
     ) -> None:
         self._db = Path(meta_db_path)
@@ -47,6 +48,8 @@ class Alerter:
         self._nav_thr = nav_max_abs_daily_return
         self._refresh_thr = refresh_max_consecutive_failed
         self._factor_thr = factor_decay_min_abs_ir
+        # M19: factor_metrics 表 N 天没有新写入则告警 (防止"砍 job 没人接"再次悄无声息发生)
+        self._factor_metrics_stale_thr = factor_metrics_max_stale_days
         self._cooldown = timedelta(hours=notify_cooldown_hours)
 
     def run_check(self) -> dict[str, Any]:
@@ -64,6 +67,10 @@ class Alerter:
             alerts.extend(self._check_factor_decay())
         except Exception as exc:  # noqa: BLE001
             logger.exception("alerter: check_factor_decay failed: %s", exc)
+        try:
+            alerts.extend(self._check_factor_metrics_freshness())
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("alerter: check_factor_metrics_freshness failed: %s", exc)
 
         for a in alerts:
             self._maybe_notify(a)
@@ -113,6 +120,50 @@ class Alerter:
                 "title": "数据刷新连续失败",
                 "body": f"最近 {self._refresh_thr} 次 data.refresh_daily 全部 failed: {partitions}",
                 "payload": {"failed_partitions": partitions, "threshold": self._refresh_thr},
+            })
+        return out
+
+    def _check_factor_metrics_freshness(self) -> list[dict[str, Any]]:
+        """M19: factor_metrics 表 N 天没有新写入则告警。
+
+        防"砍 job 没人接"再次悄无声息发生 — 之前砍 FactorAgent 时把"日级 factor_metrics 写入"
+        也一起砍了, 整个表停写但 UI/alerter 没人发现, 卡了好几天才发觉。
+        """
+        out = []
+        with open_meta_db(self._db) as conn:
+            row = conn.execute(
+                "SELECT MAX(as_of_date) FROM factor_metrics"
+            ).fetchone()
+        last_at = row[0] if row else None
+        from datetime import date as _date
+        if last_at is None:
+            out.append({
+                "kind": "alert.factor_metrics.empty",
+                "level": "warning",
+                "title": "factor_metrics 表为空",
+                "body": "从未写入过任何因子 metrics, 检查 batch.deep_research 是否在跑",
+                "payload": {"last_at": None},
+            })
+            return out
+        try:
+            last_date = _date.fromisoformat(last_at)
+        except ValueError:
+            return out
+        stale_days = (_date.today() - last_date).days
+        if stale_days > self._factor_metrics_stale_thr:
+            out.append({
+                "kind": "alert.factor_metrics.stale",
+                "level": "warning",
+                "title": "factor_metrics 长时间无新写入",
+                "body": (
+                    f"最近一次写入是 {last_at} ({stale_days} 天前), 阈值 {self._factor_metrics_stale_thr} 天. "
+                    f"batch.deep_research 可能没跑 / 数据 empty / job 被砍"
+                ),
+                "payload": {
+                    "last_at": last_at,
+                    "stale_days": stale_days,
+                    "threshold": self._factor_metrics_stale_thr,
+                },
             })
         return out
 

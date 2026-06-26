@@ -13,10 +13,13 @@ scheduler:
       hour: 16
       minute: 30
     batch_deep_research:
-      enabled: false         # 等 P3 接入再 true
+      # 每日盘后跑因子有效性滚动评估 (builtin + accepted + shadow + 历史 rejected/demoted),
+      # 让每个因子每天都有 ICIR 写入 factor_metrics 表。盘后 16:30 post_close 之后,
+      # 17:00 启动; 不限交易日（节假日也跑, 用历史数据滚动评估即可）。
+      enabled: true
       timeout_s: 5400
-      day_of_week: "sun"
-      hour: 22
+      day_of_week: null      # 每天都跑 (之前是 'sun' 每周一次, 不满足 "每天 ICIR" 需求)
+      hour: 17
       minute: 0
     retry_fetch_errors:
       enabled: true
@@ -33,6 +36,13 @@ scheduler:
       minute: 0
       timeout_s: 120
       n_suggestions: 20
+    # M19: shadow 因子 OOS 评估 / promote / demote 独立 daily job
+    # 之前耦合在 factor.discovery 主流程, ohlcv empty 时无法推进 OOS 计数
+    factor_promote_shadows:
+      enabled: true
+      hour: 17
+      minute: 30
+      timeout_s: 1800
     # M18-I7: 之前 default 隐式生效，现显式化让 ops 一目了然
     factor_discovery:
       enabled: true

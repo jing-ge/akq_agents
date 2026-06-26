@@ -46,6 +46,7 @@ DEFAULT_TRADING_DAY_REQUIRED: frozenset[str] = frozenset(
         "data.refresh_daily",
         "factor.brainstorm",
         "factor.discovery",
+        "factor.promote_shadows",
     }
 )
 

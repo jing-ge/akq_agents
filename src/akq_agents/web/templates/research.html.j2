@@ -122,8 +122,27 @@
     <div class="toolbar" style="margin-bottom: 12px;">
       <label>因子：
         <select id="factor-name">
-          {% for f in factors %}
-          <option value="{{ f.name }}">{{ f.name }} (v{{ f.factor_version }}, {{ f.direction }})</option>
+          {%- set groups = {'builtin': [], 'accepted': [], 'shadow': [], 'rejected': [], 'demoted': []} -%}
+          {%- for f in factors -%}
+            {%- if f.status in groups -%}
+              {%- set _ = groups[f.status].append(f) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set group_labels = [
+            ('builtin', 'Builtin (内置 7 个)'),
+            ('accepted', 'Accepted (已晋升)'),
+            ('shadow', 'Shadow (OOS 观察中)'),
+            ('rejected', 'Rejected (历史拒绝)'),
+            ('demoted', 'Demoted (已降级)'),
+          ] -%}
+          {% for key, label in group_labels %}
+            {% if groups[key] %}
+            <optgroup label="{{ label }} · {{ groups[key]|length }} 个">
+              {% for f in groups[key] %}
+              <option value="{{ f.name }}">{{ f.name }}{% if f.direction %} ({{ f.direction }}){% endif %}</option>
+              {% endfor %}
+            </optgroup>
+            {% endif %}
           {% endfor %}
         </select>
       </label>
@@ -132,6 +151,28 @@
     <div id="factor-table" class="small"></div>
     <div id="ic-chart" class="chart"></div>
   </div>
+</div>
+
+<!-- M19: 因子全集总览（builtin/accepted/shadow/rejected/demoted 都列出，每个因子今日 ICIR + 是否入选权重） -->
+<div class="card" id="factors-overview-card">
+  <h2>📊 因子全集总览
+    <span class="small">每个因子每天的 ICIR · 是否入选当前组合 · OOS 战况</span>
+  </h2>
+  <div class="toolbar" style="margin-bottom: 12px;">
+    <label>状态筛选：
+      <select id="factors-overview-status-filter">
+        <option value="all">全部</option>
+        <option value="active">活跃 (builtin + accepted)</option>
+        <option value="shadow">Shadow (OOS 观察中)</option>
+        <option value="rejected">已 rejected</option>
+        <option value="demoted">已 demoted</option>
+      </select>
+    </label>
+    <label>仅入选组合：<input type="checkbox" id="factors-overview-only-selected" /></label>
+    <button onclick="loadFactorsOverview()" class="primary">刷新</button>
+    <span id="factors-overview-summary" class="small" style="margin-left:0"></span>
+  </div>
+  <div id="factors-overview-table" class="small"></div>
 </div>
 
 <!-- M7-A: 组合净值曲线（扣费后 vs 沪深300） -->
@@ -800,6 +841,110 @@ async function loadFactor() {
   } catch (e) { renderFetchError(tableEl, e); }
 }
 
+// M19: 因子全集总览 — 每个因子每天的 ICIR + 是否入选权重
+let _factorsOverviewCache = null;
+async function loadFactorsOverview() {
+  const tableEl = document.getElementById('factors-overview-table');
+  const sumEl = document.getElementById('factors-overview-summary');
+  tableEl.innerHTML = '<div class="loading-skeleton">读取因子全集…</div>';
+  try {
+    const r = await fetch('/api/research/factors');
+    if (!r.ok) { renderFetchError(tableEl, { status: r.status, detail: await r.text() }); return; }
+    const d = await r.json();
+    _factorsOverviewCache = d;
+    renderFactorsOverview();
+  } catch (e) { renderFetchError(tableEl, e); }
+}
+
+function renderFactorsOverview() {
+  const tableEl = document.getElementById('factors-overview-table');
+  const sumEl = document.getElementById('factors-overview-summary');
+  if (!_factorsOverviewCache || !_factorsOverviewCache.factors) {
+    tableEl.innerHTML = '<p class="small">暂无数据</p>';
+    return;
+  }
+  const statusFilter = document.getElementById('factors-overview-status-filter').value;
+  const onlySelected = document.getElementById('factors-overview-only-selected').checked;
+  let rows = _factorsOverviewCache.factors;
+  if (statusFilter !== 'all') {
+    if (statusFilter === 'active') {
+      rows = rows.filter(r => r.status === 'builtin' || r.status === 'accepted');
+    } else {
+      rows = rows.filter(r => r.status === statusFilter);
+    }
+  }
+  if (onlySelected) rows = rows.filter(r => r.selected_top50);
+
+  // 状态颜色
+  const statusBadge = (s) => {
+    const colors = {
+      builtin: ['#5eead4', 'builtin'],
+      accepted: ['#34d399', 'accepted'],
+      shadow:   ['#fbbf24', 'shadow'],
+      rejected: ['#94a3b8', 'rejected'],
+      demoted:  ['#fb7185', 'demoted'],
+      unknown:  ['#6b748a', '?'],
+    };
+    const [c, label] = colors[s] || colors.unknown;
+    return `<span style="color:${c};font-weight:600">${label}</span>`;
+  };
+
+  const fmtPct = v => v == null ? '<span style="color:#6b748a">—</span>' : (v * 100).toFixed(2) + '%';
+  const fmtNum = (v, d=3) => v == null ? '<span style="color:#6b748a">—</span>' : Number(v).toFixed(d);
+  const fmtIR = v => {
+    if (v == null) return '<span style="color:#6b748a">—</span>';
+    const n = Number(v);
+    const color = n >= 0.15 ? '#34d399' : (n <= -0.15 ? '#fb7185' : (Math.abs(n) < 0.05 ? '#94a3b8' : '#fbbf24'));
+    return `<span style="color:${color}">${n.toFixed(3)}</span>`;
+  };
+
+  // 排序: selected_top50 优先 → composite_weight DESC → ir DESC
+  rows.sort((a, b) => {
+    if (a.selected_top50 !== b.selected_top50) return b.selected_top50 - a.selected_top50;
+    const wa = a.composite_weight ?? -1;
+    const wb = b.composite_weight ?? -1;
+    if (wa !== wb) return wb - wa;
+    const ira = (a.last_metric?.ir) ?? -999;
+    const irb = (b.last_metric?.ir) ?? -999;
+    return irb - ira;
+  });
+
+  let html = '<table class="snapshot"><thead><tr>';
+  html += '<th>因子名</th><th>状态</th><th>入选?</th><th>权重</th>';
+  html += '<th>最新 IC</th><th>最新 IR</th><th>评估日</th>';
+  html += '<th>OOS 天数</th><th>OOS IR</th>';
+  html += '</tr></thead><tbody>';
+  for (const r of rows) {
+    const lm = r.last_metric || {};
+    const selectedMark = r.selected_top50 ? '<span style="color:#34d399">✓</span>' : '<span style="color:#6b748a">—</span>';
+    const weightStr = r.composite_weight != null ? fmtPct(r.composite_weight) : '<span style="color:#6b748a">—</span>';
+    html += `<tr>
+      <td><code>${r.name}</code></td>
+      <td>${statusBadge(r.status)}</td>
+      <td>${selectedMark}</td>
+      <td>${weightStr}</td>
+      <td>${fmtNum(lm.ic_mean, 4)}</td>
+      <td>${fmtIR(lm.ir)}</td>
+      <td><span class="small">${lm.as_of_date || '—'}</span></td>
+      <td>${r.oos_observations ?? '<span style="color:#6b748a">—</span>'}</td>
+      <td>${fmtIR(r.oos_ir)}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  tableEl.innerHTML = html;
+
+  // summary
+  const counts = { builtin: 0, accepted: 0, shadow: 0, rejected: 0, demoted: 0 };
+  for (const r of _factorsOverviewCache.factors) {
+    if (counts[r.status] !== undefined) counts[r.status]++;
+  }
+  const selectedN = _factorsOverviewCache.factors.filter(r => r.selected_top50).length;
+  sumEl.innerHTML = `合计 ${_factorsOverviewCache.factors.length} 个 ` +
+    `(builtin ${counts.builtin} · accepted ${counts.accepted} · shadow ${counts.shadow} · ` +
+    `rejected ${counts.rejected} · demoted ${counts.demoted}) · 入选 ${selectedN} 个 · ` +
+    `快照日 ${_factorsOverviewCache.snapshot_date || '—'} · 显示 ${rows.length} 行`;
+}
+
 // 自动加载第一个日期 / 因子
 window.addEventListener('load', () => {
   const dateSel = document.getElementById('portfolio-date');
@@ -808,6 +953,12 @@ window.addEventListener('load', () => {
   const factorSel = document.getElementById('factor-name');
   if (factorSel.value) loadFactor();
   factorSel.addEventListener('change', loadFactor);
+  // M19: 因子全集总览 (页面打开就加载)
+  loadFactorsOverview();
+  const ofStatus = document.getElementById('factors-overview-status-filter');
+  if (ofStatus) ofStatus.addEventListener('change', renderFactorsOverview);
+  const ofSelected = document.getElementById('factors-overview-only-selected');
+  if (ofSelected) ofSelected.addEventListener('change', renderFactorsOverview);
   const proposalStatusSel = document.getElementById('proposal-status');
   if (proposalStatusSel) proposalStatusSel.addEventListener('change', loadProposals);
   loadProposals();

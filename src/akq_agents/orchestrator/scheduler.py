@@ -34,6 +34,7 @@ from akq_agents.orchestrator.jobs import (
     data_refresh,
     factor_brainstorm,
     factor_discovery,
+    factor_promote_shadows,
     health_heartbeat,
     retry_fetch_errors,
 )
@@ -223,5 +224,6 @@ class QuantDaemon:
         retry_fetch_errors.register(self._scheduler, self._runner, self._cfg, self._services)
         factor_discovery.register(self._scheduler, self._runner, self._cfg, self._services)
         factor_brainstorm.register(self._scheduler, self._runner, self._cfg, self._services)
+        factor_promote_shadows.register(self._scheduler, self._runner, self._cfg, self._services)
         alert_check.register(self._scheduler, self._runner, self._cfg, self._services)
         health_heartbeat.register(self._scheduler, self._cfg, self._daemon_state_file)

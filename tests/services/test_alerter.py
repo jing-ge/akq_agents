@@ -57,6 +57,21 @@ def _setup_db(tmp_path: Path) -> tuple[Path, SchedulerStateStore, Alerter]:
             )
         """)
         con.commit()
+        # M19: 塞一行今日 factor_metrics, 避免新加的 _check_factor_metrics_freshness 触发
+        # alert.factor_metrics.empty / .stale 干扰原本只测 NAV / refresh / decay 的用例。
+        # 用例如果要专门测 freshness, 应该单独清空这条数据。
+        from datetime import date as _date
+        con = sqlite3.connect(db)
+        try:
+            con.execute(
+                "INSERT INTO factor_metrics (factor_name, factor_version, as_of_date, "
+                "window_days, ic_mean, ic_std, ir, t_stat, status, reason) "
+                "VALUES (?, 1, ?, 60, 0.01, 0.05, 0.20, 1.5, 'active', NULL)",
+                ("momentum_5", _date.today().isoformat()),
+            )
+            con.commit()
+        finally:
+            con.close()
     alerter = Alerter(
         meta_db_path=db,
         state_store=store,
@@ -185,6 +200,48 @@ def test_cooldown_prevents_repeat_macos_notify(tmp_path: Path) -> None:
     # events 应该写了 2 次（每次 run_check 都写 event，方便审计）
     events = [e for e in store.list_events(limit=10) if e.kind == "alert.nav.abnormal"]
     assert len(events) == 2
+
+
+# ---------- _check_factor_metrics_freshness (M19) ----------
+
+def test_check_factor_metrics_empty_triggers(tmp_path: Path) -> None:
+    """M19: factor_metrics 表为空时触发 alert.factor_metrics.empty."""
+    db, store, alerter = _setup_db(tmp_path)
+    # 清掉 _setup_db 默认塞的那行
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM factor_metrics")
+        con.commit()
+    with patch("akq_agents.services.alerter.subprocess.run"):
+        out = alerter.run_check()
+    assert "alert.factor_metrics.empty" in out["alerts"]
+
+
+def test_check_factor_metrics_stale_triggers(tmp_path: Path) -> None:
+    """M19: factor_metrics 最近一行 > 阈值天数时触发 alert.factor_metrics.stale."""
+    db, store, alerter = _setup_db(tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM factor_metrics")
+        # 塞一行 10 天前的, 默认阈值 3 天 → 必然触发
+        old = (date.today() - timedelta(days=10)).isoformat()
+        con.execute(
+            "INSERT INTO factor_metrics (factor_name, factor_version, as_of_date, "
+            "window_days, ic_mean, ic_std, ir, t_stat, status, reason) "
+            "VALUES ('momentum_5', 1, ?, 60, 0.01, 0.05, 0.20, 1.5, 'active', NULL)",
+            (old,),
+        )
+        con.commit()
+    with patch("akq_agents.services.alerter.subprocess.run"):
+        out = alerter.run_check()
+    assert "alert.factor_metrics.stale" in out["alerts"]
+
+
+def test_check_factor_metrics_fresh_no_alert(tmp_path: Path) -> None:
+    """M19: 今日有写入 → 不触发 freshness 告警."""
+    db, store, alerter = _setup_db(tmp_path)  # fixture 已塞今日数据
+    with patch("akq_agents.services.alerter.subprocess.run"):
+        out = alerter.run_check()
+    assert "alert.factor_metrics.stale" not in out["alerts"]
+    assert "alert.factor_metrics.empty" not in out["alerts"]
 
 
 # ---------- helpers ----------

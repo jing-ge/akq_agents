@@ -19,6 +19,7 @@ class ServiceContainer:
     daemon_state_file: Any = None
     factor_registry: Any = None
     factor_evaluator: Any = None
+    composite_scorer: Any = None
     portfolio_store: Any = None
     llm_orchestrator: Any = None
     llm_store: Any = None
@@ -87,6 +88,7 @@ def _build_default() -> ServiceContainer:
         daemon_state_file=daemon_state_file,
         factor_registry=services.get("factor_registry"),
         factor_evaluator=services.get("factor_evaluator"),
+        composite_scorer=services.get("composite_scorer"),
         portfolio_store=services.get("portfolio_snapshot_store"),
         llm_orchestrator=services.get("llm_orchestrator"),
         llm_store=services.get("llm_store"),

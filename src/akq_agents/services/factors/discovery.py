@@ -379,12 +379,9 @@ class DiscoveryEngine:
             # 把新候选也加入 active_factor_history（影响后续 candidate 的相关性判定）
             active_factor_history[name] = factor_history
 
-        # 4) 处理已存在的 shadow 因子：检查 OOS 是否满足 promote 条件
-        # I5: silent fallback 整体包一层，失败时写 events（不影响主流程）
-        try:
-            self._promote_shadows(stats=stats, as_of_date=as_of_date)
-        except Exception as exc:  # noqa: BLE001
-            self._write_event_safe("factor.promote_shadows_failed", str(exc))
+        # M19: shadow OOS 评估 / promote / demote 已拆到独立 daily job `factor.promote_shadows`
+        # (避免本流程 _prepare_data empty 时 shadow 计数无法推进).
+        # _promote_shadows 方法本身保留, 由独立 job 直接调用。
 
         # P1-4: DSL 空间耗尽告警 —— 如果 duplicates 占比超过 80%，提示扩 DSL
         if stats.proposed > 0:
@@ -403,11 +400,28 @@ class DiscoveryEngine:
     def _prepare_data(self, as_of_date: date) -> tuple[pd.DataFrame, list[str]]:
         from datetime import timedelta
 
-        full = self.repo.get_universe(as_of_date)
+        # M19-A: get_universe(today) 在 today 数据还没刷时会抛 DataNotReady,
+        # fallback 用 today-1 (历史滚动评估对 universe 精确性要求不高).
+        try:
+            full = self.repo.get_universe(as_of_date)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("discovery._prepare_data: get_universe(%s) failed: %s; fallback to %s",
+                           as_of_date, exc, as_of_date - timedelta(days=1))
+            try:
+                full = self.repo.get_universe(as_of_date - timedelta(days=1))
+            except Exception as exc2:  # noqa: BLE001
+                logger.warning("discovery._prepare_data: universe fallback also failed: %s", exc2)
+                return pd.DataFrame(), []
+
         # 用 PortfolioAgent 同款的 loose read 避免 DataNotReady
         max_lookback = 180
         start = as_of_date - timedelta(days=max_lookback * 2)
         ohlcv = self.repo.get_ohlcv_loose(full.symbols, start, as_of_date)
+        # M19-A: 凌晨 / 盘前 today 数据还没刷, get_ohlcv_loose 可能返回 empty.
+        # fallback 用 today-1 重试一次, 避免 discovery 在凌晨触发时整轮空跑
+        # (导致 _promote_shadows 也不被调用, shadow OOS 计数无法推进).
+        if ohlcv.empty:
+            ohlcv = self.repo.get_ohlcv_loose(full.symbols, start, as_of_date - timedelta(days=1))
         if ohlcv.empty:
             return ohlcv, []
         from akq_agents.services.portfolio.combined_universe import build_portfolio_universe

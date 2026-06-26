@@ -50,6 +50,13 @@ class CompositeScorer:
         """返回上次 score 时使用的因子权重（用于 Attributor）。"""
         return self._last_weights.copy()
 
+    def compute_weights_for(self, factor_names: list[str], *, as_of_date: Any = None) -> pd.Series:
+        """对外暴露: 给定因子名列表, 返回它们在 IR-EWMA 加权下的权重 (不需要先跑 score).
+
+        用于 UI 展示 "如果这些因子参与组合, 各自权重多少". 不修改 _last_weights。
+        """
+        return self._compute_weights(factor_names, as_of_date=as_of_date)
+
     # ------------------------------------------------------------------
 
     def _compute_weights(self, factor_names: list[str], *, as_of_date: Any = None) -> pd.Series:

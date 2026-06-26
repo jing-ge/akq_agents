@@ -181,6 +181,7 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             nav_max_abs_daily_return=_alert_cfg.nav_max_abs_daily_return,
             refresh_max_consecutive_failed=_alert_cfg.refresh_max_consecutive_failed,
             factor_decay_min_abs_ir=_alert_cfg.factor_decay_min_abs_ir,
+            factor_metrics_max_stale_days=_alert_cfg.factor_metrics_max_stale_days,
         )
 
     return services

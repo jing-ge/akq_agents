@@ -122,55 +122,212 @@ def _compute_turnover_from_rows(rows: list) -> float:
 
 @router.get("/factors")
 async def factors_list() -> dict[str, Any]:
+    """因子全集列表 (M19): 不只是 registry.list_all() 的 builtin+accepted, 还 union
+    factor_proposals 里 shadow / 历史 rejected / demoted (跳过 compute_error).
+
+    每行额外返回:
+    - status: builtin | accepted | shadow | rejected | demoted (UI 区分)
+    - composite_weight: 该因子在最近一次 IR-EWMA 加权下的权重 (None=未参与组合)
+    - selected_top50: 该因子是否被最近一日 portfolio_snapshots top50 任一股的 top_factors 提到
+    - oos_observations / oos_ir: shadow 因子专属字段 (registry 因子留 None)
+
+    用户需求: "看到每个因子每天的 ICIR 以及有没有入选权重".
+    """
     svc: ServiceContainer = get_services()
     if svc.factor_registry is None:
         return {"factors": [], "n": 0}
-    rows = []
-    for f in svc.factor_registry.list_all():
-        latest = None
-        decay_verdict = None  # P1-4 衰减判定
-        if svc.factor_evaluator is not None:
-            m = svc.factor_evaluator.get_latest(f.name, f.factor_version)
-            if m is not None:
-                latest = {
-                    "as_of_date": m.as_of_date,
-                    "window_days": m.window_days,
-                    "ic_mean": m.ic_mean,
-                    "ir": m.ir,
-                    "status": m.status,
+
+    # 1) 收集 registry 里的 active 因子 (builtin + accepted 已 promoted)
+    registry_factors = {f.name: f for f in svc.factor_registry.list_all()}
+
+    # 2) 收集 proposal_store 里的 status (含 status='accepted' 用于打标签, shadow, 历史 rejected/demoted)
+    proposal_rows: dict[str, dict[str, Any]] = {}
+    if svc.proposal_store is not None and svc.repo is not None:
+        try:
+            from akq_agents.services.data.repository import open_meta_db
+            db_path = svc.repo._base_dir / "meta.db"
+            with open_meta_db(db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT factor_name, status, reason, oos_observations, oos_ir,
+                           ic_mean, ir, shadow_started_at, evaluated_at
+                    FROM factor_proposals
+                    WHERE status IN ('accepted', 'shadow', 'rejected', 'demoted')
+                    """
+                ).fetchall()
+            for name, status, reason, oos_obs, oos_ir, p_ic, p_ir, shadow_at, eval_at in rows:
+                # 跳过 compute_error 类 rejected (recipe 死的, 评估也是 NULL)
+                if status == "rejected" and reason and reason.startswith("compute_error"):
+                    continue
+                proposal_rows[name] = {
+                    "p_status": status,
+                    "p_reason": reason,
+                    "oos_observations": oos_obs,
+                    "oos_ir": oos_ir,
+                    "p_ic_mean": p_ic,
+                    "p_ir": p_ir,
+                    "shadow_started_at": shadow_at,
+                    "evaluated_at": eval_at,
                 }
-            # P1-4: 取 30 天历史算衰减
-            try:
-                history = svc.factor_evaluator.list_history(f.name, limit=30)
-                irs = [float(m.ir) for m in history if m.ir is not None]
-                if len(irs) >= 6:
-                    mid = len(irs) // 2
-                    ir_recent = sum(abs(x) for x in irs[:mid]) / mid
-                    ir_earlier = sum(abs(x) for x in irs[mid:]) / max(len(irs) - mid, 1)
-                    ir_peak = max(abs(x) for x in irs)
-                    ir_now = abs(irs[0])
-                    if ir_earlier > 0.1 and ir_recent < 0.6 * ir_earlier:
-                        decay_verdict = {"level": "severe", "label": "⚠️ 显著衰减",
-                                        "ir_recent": ir_recent, "ir_earlier": ir_earlier}
-                    elif ir_earlier > 0.1 and ir_recent < 0.8 * ir_earlier:
-                        decay_verdict = {"level": "mild", "label": "轻微衰减",
-                                        "ir_recent": ir_recent, "ir_earlier": ir_earlier}
-                    elif ir_now < 0.6 * ir_peak and ir_peak > 0.2:
-                        decay_verdict = {"level": "off_peak", "label": "已离峰值",
-                                        "ir_now": ir_now, "ir_peak": ir_peak}
-            except Exception:
-                pass
-        rows.append(
-            {
-                "name": f.name,
-                "factor_version": f.factor_version,
-                "direction": f.direction,
-                "lookback_days": f.lookback_days,
-                "last_metric": latest,
-                "decay": decay_verdict,
-            }
-        )
-    return {"factors": rows, "n": len(rows)}
+        except Exception as exc:  # noqa: BLE001
+            import logging as _logging
+            _logging.getLogger(__name__).warning("factors_list: read proposals failed: %s", exc)
+
+    # 3) 算 composite_weight (只对 registry 里的因子有意义, shadow/rejected 不参与组合, 留 None)
+    composite_weights: dict[str, float] = {}
+    if svc.composite_scorer is not None and registry_factors:
+        try:
+            weights = svc.composite_scorer.compute_weights_for(list(registry_factors.keys()))
+            composite_weights = {name: float(w) for name, w in weights.items()}
+        except Exception as exc:  # noqa: BLE001
+            import logging as _logging
+            _logging.getLogger(__name__).warning("factors_list: compute_weights failed: %s", exc)
+
+    # 4) 收集"被最近一日 portfolio top 50 任一股 top_factors_json 提到的因子" → selected_top50
+    selected_factor_names: set[str] = set()
+    latest_snapshot_date: str | None = None
+    if svc.portfolio_store is not None and svc.repo is not None:
+        try:
+            dates = svc.portfolio_store.list_dates(limit=1)
+            if dates:
+                latest_snapshot_date = dates[0]
+                from akq_agents.services.data.repository import open_meta_db
+                db_path = svc.repo._base_dir / "meta.db"
+                with open_meta_db(db_path) as conn:
+                    rows = conn.execute(
+                        "SELECT top_factors_json FROM portfolio_snapshots WHERE as_of_date=?",
+                        (latest_snapshot_date,),
+                    ).fetchall()
+                for (raw,) in rows:
+                    if not raw:
+                        continue
+                    try:
+                        for it in json.loads(raw):
+                            n = it.get("name")
+                            if n:
+                                selected_factor_names.add(n)
+                    except Exception:  # noqa: BLE001
+                        continue
+        except Exception as exc:  # noqa: BLE001
+            import logging as _logging
+            _logging.getLogger(__name__).warning("factors_list: read top_factors failed: %s", exc)
+
+    # 5) builtin 命名前缀, 用于区分 builtin / accepted
+    builtin_prefixes = ("momentum_", "reversal_", "volatility_", "amount_", "log_amount_")
+
+    def _classify(name: str, in_registry: bool, p_row: dict[str, Any] | None) -> str:
+        if any(name.startswith(p) for p in builtin_prefixes):
+            return "builtin"
+        if p_row is None:
+            return "accepted" if in_registry else "unknown"
+        return p_row["p_status"]
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # 5.a) 先遍历 registry (active 因子, 有完整 Factor 实例信息)
+    for name, f in registry_factors.items():
+        seen.add(name)
+        p_row = proposal_rows.get(name)
+        latest = _read_latest_metric(svc, name, f.factor_version)
+        decay_verdict = _compute_decay_verdict(svc, name)
+        rows.append({
+            "name": name,
+            "factor_version": f.factor_version,
+            "direction": f.direction,
+            "lookback_days": f.lookback_days,
+            "status": _classify(name, True, p_row),
+            "last_metric": latest,
+            "decay": decay_verdict,
+            "composite_weight": composite_weights.get(name),
+            "selected_top50": name in selected_factor_names,
+            "oos_observations": p_row["oos_observations"] if p_row else None,
+            "oos_ir": p_row["oos_ir"] if p_row else None,
+        })
+
+    # 5.b) 再遍历 proposal_store 里 registry 没有的 factor (shadow / 历史 rejected / demoted)
+    for name, p_row in proposal_rows.items():
+        if name in seen:
+            continue
+        # 这类因子不在 registry, 没有 Factor 实例, lookback_days/direction 用 proposal 信息兜底
+        latest = _read_latest_metric(svc, name, factor_version=1)
+        rows.append({
+            "name": name,
+            "factor_version": 1,
+            "direction": None,  # shadow/rejected 在 proposals 表里有 direction 列, 这里偷懒不查, UI 不强需
+            "lookback_days": None,
+            "status": _classify(name, False, p_row),
+            "last_metric": latest,
+            "decay": None,
+            "composite_weight": None,  # 不参与组合
+            "selected_top50": False,
+            "oos_observations": p_row["oos_observations"],
+            "oos_ir": p_row["oos_ir"],
+            # shadow/rejected 因子的 IS-IC 直接给出 (auto_* 在 factor_proposals.ic_mean/ir 里有值)
+            "is_ic_mean": p_row["p_ic_mean"],
+            "is_ir": p_row["p_ir"],
+        })
+
+    return {
+        "factors": rows,
+        "n": len(rows),
+        "snapshot_date": latest_snapshot_date,
+    }
+
+
+def _read_latest_metric(svc: ServiceContainer, name: str, factor_version: int) -> dict[str, Any] | None:
+    """读 factor_metrics 最近一行; 找不到返回 None."""
+    if svc.factor_evaluator is None:
+        return None
+    try:
+        m = svc.factor_evaluator.get_latest(name, factor_version)
+    except Exception:
+        m = None
+    # M19 兼容: shadow/rejected 因子可能 factor_version=1 取不到, fallback 用 list_history(limit=1)
+    if m is None:
+        try:
+            history = svc.factor_evaluator.list_history(name, limit=1)
+            if history:
+                m = history[0]
+        except Exception:
+            m = None
+    if m is None:
+        return None
+    return {
+        "as_of_date": m.as_of_date,
+        "window_days": m.window_days,
+        "ic_mean": m.ic_mean,
+        "ir": m.ir,
+        "status": m.status,
+    }
+
+
+def _compute_decay_verdict(svc: ServiceContainer, name: str) -> dict[str, Any] | None:
+    """P1-4: 30 天 IR 历史算衰减判定; 没数据返回 None."""
+    if svc.factor_evaluator is None:
+        return None
+    try:
+        history = svc.factor_evaluator.list_history(name, limit=30)
+        irs = [float(m.ir) for m in history if m.ir is not None]
+        if len(irs) < 6:
+            return None
+        mid = len(irs) // 2
+        ir_recent = sum(abs(x) for x in irs[:mid]) / mid
+        ir_earlier = sum(abs(x) for x in irs[mid:]) / max(len(irs) - mid, 1)
+        ir_peak = max(abs(x) for x in irs)
+        ir_now = abs(irs[0])
+        if ir_earlier > 0.1 and ir_recent < 0.6 * ir_earlier:
+            return {"level": "severe", "label": "⚠️ 显著衰减",
+                    "ir_recent": ir_recent, "ir_earlier": ir_earlier}
+        if ir_earlier > 0.1 and ir_recent < 0.8 * ir_earlier:
+            return {"level": "mild", "label": "轻微衰减",
+                    "ir_recent": ir_recent, "ir_earlier": ir_earlier}
+        if ir_now < 0.6 * ir_peak and ir_peak > 0.2:
+            return {"level": "off_peak", "label": "已离峰值",
+                    "ir_now": ir_now, "ir_peak": ir_peak}
+    except Exception:
+        pass
+    return None
 
 
 @router.get("/factors/{name}/metrics")
@@ -304,7 +461,128 @@ async def review_llm_suggestion(factor_name: str, action: str) -> dict[str, Any]
                 (new_status, ts, factor_name),
             )
         conn.commit()
-    return {"ok": True, "factor_name": factor_name, "status": new_status}
+
+    # accept 时同步算一次 IS-IC, 与 auto_* 候选对齐 (auto_* 在 DiscoveryEngine 里
+    # 通过 evaluator.evaluate 把 ic_mean/ir 写进 factor_proposals; LLM 因子之前漏了这一步,
+    # 导致 shadow 期前 20 天用户在 UI 上看到的 LLM 因子 IR/IC 全是 NULL, 没法做接受决策).
+    # 失败不影响 accept 本身, 只是 IS-IC 暂时缺失, 第二天 batch.deep_research 会补上。
+    is_ic_result: dict[str, Any] | None = None
+    if action == "accept":
+        is_ic_result = _evaluate_is_ic_for_llm_factor(svc, factor_name)
+
+    return {
+        "ok": True,
+        "factor_name": factor_name,
+        "status": new_status,
+        "is_ic": is_ic_result,
+    }
+
+
+def _evaluate_is_ic_for_llm_factor(svc: ServiceContainer, factor_name: str) -> dict[str, Any] | None:
+    """LLM accept 后算一次 IS IC/IR 回填到 factor_proposals。
+
+    复用 DiscoveryEngine 已经实现的 _prepare_data + _compute_factor_history 逻辑,
+    避免重写。失败返回 None, 上游不抛。
+    """
+    import logging as _logging
+    from datetime import date as _d
+    from datetime import timedelta as _td
+
+    from akq_agents.services.data.repository import open_meta_db as _open_db
+    from akq_agents.services.factors.discovery import make_factor
+    from akq_agents.services.factors.proposal_store import (
+        FactorProposal,
+        now_iso as _now_iso,
+        recipe_from_json,
+    )
+
+    log = _logging.getLogger(__name__)
+    try:
+        engine = (svc.workflow.services.get("discovery_engine") if svc.workflow else None)
+        evaluator = (svc.workflow.services.get("factor_evaluator") if svc.workflow else None)
+        store = _proposal_store(svc)
+        if engine is None or evaluator is None or store is None:
+            return {"ok": False, "reason": "services_not_available"}
+
+        if svc.repo is None:
+            return {"ok": False, "reason": "repo_unavailable"}
+        db_path = svc.repo._base_dir / "meta.db"
+        with _open_db(db_path) as conn:
+            row = conn.execute(
+                "SELECT recipe_json, direction, max_abs_corr, created_at, shadow_started_at "
+                "FROM factor_proposals WHERE factor_name=?",
+                (factor_name,),
+            ).fetchone()
+        if row is None:
+            return {"ok": False, "reason": "proposal_not_found"}
+        recipe_json, direction, max_abs_corr, created_at, shadow_started_at = row
+        recipe = recipe_from_json(recipe_json)
+        factor = make_factor(recipe)
+        # 保留 LLM 命名 (含 hash 后缀), 不让 make_factor 算出来的 name 覆盖
+        try:
+            factor.name = factor_name  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 准备数据 (复用 DiscoveryEngine._prepare_data); empty 时 fallback 用昨日
+        as_of = _d.today()
+        ohlcv, _syms = engine._prepare_data(as_of)  # type: ignore[attr-defined]
+        if ohlcv.empty:
+            ohlcv, _syms = engine._prepare_data(as_of - _td(days=1))  # type: ignore[attr-defined]
+        if ohlcv.empty:
+            return {"ok": False, "reason": "no_data"}
+
+        close = ohlcv.pivot_table(
+            index="date", columns="symbol", values="close", aggfunc="last"
+        ).sort_index()
+        forward_returns = close.pct_change(fill_method=None).shift(-1)
+
+        # 算 factor_history (复用 DiscoveryEngine._compute_factor_history)
+        factor_history = engine._compute_factor_history(factor, ohlcv, close.index)  # type: ignore[attr-defined]
+        if factor_history is None or factor_history.empty:
+            return {"ok": False, "reason": "factor_history_empty"}
+        common_idx = factor_history.index.intersection(forward_returns.index)
+        if len(common_idx) < 20:
+            return {"ok": False, "reason": f"insufficient_history_{len(common_idx)}"}
+
+        # evaluate -> 写 factor_metrics 表 (factor.name 已改成 llm_xxx, 写入 row 落 llm_xxx)
+        metric = evaluator.evaluate(
+            factor=factor,
+            factor_history=factor_history.loc[common_idx],
+            forward_returns=forward_returns.loc[common_idx],
+            as_of_date=as_of,
+        )
+
+        # 把 IS-IC 回填到 factor_proposals (与 auto_* 对齐)
+        proposal = FactorProposal(
+            factor_name=factor_name,
+            recipe_json=recipe_json,
+            direction=direction,
+            status="shadow",
+            ic_mean=metric.ic_mean,
+            ic_std=metric.ic_std,
+            ir=metric.ir,
+            t_stat=metric.t_stat,
+            max_abs_corr=max_abs_corr,
+            reason="accepted_from_llm_passed_is",
+            created_at=created_at,
+            evaluated_at=_now_iso(),
+            shadow_started_at=shadow_started_at,
+            oos_observations=0,
+            oos_ir=None,
+        )
+        store.upsert(proposal)
+
+        return {
+            "ok": True,
+            "ic_mean": metric.ic_mean,
+            "ir": metric.ir,
+            "t_stat": metric.t_stat,
+            "n_obs": len(common_idx),
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("evaluate_is_ic for %s failed: %s", factor_name, exc)
+        return {"ok": False, "reason": f"exception: {exc}"}
 
 
 def _proposal_store(svc: ServiceContainer):

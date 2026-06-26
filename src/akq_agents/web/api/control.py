@@ -88,13 +88,18 @@ async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
         engine = svc.discovery_engine
         if engine is None:
             raise HTTPException(503, "discovery_engine not ready")
-        from akq_agents.orchestrator.jobs.factor_discovery import JOB_ID
+        from akq_agents.orchestrator.jobs.factor_discovery import JOB_ID, _partition_for_now
 
         def _do_discovery() -> dict[str, Any]:
             stats = engine.run_batch(n_candidates=n_candidates, as_of_date=date.today())
             return stats.as_dict()
 
-        result = svc.job_runner.run(JOB_ID, partition, _do_discovery, timeout_s=900)
+        # M19-fix: web 手动触发也走 hour 桶, 与 daemon cron 路径 partition 格式对齐。
+        # 之前 web 手动触发用 day 桶 (date.today()), 跟 daemon cron 用的 hour 桶
+        # (YYYY-MM-DDTHH) 不一致, 互相会因 (job_id, partition) 唯一约束撞 ALREADY_OK,
+        # 用户点了"跑一轮因子发现"按钮直接返 noop 像没反应一样。
+        discovery_partition = _partition_for_now()
+        result = svc.job_runner.run(JOB_ID, discovery_partition, _do_discovery, timeout_s=900)
         return {
             "status": result.status,
             "reason_code": result.reason_code,

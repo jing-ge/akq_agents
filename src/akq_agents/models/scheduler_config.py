@@ -77,6 +77,20 @@ class FactorBrainstormConfig(BaseModel):
     n_suggestions: int = 20
 
 
+class FactorPromoteShadowsConfig(BaseModel):
+    """Shadow 因子 OOS 评估 / 晋升 / 降级 job（每日 cron 17:30）。
+
+    M19: 之前 _promote_shadows 耦合在 factor.discovery 主流程中段, ohlcv empty 时
+    discovery 直接 return 不调用它, 导致 shadow OOS 计数永远 NULL. 拆出来独立 daily 跑,
+    与 discovery 解耦。
+    """
+
+    enabled: bool = True
+    hour: int = 17
+    minute: int = 30
+    timeout_s: int = 1800
+
+
 class AlerterConfig(BaseModel):
     """M17 alerter job：定期巡检几项关键指标，触发条件就写 events.alert.* + macOS notify。"""
 
@@ -87,6 +101,7 @@ class AlerterConfig(BaseModel):
     nav_max_abs_daily_return: float = 0.15  # 单日 |daily_return| > 此值告警 (C3 那种伪净值的兜底)
     refresh_max_consecutive_failed: int = 2  # data.refresh_daily 连续 N 次 failed
     factor_decay_min_abs_ir: float = 0.05    # accepted 因子最近 5 天平均 |IR| < 此值告警
+    factor_metrics_max_stale_days: int = 3   # M19: factor_metrics 表 N 天无新写入则告警
 
 
 class SchedulerJobsConfig(BaseModel):
@@ -104,6 +119,7 @@ class SchedulerJobsConfig(BaseModel):
     )
     factor_discovery: FactorDiscoveryConfig = Field(default_factory=FactorDiscoveryConfig)
     factor_brainstorm: FactorBrainstormConfig = Field(default_factory=FactorBrainstormConfig)
+    factor_promote_shadows: FactorPromoteShadowsConfig = Field(default_factory=FactorPromoteShadowsConfig)
     data_refresh: DataRefreshConfig = Field(default_factory=DataRefreshConfig)
     alerter: AlerterConfig = Field(default_factory=AlerterConfig)
 
