@@ -165,6 +165,7 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             proposal_store=services["factor_proposal_store"],
             registry=services["factor_registry"],
             evaluator=services["factor_evaluator"],
+            repo=services["data_repository"],  # M19: 让 brainstorm 入库时跑 90 天 IC backfill
             model=llm_cfg.chat.model,
             max_tokens=llm_cfg.chat.max_tokens,
             temperature=llm_cfg.chat.temperature,

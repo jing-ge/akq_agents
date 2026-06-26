@@ -161,6 +161,7 @@ class LLMFactorBrainstormer:
         proposal_store: FactorProposalStore,
         registry: Any,
         evaluator: Any,
+        repo: Any | None = None,
         model: str,
         max_tokens: int,
         temperature: float,
@@ -170,6 +171,9 @@ class LLMFactorBrainstormer:
         self._store = proposal_store
         self._registry = registry
         self._evaluator = evaluator
+        # M19: 持有 repo 让 brainstormer 入库时能跑 90 天 IS-IC backfill
+        # (新因子入库当下用户审核界面就能看到完整 IC 曲线)。
+        self._repo = repo
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
@@ -237,4 +241,77 @@ class LLMFactorBrainstormer:
                 evaluated_at=None,
             ))
             stats["accepted_into_review"] += 1
+
+        # M19: 入库后批量 backfill 90 天历史 IC, 让用户审核时立刻看到完整 IC 曲线。
+        # 一次拉数据共享给所有新因子, 单因子 ~2.5s, 20 个一轮 ~50s (含拉数据)。
+        # 失败容忍 — backfill 失败不影响 brainstorm 主流程, 只记 events
+        if self._repo is not None and stats["accepted_into_review"] > 0:
+            try:
+                self._backfill_history_for_new_factors(suggestions[:n], stats)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("history backfill after brainstorm failed: %s", exc)
+                stats["backfill_failed"] = stats.get("backfill_failed", 0) + 1
+
         return stats
+
+    def _backfill_history_for_new_factors(
+        self,
+        suggestions: list[dict],
+        stats: dict[str, int],
+    ) -> None:
+        """对刚入库的 LLM 因子批量跑 90 天 IS-IC 写 factor_metrics + 同步 factor_proposals.
+
+        M19: 用户需求"新因子入库时把历史 ICIR 都计算一遍"。
+        """
+        from akq_agents.services.factors.discovery import make_factor
+        from akq_agents.services.factors.history_backfill import (
+            HistoryBackfillContext,
+            backfill_one,
+        )
+
+        # 1) 一次 build ctx 拉数据 (~0.5s)
+        ctx = HistoryBackfillContext.build(
+            repo=self._repo, evaluator=self._evaluator, days=90, step=1,
+        )
+        if ctx is None:
+            logger.warning("history backfill skipped: ctx build failed (no data?)")
+            stats["backfill_skipped"] = stats.get("backfill_skipped", 0) + 1
+            return
+
+        # 2) 收集刚入库 factor 名列表 — 复用已经做过的去重/校验, 这里再过一遍只取真正入库的
+        n_backfilled = 0
+        for s in suggestions:
+            recipe = s.get("recipe") if isinstance(s, dict) else None
+            err = _validate_recipe(recipe or {})
+            if err is not None:
+                continue
+            assert isinstance(recipe, dict)
+            name = _recipe_to_name(recipe)
+            # 只对真正以 llm_suggested 入库的做 backfill (跳过 duplicate/invalid)
+            if not self._store.exists(name):
+                continue
+            try:
+                factor = make_factor(recipe)
+                factor.name = name  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("make_factor(%s) for backfill failed: %s", name, exc)
+                continue
+
+            try:
+                result = backfill_one(
+                    factor, ctx,
+                    evaluator=self._evaluator,
+                    proposal_store=self._store,
+                )
+                if result.get("ok"):
+                    n_backfilled += 1
+                    logger.info(
+                        "backfilled %s: %d rows, latest_ir=%.3f",
+                        name, result["n_metrics_written"],
+                        result["latest_ir"] or 0.0,
+                    )
+                else:
+                    logger.warning("backfill_one(%s) skipped: %s", name, result.get("reason"))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("backfill_one(%s) failed: %s", name, exc)
+        stats["backfilled"] = n_backfilled

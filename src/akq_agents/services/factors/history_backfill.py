@@ -1,0 +1,314 @@
+"""新因子入库时算 90 天历史 IC, 写 factor_metrics + 同步 factor_proposals.
+
+设计目标 (M19, 用户需求"新因子入库的时候把历史的 ICIR 都计算一遍"):
+- LLMFactorBrainstormer 入 status='llm_suggested' 时调用 → 用户审核界面看得到 90 天 IC 趋势
+- DiscoveryEngine.run_batch 候选评估时调用 → 不只是当日 IC, 直接看完整曲线判断
+- web /factors/llm-suggestions/{name}/accept 也调同一函数
+
+为什么不复用 evaluator.evaluate 直接调:
+1. evaluator.evaluate 只算 1 个 as_of_date, 调 90 次的话 factor_history 重复算 90 倍
+2. 离线 backfill 时 evaluator._read_recent_history 看到的是"未来"日期的 row,
+   会错标 status='inactive' 污染 registry.list_active. 这里统一标
+   reason='backfill', status='active' 避免
+
+性能 (实测): 单因子约 2.5s (拉数据 + factor_history + 90 次 evaluate.upsert).
+    20 个因子约 50s, 1 次拉数据复用 → 实际 30s。
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import Any
+
+import pandas as pd
+
+from akq_agents.services.data.repository import open_meta_db
+from akq_agents.services.factors.base import Factor
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class HistoryBackfillContext:
+    """共享上下文: ohlcv / close pivot / forward_returns / as_of_dates.
+
+    一轮 brainstorm 产 20 个因子时 build 一次, 复用给所有因子, 避免 20 次重拉数据。
+    """
+    ohlcv: pd.DataFrame  # long-format
+    close: pd.DataFrame  # index=date, columns=symbol
+    forward_returns: pd.DataFrame
+    candidate_dates: list  # 要写入 factor_metrics 的 as_of_date 列表 (DESC 最新在前)
+    window: int
+    as_of_today: date
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        repo: Any,
+        evaluator: Any,
+        as_of_date: date | None = None,
+        days: int = 90,
+        step: int = 1,
+        top_n_universe: int = 300,
+    ) -> "HistoryBackfillContext | None":
+        """从 repo 拉数据构造上下文; 数据不足 / universe 拿不到时返 None."""
+        as_of = as_of_date or date.today()
+        window = getattr(evaluator, "_window", 60)
+
+        # M19-A universe fallback (跟 batch.deep_research / DiscoveryEngine._prepare_data 一致)
+        try:
+            universe = repo.get_universe(as_of)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("history_backfill: get_universe(%s) failed: %s; fallback today-1",
+                           as_of, exc)
+            try:
+                universe = repo.get_universe(as_of - timedelta(days=1))
+            except Exception as exc2:  # noqa: BLE001
+                logger.warning("history_backfill: universe fallback also failed: %s", exc2)
+                return None
+
+        # 拉一段足够长的 OHLCV (max_lookback 留余量 + days + window)
+        max_lb = 180  # discovery._prepare_data 同款上限
+        pull_start = as_of - timedelta(days=(max_lb + window + days) * 2)
+        ohlcv = repo.get_ohlcv_loose(universe.symbols, pull_start, as_of)
+        if ohlcv.empty:
+            ohlcv = repo.get_ohlcv_loose(universe.symbols, pull_start, as_of - timedelta(days=1))
+        if ohlcv.empty:
+            logger.warning("history_backfill: ohlcv empty for as_of=%s", as_of)
+            return None
+
+        # 限制 universe (与 discovery 一致 top top_n_universe by 流动性)
+        from akq_agents.services.portfolio.combined_universe import build_portfolio_universe
+        sub_symbols = build_portfolio_universe(
+            full_universe_symbols=universe.symbols, ohlcv=ohlcv, top_n=top_n_universe, window=20
+        )
+        sub_ohlcv = ohlcv[ohlcv["symbol"].isin(set(sub_symbols))]
+        close = sub_ohlcv.pivot_table(
+            index="date", columns="symbol", values="close", aggfunc="last"
+        ).sort_index()
+        forward_returns = close.pct_change(fill_method=None).shift(-1)
+
+        return cls._from_close(
+            sub_ohlcv, close, forward_returns,
+            window=window, days=days, step=step, as_of=as_of,
+        )
+
+    @classmethod
+    def from_existing(
+        cls,
+        *,
+        ohlcv: pd.DataFrame,
+        close: pd.DataFrame,
+        forward_returns: pd.DataFrame,
+        window: int,
+        days: int = 90,
+        step: int = 1,
+        as_of_date: date | None = None,
+    ) -> "HistoryBackfillContext | None":
+        """复用调用方已经算好的 close + forward_returns (如 DiscoveryEngine.run_batch)。
+
+        避免在 brainstorm/discovery 流程内再拉一次数据 → 一轮 brainstorm 20 因子额外
+        ~50s 中 ~0.5s 是数据 IO, 主要还是 factor_history 计算。
+        """
+        return cls._from_close(
+            ohlcv, close, forward_returns,
+            window=window, days=days, step=step,
+            as_of=as_of_date or date.today(),
+        )
+
+    @classmethod
+    def _from_close(
+        cls,
+        ohlcv: pd.DataFrame,
+        close: pd.DataFrame,
+        forward_returns: pd.DataFrame,
+        *,
+        window: int,
+        days: int,
+        step: int,
+        as_of: date,
+    ) -> "HistoryBackfillContext | None":
+        all_dates = list(close.index)
+        if len(all_dates) < window + days:
+            logger.warning("history_backfill: insufficient dates (%d < %d+%d)",
+                           len(all_dates), window, days)
+            return None
+        # 最近 days 个交易日, 每 step 天采一次, DESC 排 (最新在前)
+        candidate_dates = all_dates[-days:][::step][::-1]
+        return cls(
+            ohlcv=ohlcv,
+            close=close,
+            forward_returns=forward_returns,
+            candidate_dates=candidate_dates,
+            window=window,
+            as_of_today=as_of,
+        )
+
+
+def backfill_one(
+    factor: Factor,
+    ctx: HistoryBackfillContext,
+    *,
+    evaluator: Any,
+    proposal_store: Any | None = None,
+    compute_factor_history: Any | None = None,
+) -> dict[str, Any]:
+    """对单个 factor 跑 90 天 IC, 写 factor_metrics + 同步到 factor_proposals.
+
+    Args:
+        factor: 已构造好的 Factor 实例 (name 必须正确, evaluator.evaluate 用它做 key)
+        ctx: HistoryBackfillContext (一轮 brainstorm 多因子时复用)
+        evaluator: FactorEvaluator
+        proposal_store: 可选, 给则同步最新一期 ic/ir/t_stat 到 factor_proposals
+        compute_factor_history: 可选 callable (factor, ohlcv, all_dates) -> DataFrame.
+            不给就直接调 DiscoveryEngine 那个静态方法。允许调用方传自己的实现避免循环 import。
+
+    Returns:
+        {
+          "ok": bool, "n_metrics_written": int,
+          "latest_ic_mean": float | None, "latest_ir": float | None,
+          "latest_t_stat": float | None, "reason": str | None
+        }
+    """
+    if compute_factor_history is None:
+        # 默认实现: 复制 DiscoveryEngine._compute_factor_history 逻辑 (避免循环 import)
+        compute_factor_history = _default_compute_factor_history
+
+    try:
+        factor_history = compute_factor_history(factor, ctx.ohlcv, ctx.close.index)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("history_backfill: factor_history(%s) failed: %s", factor.name, exc)
+        return {"ok": False, "reason": f"factor_history_failed: {exc}",
+                "n_metrics_written": 0,
+                "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
+    if factor_history is None or factor_history.empty:
+        return {"ok": False, "reason": "factor_history_empty",
+                "n_metrics_written": 0,
+                "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
+
+    n_written = 0
+    latest_metric = None
+    for as_of in ctx.candidate_dates:  # DESC, 最新在前
+        as_of_d = as_of.date() if hasattr(as_of, "date") else as_of
+        fh_sub = factor_history.loc[:as_of]
+        fr_sub = ctx.forward_returns.loc[:as_of]
+        common_idx = fh_sub.index.intersection(fr_sub.index)
+        if len(common_idx) < ctx.window:
+            continue
+        try:
+            metric = evaluator.evaluate(
+                factor=factor,
+                factor_history=fh_sub.loc[common_idx],
+                forward_returns=fr_sub.loc[common_idx],
+                as_of_date=as_of_d,
+            )
+            n_written += 1
+            if latest_metric is None:  # candidate_dates DESC, 第一个就是最新
+                latest_metric = metric
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("history_backfill: evaluate(%s, %s) failed: %s",
+                         factor.name, as_of_d, exc)
+
+    if n_written == 0:
+        return {"ok": False, "reason": "no_metric_written (insufficient history per as_of_date)",
+                "n_metrics_written": 0,
+                "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
+
+    # 标 backfill, 避免污染 registry.list_active 的 status='inactive' 判定
+    _mark_backfill_status(evaluator, factor.name, ctx.candidate_dates)
+
+    # 同步最新一期到 factor_proposals.ic_mean/ir/t_stat
+    if proposal_store is not None and latest_metric is not None:
+        _sync_proposal(proposal_store, factor.name, latest_metric)
+
+    return {
+        "ok": True,
+        "n_metrics_written": n_written,
+        "latest_ic_mean": latest_metric.ic_mean if latest_metric else None,
+        "latest_ir": latest_metric.ir if latest_metric else None,
+        "latest_t_stat": latest_metric.t_stat if latest_metric else None,
+        "reason": None,
+    }
+
+
+def _default_compute_factor_history(factor, ohlcv, all_dates):
+    """fallback: 复用 DiscoveryEngine 的逻辑, 此处直接重新写一份避免循环 import.
+
+    DiscoveryEngine._compute_factor_history 同款语义: 每个 as_of_date 用截止那日的子集
+    跑 factor.compute, 失败 / 数据不足跳过。
+    """
+    rows = {}
+    for d in all_dates:
+        d_date = d.date() if hasattr(d, "date") else d
+        sub = ohlcv[ohlcv["date"] <= d_date]
+        if len(sub) < factor.lookback_days:
+            continue
+        try:
+            s = factor.compute(sub)
+        except Exception:  # noqa: BLE001
+            continue
+        if s is None or s.empty:
+            continue
+        rows[d] = s
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).T
+
+
+def _mark_backfill_status(evaluator: Any, factor_name: str, as_of_dates) -> None:
+    """把这批 backfill 写的行 reason 改成 'backfill', status 强 active.
+
+    evaluator.evaluate 内部 _read_recent_history 在 backfill 场景看到"未来"row,
+    会错算 low_ir_persistent 标 inactive (污染 registry.list_active).
+    """
+    db_path = getattr(evaluator, "_db", None)
+    if db_path is None:
+        return
+    dates_iso = [(d.date() if hasattr(d, "date") else d).isoformat() for d in as_of_dates]
+    if not dates_iso:
+        return
+    placeholders = ",".join(["?"] * len(dates_iso))
+    try:
+        with open_meta_db(db_path) as conn:
+            conn.execute(
+                f"UPDATE factor_metrics SET status='active', reason='backfill' "
+                f"WHERE factor_name=? AND as_of_date IN ({placeholders})",
+                (factor_name, *dates_iso),
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_mark_backfill_status(%s) failed: %s", factor_name, exc)
+
+
+def _sync_proposal(proposal_store: Any, factor_name: str, latest_metric: Any) -> None:
+    """把 latest_metric 的 ic/ir/t_stat 同步到 factor_proposals.
+
+    场景: 用户在 web /research 看「自动发现因子流水」, 这张表读 factor_proposals.ir/ic_mean.
+    LLM brainstorm 入库 status='llm_suggested' 时这俩字段是 NULL, 用户没法做接受决策。
+    backfill 完同步一次, 表里立刻有数。
+    """
+    try:
+        db_path = getattr(proposal_store, "_db", None)
+        if db_path is None:
+            return
+        with open_meta_db(db_path) as conn:
+            conn.execute(
+                """
+                UPDATE factor_proposals
+                SET ic_mean = ?, ic_std = ?, ir = ?, t_stat = ?
+                WHERE factor_name = ?
+                """,
+                (
+                    latest_metric.ic_mean,
+                    latest_metric.ic_std,
+                    latest_metric.ir,
+                    latest_metric.t_stat,
+                    factor_name,
+                ),
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_sync_proposal(%s) failed: %s", factor_name, exc)

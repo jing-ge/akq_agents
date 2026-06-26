@@ -625,106 +625,66 @@ async def review_llm_suggestion(factor_name: str, action: str) -> dict[str, Any]
 
 
 def _evaluate_is_ic_for_llm_factor(svc: ServiceContainer, factor_name: str) -> dict[str, Any] | None:
-    """LLM accept 后算一次 IS IC/IR 回填到 factor_proposals。
+    """LLM accept 后跑 90 天 IS IC/IR backfill, 写 factor_metrics + 同步 factor_proposals.
 
-    复用 DiscoveryEngine 已经实现的 _prepare_data + _compute_factor_history 逻辑,
-    避免重写。失败返回 None, 上游不抛。
+    M19: 之前只算 1 期 (今日) IC; 现在调公共函数 backfill_one 跑 90 天历史, 让用户审核
+    刚 accept 的因子时立刻看到完整 IC 曲线 (跟新 brainstorm 入库走同一路径)。
+    失败返回 None, 不阻塞 accept。
     """
     import logging as _logging
-    from datetime import date as _d
-    from datetime import timedelta as _td
 
-    from akq_agents.services.data.repository import open_meta_db as _open_db
     from akq_agents.services.factors.discovery import make_factor
-    from akq_agents.services.factors.proposal_store import (
-        FactorProposal,
-        now_iso as _now_iso,
-        recipe_from_json,
+    from akq_agents.services.factors.history_backfill import (
+        HistoryBackfillContext,
+        backfill_one,
     )
+    from akq_agents.services.factors.proposal_store import recipe_from_json
 
     log = _logging.getLogger(__name__)
     try:
-        engine = (svc.workflow.services.get("discovery_engine") if svc.workflow else None)
-        evaluator = (svc.workflow.services.get("factor_evaluator") if svc.workflow else None)
+        if svc.workflow is None:
+            return {"ok": False, "reason": "workflow_unavailable"}
+        evaluator = svc.workflow.services.get("factor_evaluator")
+        engine = svc.workflow.services.get("discovery_engine")
         store = _proposal_store(svc)
-        if engine is None or evaluator is None or store is None:
+        if evaluator is None or engine is None or store is None:
             return {"ok": False, "reason": "services_not_available"}
-
         if svc.repo is None:
             return {"ok": False, "reason": "repo_unavailable"}
+
+        # 取 recipe 从 factor_proposals
+        from akq_agents.services.data.repository import open_meta_db
         db_path = svc.repo._base_dir / "meta.db"
-        with _open_db(db_path) as conn:
+        with open_meta_db(db_path) as conn:
             row = conn.execute(
-                "SELECT recipe_json, direction, max_abs_corr, created_at, shadow_started_at "
-                "FROM factor_proposals WHERE factor_name=?",
+                "SELECT recipe_json FROM factor_proposals WHERE factor_name=?",
                 (factor_name,),
             ).fetchone()
         if row is None:
             return {"ok": False, "reason": "proposal_not_found"}
-        recipe_json, direction, max_abs_corr, created_at, shadow_started_at = row
-        recipe = recipe_from_json(recipe_json)
+        recipe = recipe_from_json(row[0])
         factor = make_factor(recipe)
-        # 保留 LLM 命名 (含 hash 后缀), 不让 make_factor 算出来的 name 覆盖
         try:
             factor.name = factor_name  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
 
-        # 准备数据 (复用 DiscoveryEngine._prepare_data); empty 时 fallback 用昨日
-        as_of = _d.today()
-        ohlcv, _syms = engine._prepare_data(as_of)  # type: ignore[attr-defined]
-        if ohlcv.empty:
-            ohlcv, _syms = engine._prepare_data(as_of - _td(days=1))  # type: ignore[attr-defined]
-        if ohlcv.empty:
-            return {"ok": False, "reason": "no_data"}
+        # 调公共 backfill 函数
+        ctx = HistoryBackfillContext.build(repo=svc.repo, evaluator=evaluator, days=90, step=1)
+        if ctx is None:
+            return {"ok": False, "reason": "ctx_build_failed (no data?)"}
 
-        close = ohlcv.pivot_table(
-            index="date", columns="symbol", values="close", aggfunc="last"
-        ).sort_index()
-        forward_returns = close.pct_change(fill_method=None).shift(-1)
-
-        # 算 factor_history (复用 DiscoveryEngine._compute_factor_history)
-        factor_history = engine._compute_factor_history(factor, ohlcv, close.index)  # type: ignore[attr-defined]
-        if factor_history is None or factor_history.empty:
-            return {"ok": False, "reason": "factor_history_empty"}
-        common_idx = factor_history.index.intersection(forward_returns.index)
-        if len(common_idx) < 20:
-            return {"ok": False, "reason": f"insufficient_history_{len(common_idx)}"}
-
-        # evaluate -> 写 factor_metrics 表 (factor.name 已改成 llm_xxx, 写入 row 落 llm_xxx)
-        metric = evaluator.evaluate(
-            factor=factor,
-            factor_history=factor_history.loc[common_idx],
-            forward_returns=forward_returns.loc[common_idx],
-            as_of_date=as_of,
+        result = backfill_one(
+            factor, ctx, evaluator=evaluator, proposal_store=store,
+            compute_factor_history=engine._compute_factor_history,  # type: ignore[attr-defined]
         )
-
-        # 把 IS-IC 回填到 factor_proposals (与 auto_* 对齐)
-        proposal = FactorProposal(
-            factor_name=factor_name,
-            recipe_json=recipe_json,
-            direction=direction,
-            status="shadow",
-            ic_mean=metric.ic_mean,
-            ic_std=metric.ic_std,
-            ir=metric.ir,
-            t_stat=metric.t_stat,
-            max_abs_corr=max_abs_corr,
-            reason="accepted_from_llm_passed_is",
-            created_at=created_at,
-            evaluated_at=_now_iso(),
-            shadow_started_at=shadow_started_at,
-            oos_observations=0,
-            oos_ir=None,
-        )
-        store.upsert(proposal)
-
         return {
-            "ok": True,
-            "ic_mean": metric.ic_mean,
-            "ir": metric.ir,
-            "t_stat": metric.t_stat,
-            "n_obs": len(common_idx),
+            "ok": bool(result.get("ok")),
+            "ic_mean": result.get("latest_ic_mean"),
+            "ir": result.get("latest_ir"),
+            "t_stat": result.get("latest_t_stat"),
+            "n_metrics_written": result.get("n_metrics_written", 0),
+            "reason": result.get("reason"),
         }
     except Exception as exc:  # noqa: BLE001
         log.warning("evaluate_is_ic for %s failed: %s", factor_name, exc)

@@ -379,6 +379,33 @@ class DiscoveryEngine:
             # 把新候选也加入 active_factor_history（影响后续 candidate 的相关性判定）
             active_factor_history[name] = factor_history
 
+            # M19: 进 shadow 之后立刻 backfill 90 天历史 IC 写 factor_metrics +
+            # 同步 factor_proposals.ic/ir/t_stat. 用户审核界面立刻看到完整曲线 +
+            # IS-IC 数据。复用本流程已经算好的 close/forward_returns 上下文,
+            # 不重新拉数据 (~2.5s/因子, 主要是 90 次 evaluator.evaluate 写表)。
+            try:
+                from akq_agents.services.factors.history_backfill import (
+                    HistoryBackfillContext,
+                    backfill_one,
+                )
+                bf_ctx = HistoryBackfillContext.from_existing(
+                    ohlcv=ohlcv,
+                    close=close,
+                    forward_returns=forward_returns,
+                    window=getattr(self.evaluator, "_window", 60),
+                    days=90, step=1,
+                    as_of_date=as_of_date,
+                )
+                if bf_ctx is not None:
+                    backfill_one(
+                        factor, bf_ctx,
+                        evaluator=self.evaluator,
+                        proposal_store=self.proposal_store,
+                        compute_factor_history=self._compute_factor_history,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("discovery: backfill_one(%s) failed: %s", name, exc)
+
         # M19: shadow OOS 评估 / promote / demote 已拆到独立 daily job `factor.promote_shadows`
         # (避免本流程 _prepare_data empty 时 shadow 计数无法推进).
         # _promote_shadows 方法本身保留, 由独立 job 直接调用。
