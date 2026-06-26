@@ -45,8 +45,10 @@ def test_composite_scorer_empty() -> None:
 
 
 def test_composite_scorer_unknown_weighting_raises() -> None:
-    with pytest.raises(ValueError, match="P3a"):
-        CompositeScorer(weighting="ir")
+    # 早期 P3a 只允许 'equal', 'ir' 也报错; M7-C 起 'ir' 已实现 → 测试改成真"未知"值。
+    # 错误信息从 "P3a only supports..." 改成列出合法值 "must be 'equal' or 'ir'", 这里只匹配关键词。
+    with pytest.raises(ValueError, match="weighting"):
+        CompositeScorer(weighting="unknown_strategy")
 
 
 # -------------------- PortfolioOptimizer --------------------

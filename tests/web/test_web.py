@@ -49,9 +49,11 @@ def test_non_local_request_rejected_with_403(client) -> None:
 
 
 def test_root_redirects_to_ops(client) -> None:
+    # M11 起根路径默认跳 /research (用户每天最关心今日交易清单 + NAV, 运维信息次要,
+    # 见 web/app.py:52)。测试名保留是因为历史命名, 实际验证默认页就行。
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 307
-    assert r.headers["location"] == "/ops"
+    assert r.headers["location"] == "/research"
 
 
 @pytest.mark.parametrize("path", ["/ops", "/research", "/chat"])

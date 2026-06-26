@@ -61,7 +61,11 @@ def test_register_default_tools_creates_4_tools(services: dict) -> None:
     reg = ToolRegistry()
     register_default_tools(reg, services)
     names = {spec["name"] for spec in reg.list_anthropic_specs()}
-    assert names == {"get_data_health", "list_factors", "get_portfolio_snapshot", "query_events"}
+    # 工具集会持续扩展 (M16 起 chat agent 接了 attribute_nav_drop / factor_postmortem / ...)。
+    # 这里只保证"早期 4 个核心 read-only tool 必须在", 不强约束总数。
+    core = {"get_data_health", "list_factors", "get_portfolio_snapshot", "query_events"}
+    missing = core - names
+    assert not missing, f"missing core tools: {missing}"
 
 
 def test_get_data_health_tool(services: dict) -> None:

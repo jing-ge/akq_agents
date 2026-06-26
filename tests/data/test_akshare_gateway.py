@@ -17,11 +17,19 @@ from akq_agents.services.data.exceptions import FetchError
 
 
 class SleepRecorder:
+    """记录 time.sleep 调用; 自动过滤亚毫秒级 throttle 噪音。
+
+    qps 极大 (如测试里 1e6) 时 _throttle 偶尔会算出 ~1µs 的 sleep_for 也调 time.sleep,
+    污染断言。测试关心的是 retry 的 backoff sleep (0.5s/1.0s/2.0s), 不是 rate limiter,
+    所以 < 1ms 视为噪音直接忽略。
+    """
+
     def __init__(self) -> None:
         self.calls: list[float] = []
 
     def __call__(self, seconds: float) -> None:
-        self.calls.append(seconds)
+        if seconds >= 0.001:
+            self.calls.append(seconds)
 
 
 class MonotonicClock:
