@@ -557,7 +557,11 @@ async def trigger_brainstorm(payload: dict[str, Any] | None = None) -> dict[str,
     def _do_brainstorm() -> dict[str, Any]:
         return brainstormer.run(n=n)
 
-    result = svc.job_runner.run(JOB_ID, _date.today().isoformat(), _do_brainstorm, timeout_s=120)
+    # M19: 手动触发用 {base}-manual-{rand} partition, 不走幂等 — 用户主动点就是要重跑。
+    # cron 路径仍用裸 day 桶, 防 misfire/重叠的语义不变。
+    from akq_agents.web.api.control import _manual_partition
+    partition = _manual_partition(_date.today().isoformat())
+    result = svc.job_runner.run(JOB_ID, partition, _do_brainstorm, timeout_s=120)
     return {
         "ok": result.status == "ok",
         "status": result.status,

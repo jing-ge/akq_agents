@@ -34,15 +34,32 @@ router = APIRouter()
 _SUPPORTED_JOBS = {"batch.post_close", "batch.deep_research", "factor.discovery"}
 
 
+def _manual_partition(base: str) -> str:
+    """手动触发用的 partition: ``{base}-manual-{6 hex}`` — 永不撞 cron 的同 partition.
+
+    M19: cron 路径用裸 hour/day 桶 + (job_id, partition) UNIQUE 防 misfire 重复触发。
+    手动路径加 -manual-{rand} 后缀, 让用户每次点都跑一次新执行 (前端 button.disabled
+    防同一次点的 race)。同 day 内手动跑多次, ops 看板能看到独立的 N 行记录。
+    """
+    import uuid
+    return f"{base}-manual-{uuid.uuid4().hex[:6]}"
+
+
 @router.post("/jobs/{name}/trigger")
 async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
-    """同步触发 job。C5: 走 JobRunner 写 job_runs/events，与 daemon cron 路径一致。"""
+    """同步触发 job。C5: 走 JobRunner 写 job_runs/events，与 daemon cron 路径一致。
+
+    M19: partition 改成 `{base}-manual-{hex6}` 唯一格式, **手动触发不走幂等**, 用户
+    点多少次跑多少次。cron 路径仍用裸 hour/day 桶, (job_id, partition) UNIQUE 防 misfire
+    重复触发的语义不变。前端 button.disabled 防连点导致的 race。
+    """
     if name not in _SUPPORTED_JOBS:
         raise HTTPException(404, f"unknown job: {name}")
     svc: ServiceContainer = get_services()
     if svc.job_runner is None:
         raise HTTPException(503, "job_runner not ready (web container 未装配)")
-    partition = date.today().isoformat()
+    base_partition = date.today().isoformat()
+    partition = _manual_partition(base_partition)
 
     if name == "batch.post_close":
         if svc.workflow is None:
@@ -94,11 +111,8 @@ async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
             stats = engine.run_batch(n_candidates=n_candidates, as_of_date=date.today())
             return stats.as_dict()
 
-        # M19-fix: web 手动触发也走 hour 桶, 与 daemon cron 路径 partition 格式对齐。
-        # 之前 web 手动触发用 day 桶 (date.today()), 跟 daemon cron 用的 hour 桶
-        # (YYYY-MM-DDTHH) 不一致, 互相会因 (job_id, partition) 唯一约束撞 ALREADY_OK,
-        # 用户点了"跑一轮因子发现"按钮直接返 noop 像没反应一样。
-        discovery_partition = _partition_for_now()
+        # 手动 partition 用 hour 桶 + manual 后缀, 跟 daemon cron hour 桶分开命名空间
+        discovery_partition = _manual_partition(_partition_for_now())
         result = svc.job_runner.run(JOB_ID, discovery_partition, _do_discovery, timeout_s=900)
         return {
             "status": result.status,
