@@ -155,6 +155,7 @@ def backfill_one(
     evaluator: Any,
     proposal_store: Any | None = None,
     compute_factor_history: Any | None = None,
+    mode: str = "fast",
 ) -> dict[str, Any]:
     """对单个 factor 跑 90 天 IC, 写 factor_metrics + 同步到 factor_proposals.
 
@@ -165,10 +166,17 @@ def backfill_one(
         proposal_store: 可选, 给则同步最新一期 ic/ir/t_stat 到 factor_proposals
         compute_factor_history: 可选 callable (factor, ohlcv, all_dates) -> DataFrame.
             不给就直接调 DiscoveryEngine 那个静态方法。允许调用方传自己的实现避免循环 import。
+        mode: 'fast' (默认, 跳过 db 已有 (factor_name, as_of_date, window_days) 的日期,
+            只算缺失部分) / 'full' (重算所有 90 天, 覆盖 db 已有行).
+
+            场景:
+            - fast: 新因子入库 / 每日 cron / 用户日常查看 — 一般 db 已有 89/90 行只缺今天一行,
+              单因子 < 0.5s
+            - full: 数据更新或修复 / 怀疑历史 IC 算错了 — 用户主动按按钮重算
 
     Returns:
         {
-          "ok": bool, "n_metrics_written": int,
+          "ok": bool, "n_metrics_written": int, "n_skipped": int,
           "latest_ic_mean": float | None, "latest_ir": float | None,
           "latest_t_stat": float | None, "reason": str | None
         }
@@ -177,21 +185,47 @@ def backfill_one(
         # 默认实现: 复制 DiscoveryEngine._compute_factor_history 逻辑 (避免循环 import)
         compute_factor_history = _default_compute_factor_history
 
+    # fast 模式: 先查 db 已有的 (factor_name, as_of_date) 集合, 跳过已存在的
+    existing_dates: set[str] = set()
+    if mode == "fast":
+        existing_dates = _read_existing_metric_dates(evaluator, factor.name, factor.factor_version)
+
+    # 所有候选转 iso 字符串集合, 判定哪些需要算
+    candidate_iso = [(d, (d.date() if hasattr(d, "date") else d).isoformat())
+                     for d in ctx.candidate_dates]
+    todo = [(d, iso) for d, iso in candidate_iso if iso not in existing_dates]
+    n_skipped = len(candidate_iso) - len(todo)
+
+    if not todo:
+        # 全部已存在, 只需要同步 factor_proposals (拿最新一期)
+        latest = _read_latest_metric_from_db(evaluator, factor.name, factor.factor_version)
+        if proposal_store is not None and latest is not None:
+            _sync_proposal(proposal_store, factor.name, latest)
+        return {
+            "ok": True,
+            "n_metrics_written": 0,
+            "n_skipped": n_skipped,
+            "latest_ic_mean": getattr(latest, "ic_mean", None) if latest else None,
+            "latest_ir": getattr(latest, "ir", None) if latest else None,
+            "latest_t_stat": getattr(latest, "t_stat", None) if latest else None,
+            "reason": "all_existing_fast_mode_skip",
+        }
+
     try:
         factor_history = compute_factor_history(factor, ctx.ohlcv, ctx.close.index)
     except Exception as exc:  # noqa: BLE001
         logger.warning("history_backfill: factor_history(%s) failed: %s", factor.name, exc)
         return {"ok": False, "reason": f"factor_history_failed: {exc}",
-                "n_metrics_written": 0,
+                "n_metrics_written": 0, "n_skipped": n_skipped,
                 "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
     if factor_history is None or factor_history.empty:
         return {"ok": False, "reason": "factor_history_empty",
-                "n_metrics_written": 0,
+                "n_metrics_written": 0, "n_skipped": n_skipped,
                 "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
 
     n_written = 0
     latest_metric = None
-    for as_of in ctx.candidate_dates:  # DESC, 最新在前
+    for as_of, _iso in todo:  # candidate_dates DESC, 最新在前
         as_of_d = as_of.date() if hasattr(as_of, "date") else as_of
         fh_sub = factor_history.loc[:as_of]
         fr_sub = ctx.forward_returns.loc[:as_of]
@@ -206,32 +240,65 @@ def backfill_one(
                 as_of_date=as_of_d,
             )
             n_written += 1
-            if latest_metric is None:  # candidate_dates DESC, 第一个就是最新
+            if latest_metric is None:  # todo DESC, 第一个就是最新
                 latest_metric = metric
         except Exception as exc:  # noqa: BLE001
             logger.debug("history_backfill: evaluate(%s, %s) failed: %s",
                          factor.name, as_of_d, exc)
 
-    if n_written == 0:
+    if n_written == 0 and n_skipped == 0:
         return {"ok": False, "reason": "no_metric_written (insufficient history per as_of_date)",
-                "n_metrics_written": 0,
+                "n_metrics_written": 0, "n_skipped": 0,
                 "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
 
-    # 标 backfill, 避免污染 registry.list_active 的 status='inactive' 判定
-    _mark_backfill_status(evaluator, factor.name, ctx.candidate_dates)
+    # full 模式标 backfill (避免 evaluator 内部 _read_recent_history 误标 inactive);
+    # fast 模式只新写少数行, 可能就是正常顺序写入, status 判定有意义 — 不强标
+    if mode == "full":
+        _mark_backfill_status(evaluator, factor.name, [d for d, _ in todo])
 
-    # 同步最新一期到 factor_proposals.ic_mean/ir/t_stat
+    # 拿到最新 metric: 优先用本次写入的; 没写入 (全 skip) 时从 db 拿
+    if latest_metric is None:
+        latest_metric = _read_latest_metric_from_db(evaluator, factor.name, factor.factor_version)
+
     if proposal_store is not None and latest_metric is not None:
         _sync_proposal(proposal_store, factor.name, latest_metric)
 
     return {
         "ok": True,
         "n_metrics_written": n_written,
+        "n_skipped": n_skipped,
         "latest_ic_mean": latest_metric.ic_mean if latest_metric else None,
         "latest_ir": latest_metric.ir if latest_metric else None,
         "latest_t_stat": latest_metric.t_stat if latest_metric else None,
         "reason": None,
     }
+
+
+def _read_existing_metric_dates(evaluator: Any, factor_name: str, factor_version: int) -> set[str]:
+    """读 db 里该 factor 已有的 as_of_date ISO 集合, 用于 fast 模式 skip 已算."""
+    db_path = getattr(evaluator, "_db", None)
+    window = getattr(evaluator, "_window", 60)
+    if db_path is None:
+        return set()
+    try:
+        with open_meta_db(db_path) as conn:
+            rows = conn.execute(
+                "SELECT as_of_date FROM factor_metrics "
+                "WHERE factor_name=? AND factor_version=? AND window_days=?",
+                (factor_name, factor_version, window),
+            ).fetchall()
+        return {r[0] for r in rows}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_read_existing_metric_dates(%s) failed: %s", factor_name, exc)
+        return set()
+
+
+def _read_latest_metric_from_db(evaluator: Any, factor_name: str, factor_version: int):
+    """fast 模式下全部 skip 时, 从 db 取最新一期同步给 factor_proposals."""
+    try:
+        return evaluator.get_latest(factor_name, factor_version)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _default_compute_factor_history(factor, ohlcv, all_dates):

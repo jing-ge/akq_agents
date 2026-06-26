@@ -46,12 +46,17 @@ def _manual_partition(base: str) -> str:
 
 
 @router.post("/jobs/{name}/trigger")
-async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
+async def trigger_job(name: str, n_candidates: int = 20, force_full: bool = False) -> dict[str, Any]:
     """同步触发 job。C5: 走 JobRunner 写 job_runs/events，与 daemon cron 路径一致。
 
     M19: partition 改成 `{base}-manual-{hex6}` 唯一格式, **手动触发不走幂等**, 用户
     点多少次跑多少次。cron 路径仍用裸 hour/day 桶, (job_id, partition) UNIQUE 防 misfire
     重复触发的语义不变。前端 button.disabled 防连点导致的 race。
+
+    Args:
+        force_full: 仅对 batch.deep_research 生效. False (默认, fast 模式) — 只算 db
+            缺失的日期, 通常几分钟跑完. True (full 模式) — 重算全部 90 天历史 IC 覆盖
+            db, ~10-15 分钟. 数据修复 / 怀疑历史错算时用。
     """
     if name not in _SUPPORTED_JOBS:
         raise HTTPException(404, f"unknown job: {name}")
@@ -94,7 +99,8 @@ async def trigger_job(name: str, n_candidates: int = 20) -> dict[str, Any]:
         from akq_agents.orchestrator.jobs.batch_deep_research import _do, JOB_ID
 
         ws_services = svc.workflow.services if svc.workflow else {}
-        result = svc.job_runner.run(JOB_ID, partition, lambda: _do(ws_services), timeout_s=5400)
+        mode = "full" if force_full else "fast"
+        result = svc.job_runner.run(JOB_ID, partition, lambda: _do(ws_services, mode=mode), timeout_s=5400)
         return {
             "status": result.status,
             "reason_code": result.reason_code,

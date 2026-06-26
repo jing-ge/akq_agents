@@ -33,11 +33,22 @@
             title="让 AI 即兴生成 20 个新因子配方，做回测，自动留下表现最好的（约 30~120 秒）"
             onclick="doAction(this,'/api/control/jobs/factor.discovery/trigger?n_candidates=20','POST')">跑一轮因子发现（20 个候选）</button>
     <button
-            title="对所有已上线因子重新计算 IC（信息系数）/ IR（信息比率）等表现指标"
-            onclick="doAction(this,'/api/control/jobs/batch.deep_research/trigger','POST')">重算因子表现（IC / IR）</button>
+            title="只算 db 里缺失的日期 (通常只有今天 1 行), 几分钟跑完。日常 cron 也用这个模式"
+            onclick="doAction(this,'/api/control/jobs/batch.deep_research/trigger','POST')">重算因子表现 (fast · 增量)</button>
+    <button class="warn"
+            title="重算所有 90 天历史 IC 覆盖 db, ~10-15 分钟。数据修复 / 怀疑历史错算时用"
+            onclick="confirmAndDeepResearchFull(this)">重算因子表现 (full · 全量)</button>
   </div>
   <pre id="control-output" class="console-output"></pre>
 </div>
+
+<script>
+// M19: full mode 重算所有 90 天历史 — 跑得久 + 覆盖 db, 先确认避免误点
+function confirmAndDeepResearchFull(btn) {
+  if (!confirm('full 模式将重算所有因子过去 90 天的 IC, 覆盖 db, 约 10-15 分钟。\n\n确认继续吗?')) return;
+  doAction(btn, '/api/control/jobs/batch.deep_research/trigger?force_full=true', 'POST');
+}
+</script>
 
 <!-- Health cards：5s 轮询 -->
 <div class="card">
