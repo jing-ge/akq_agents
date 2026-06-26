@@ -221,18 +221,18 @@ function renderHealth(d) {
   const tbDur = (tb && tb.duration_ms != null) ? '耗时 ' + (tb.duration_ms / 1000).toFixed(1) + ' 秒' : '';
 
   return `
-    <div class="grid grid-4">
-      <div>
-        <div class="stat-label">后台守护进程</div>
-        <div class="stat-num">${dm.is_alive
+    <div class="health-kpi-row">
+      <div class="hk">
+        <div class="hk-lbl">后台守护进程</div>
+        <div class="hk-val">${dm.is_alive
           ? '<span class="pill alive">运行中</span>'
           : '<span class="pill dead">未运行</span>'}</div>
-        <div class="small">${dm.state ? '上次心跳：' + (dm.state.last_heartbeat || '—') : '后台没在跑，请在终端执行 <code>./start.sh up</code>'}</div>
+        <div class="hk-sub">${dm.state ? '上次心跳：<code>' + (dm.state.last_heartbeat || '—') + '</code>' : '后台没在跑，请在终端执行 <code>./start.sh up</code>'}</div>
       </div>
-      <div>
-        <div class="stat-label">数据健康度</div>
-        <div class="stat-num"><span class="${healthCls}">${healthCn}</span> <span class="small" style="font-size:11px;">(${healthRaw})</span></div>
-        <div class="small">
+      <div class="hk">
+        <div class="hk-lbl">数据健康度</div>
+        <div class="hk-val"><span class="${healthCls}">${healthCn}</span> <span class="small" style="font-size:11px;">(${healthRaw})</span></div>
+        <div class="hk-sub">
           股票池：<b>${dh.universe_size_today ?? '—'}</b> 只 ｜
           今日数据覆盖率：<span class="${covCls}">${covPct}</span>
           ${healthRaw === 'PENDING_TODAY' && dh.next_refresh_attempt
@@ -240,17 +240,17 @@ function renderHealth(d) {
             : '<span class="metric-hint">覆盖率指今天有日线行情的股票占股票池的比例，越接近 100% 越健康</span>'}
         </div>
       </div>
-      <div>
-        <div class="stat-label">今日盘后批处理</div>
-        <div class="stat-num">${tb
+      <div class="hk">
+        <div class="hk-lbl">今日盘后批处理</div>
+        <div class="hk-val">${tb
           ? '<span class="status-' + tbStatus + '">' + tbCn + '</span>'
           : '<span class="metric-dim">未运行</span>'}</div>
-        <div class="small">${tbDur || '今天还没有跑过完整流程'}</div>
+        <div class="hk-sub">${tbDur || '今天还没有跑过完整流程'}</div>
       </div>
-      <div>
-        <div class="stat-label">最近 24 小时事件</div>
-        <div class="stat-num">${(evt.info || 0) + (evt.warning || 0) + (evt.error || 0)} <span class="small" style="font-size:11px;">条</span></div>
-        <div class="small">
+      <div class="hk">
+        <div class="hk-lbl">最近 24 小时事件</div>
+        <div class="hk-val">${(evt.info || 0) + (evt.warning || 0) + (evt.error || 0)} <span class="small" style="font-size:11px;">条</span></div>
+        <div class="hk-sub">
           信息 <b>${evt.info || 0}</b> ｜
           警告 <span class="metric-warn">${evt.warning || 0}</span> ｜
           错误 <span class="metric-bad">${evt.error || 0}</span>

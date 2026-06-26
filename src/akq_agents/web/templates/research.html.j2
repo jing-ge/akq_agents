@@ -4,39 +4,67 @@
 {% block content %}
 <h1>研究面板 <span class="small" style="font-weight:400">Research</span></h1>
 
-<!-- KPI 总览条 sticky 顶部，点击平滑滚动到对应卡片 -->
-<div class="kpi-overview" id="kpi-overview" aria-label="今日核心指标总览">
-  <button class="kpi-tile" type="button" data-target="nav-card" title="当日组合净值（扣费后），含日收益">
-    <span class="kpi-tile-lbl">当日 NAV</span>
-    <span class="kpi-tile-val" id="kpi-nav-val">—</span>
-    <span class="kpi-tile-sub" id="kpi-nav-sub">—</span>
-  </button>
-  <button class="kpi-tile" type="button" data-target="nav-card" title="累计超额收益 vs 沪深300">
-    <span class="kpi-tile-lbl">累计超额</span>
-    <span class="kpi-tile-val" id="kpi-excess-val">—</span>
-    <span class="kpi-tile-sub">vs 沪深300</span>
-  </button>
-  <button class="kpi-tile" type="button" data-target="portfolio-card" title="今日推荐组合的持仓数">
-    <span class="kpi-tile-lbl">持仓数</span>
-    <span class="kpi-tile-val" id="kpi-portfolio-val">—</span>
-    <span class="kpi-tile-sub" id="kpi-portfolio-sub">—</span>
-  </button>
-  <button class="kpi-tile" type="button" data-target="trade-list-card" title="今日待执行 BUY 数（未标记完成）">
+<!-- KPI 总览条 sticky 顶部 — 4 主 KPI（交易决策相关）+ 2 个折叠到 details -->
+<div class="kpi-overview kpi-overview-v2" id="kpi-overview" aria-label="今日核心指标总览">
+  <button class="kpi-tile kpi-primary" type="button" data-target="trade-list-card" title="今日待执行 BUY 数（未标记完成）">
     <span class="kpi-tile-lbl">今日 BUY</span>
     <span class="kpi-tile-val metric-good" id="kpi-buy-val">—</span>
     <span class="kpi-tile-sub">待执行</span>
   </button>
-  <button class="kpi-tile" type="button" data-target="trade-list-card" title="今日待执行 SELL 数（未标记完成）">
+  <button class="kpi-tile kpi-primary" type="button" data-target="trade-list-card" title="今日待执行 SELL 数（未标记完成）">
     <span class="kpi-tile-lbl">今日 SELL</span>
     <span class="kpi-tile-val metric-bad" id="kpi-sell-val">—</span>
     <span class="kpi-tile-sub">待执行</span>
   </button>
-  <button class="kpi-tile" type="button" data-target="shadow-card" title="OOS 表现已应淘汰、等待 demote 的 shadow 因子数">
+  <button class="kpi-tile kpi-primary" type="button" data-target="nav-card" title="当日组合净值（扣费后），含日收益">
+    <span class="kpi-tile-lbl">当日 NAV</span>
+    <span class="kpi-tile-val" id="kpi-nav-val">—</span>
+    <span class="kpi-tile-sub" id="kpi-nav-sub">—</span>
+  </button>
+  <button class="kpi-tile kpi-primary" type="button" data-target="nav-card" title="累计超额收益 vs 沪深300">
+    <span class="kpi-tile-lbl">累计超额</span>
+    <span class="kpi-tile-val" id="kpi-excess-val">—</span>
+    <span class="kpi-tile-sub">vs 沪深300</span>
+  </button>
+  <button class="kpi-tile kpi-secondary" type="button" data-target="portfolio-card" title="今日推荐组合的持仓数">
+    <span class="kpi-tile-lbl">持仓数</span>
+    <span class="kpi-tile-val" id="kpi-portfolio-val">—</span>
+    <span class="kpi-tile-sub" id="kpi-portfolio-sub">—</span>
+  </button>
+  <button class="kpi-tile kpi-secondary" type="button" data-target="shadow-card" title="OOS 表现已应淘汰、等待 demote 的 shadow 因子数">
     <span class="kpi-tile-lbl">Shadow 待 demote</span>
     <span class="kpi-tile-val" id="kpi-shadow-val">—</span>
     <span class="kpi-tile-sub">需处理</span>
   </button>
 </div>
+
+<!-- Tab 分组（4 组）— 用户切换时切换 body[data-active-tab] -->
+<nav class="research-tabs" id="research-tabs" role="tablist" aria-label="研究面板分类">
+  <button class="rtab is-active" role="tab" data-tab="trade" aria-selected="true"
+          title="交易决策：今日清单、持仓、组合、异动诊断">
+    <span class="rtab-ico">🎯</span>
+    <span class="rtab-lbl">交易</span>
+    <span class="rtab-sub">Trade</span>
+  </button>
+  <button class="rtab" role="tab" data-tab="portfolio" aria-selected="false"
+          title="组合表现：净值曲线、Paper Trading 前向跟踪">
+    <span class="rtab-ico">📈</span>
+    <span class="rtab-lbl">组合</span>
+    <span class="rtab-sub">Portfolio</span>
+  </button>
+  <button class="rtab" role="tab" data-tab="factors" aria-selected="false"
+          title="因子研究：单因子表现、全集总览、相关性矩阵、自动发现流水">
+    <span class="rtab-ico">🧪</span>
+    <span class="rtab-lbl">因子</span>
+    <span class="rtab-sub">Factors</span>
+  </button>
+  <button class="rtab" role="tab" data-tab="llm" aria-selected="false"
+          title="LLM Lab：因子提议审核、Shadow 战况">
+    <span class="rtab-ico">🤖</span>
+    <span class="rtab-lbl">LLM Lab</span>
+    <span class="rtab-sub">Agents</span>
+  </button>
+</nav>
 
 <p class="page-intro">
   这个页面用来 <b>查看每日组合、单因子表现、自动发现的新因子</b>。
@@ -63,7 +91,7 @@
 </div>
 
 <!-- P0-1: 今日交易清单 -->
-<div class="card" id="trade-list-card">
+<div class="card" id="trade-list-card" data-tab="trade">
   <h2>🎯 今日交易清单 <span class="small">Trade List — 把权重翻译成具体下单</span></h2>
   <p class="small" style="color:#94a3b8; margin-top:0">
     根据你的真实持仓 vs 今日推荐组合，自动算出 <b>该买什么 / 该卖什么 / 各多少股</b>（按整手 100 取整）。
@@ -78,7 +106,7 @@
 </div>
 
 <!-- P0-1: 持仓编辑器 -->
-<div class="card" id="holdings-editor">
+<div class="card" id="holdings-editor" data-tab="trade">
   <h2>📋 我的真实持仓 <span class="small">Holdings — 手动校准</span></h2>
   <p class="small" style="color:#94a3b8; margin-top:0">
     系统不会自动改这里。你需要 <b>手动告诉系统</b>「我昨天真的买了/没买」，
@@ -94,71 +122,69 @@
   <div id="holdings-table" style="margin-top:10px"></div>
 </div>
 
-<div class="grid grid-2 main-row">
-  <!-- Portfolio -->
-  <div class="card holdings-compact" id="portfolio-card">
-    <h2>今日组合 <span class="small">Portfolio</span></h2>
-    <div class="toolbar" style="margin-bottom: 12px;">
-      <label>日期：
-        <select id="portfolio-date">
-          {% for d in snapshot_dates %}
-          <option value="{{ d }}">{{ d }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <button onclick="loadPortfolio()" class="primary">查询</button>
-      <span class="sep"></span>
-      <span id="portfolio-summary" class="small" style="margin-left:0"></span>
-    </div>
-    <div id="industry-chart" class="chart chart-compact"></div>
-    <div class="holdings-scroll">
-      <div id="portfolio-table"></div>
-    </div>
+<!-- Portfolio (trade tab) -->
+<div class="card holdings-compact" id="portfolio-card" data-tab="trade">
+  <h2>今日组合 <span class="small">Portfolio</span></h2>
+  <div class="toolbar" style="margin-bottom: 12px;">
+    <label>日期：
+      <select id="portfolio-date">
+        {% for d in snapshot_dates %}
+        <option value="{{ d }}">{{ d }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button onclick="loadPortfolio()" class="primary">查询</button>
+    <span class="sep"></span>
+    <span id="portfolio-summary" class="small" style="margin-left:0"></span>
   </div>
-
-  <!-- Factors -->
-  <div class="card">
-    <h2>因子表现 <span class="small">Factor</span></h2>
-    <div class="toolbar" style="margin-bottom: 12px;">
-      <label>因子：
-        <select id="factor-name">
-          {%- set groups = {'builtin': [], 'accepted': [], 'shadow': [], 'rejected': [], 'demoted': []} -%}
-          {%- for f in factors -%}
-            {%- if f.status in groups -%}
-              {%- set _ = groups[f.status].append(f) -%}
-            {%- endif -%}
-          {%- endfor -%}
-          {%- set group_labels = [
-            ('builtin', 'Builtin (内置 7 个)'),
-            ('accepted', 'Accepted (已晋升)'),
-            ('shadow', 'Shadow (OOS 观察中)'),
-            ('rejected', 'Rejected (历史拒绝)'),
-            ('demoted', 'Demoted (已降级)'),
-          ] -%}
-          {% for key, label in group_labels %}
-            {% if groups[key] %}
-            <optgroup label="{{ label }} · {{ groups[key]|length }} 个">
-              {% for f in groups[key] %}
-              <option value="{{ f.name }}">{{ f.name }}{% if f.direction %} ({{ f.direction }}){% endif %}</option>
-              {% endfor %}
-            </optgroup>
-            {% endif %}
-          {% endfor %}
-        </select>
-      </label>
-      <button onclick="loadFactor()" class="primary">查询</button>
-      <button onclick="backtestSingleFactor()" class="warn"
-              title="单独用这个因子跑组合 (top 50 等权, 每 5 天 rebalance), 看历史 NAV vs 沪深300">回测该因子</button>
-    </div>
-    <div id="factor-table" class="small"></div>
-    <div id="ic-chart" class="chart"></div>
-    <div id="single-factor-nav-summary" class="small" style="margin-top:8px"></div>
-    <div id="single-factor-nav-chart" class="chart" style="display:none"></div>
+  <div id="industry-chart" class="chart chart-compact"></div>
+  <div class="holdings-scroll">
+    <div id="portfolio-table"></div>
   </div>
 </div>
 
+<!-- Factors (factors tab) -->
+<div class="card" data-tab="factors">
+  <h2>因子表现 <span class="small">Factor</span></h2>
+  <div class="toolbar" style="margin-bottom: 12px;">
+    <label>因子：
+      <select id="factor-name">
+        {%- set groups = {'builtin': [], 'accepted': [], 'shadow': [], 'rejected': [], 'demoted': []} -%}
+        {%- for f in factors -%}
+          {%- if f.status in groups -%}
+            {%- set _ = groups[f.status].append(f) -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- set group_labels = [
+          ('builtin', 'Builtin (内置 7 个)'),
+          ('accepted', 'Accepted (已晋升)'),
+          ('shadow', 'Shadow (OOS 观察中)'),
+          ('rejected', 'Rejected (历史拒绝)'),
+          ('demoted', 'Demoted (已降级)'),
+        ] -%}
+        {% for key, label in group_labels %}
+          {% if groups[key] %}
+          <optgroup label="{{ label }} · {{ groups[key]|length }} 个">
+            {% for f in groups[key] %}
+            <option value="{{ f.name }}">{{ f.name }}{% if f.direction %} ({{ f.direction }}){% endif %}</option>
+            {% endfor %}
+          </optgroup>
+          {% endif %}
+        {% endfor %}
+      </select>
+    </label>
+    <button onclick="loadFactor()" class="primary">查询</button>
+    <button onclick="backtestSingleFactor()" class="warn"
+            title="单独用这个因子跑组合 (top 50 等权, 每 5 天 rebalance), 看历史 NAV vs 沪深300">回测该因子</button>
+  </div>
+  <div id="factor-table" class="small"></div>
+  <div id="ic-chart" class="chart"></div>
+  <div id="single-factor-nav-summary" class="small" style="margin-top:8px"></div>
+  <div id="single-factor-nav-chart" class="chart" style="display:none"></div>
+</div>
+
 <!-- M19: 因子全集总览（builtin/accepted/shadow/rejected/demoted 都列出，每个因子今日 ICIR + 是否入选权重） -->
-<div class="card" id="factors-overview-card">
+<div class="card" id="factors-overview-card" data-tab="factors">
   <h2>📊 因子全集总览
     <span class="small">每个因子每天的 ICIR · 是否入选当前组合 · OOS 战况</span>
   </h2>
@@ -180,7 +206,7 @@
 </div>
 
 <!-- M7-A: 组合净值曲线（扣费后 vs 沪深300） -->
-<div class="card" id="nav-card">
+<div class="card" id="nav-card" data-tab="portfolio">
   <h2>组合净值回测 <span class="small">扣除手续费 / 滑点后的累计净值曲线 vs 沪深300</span></h2>
   <div class="toolbar">
     <button onclick="loadNav()" class="primary">刷新</button>
@@ -192,7 +218,7 @@
 </div>
 
 <!-- P0-2: Paper Trading 前向跟踪 -->
-<div class="card" id="paper-trading-card">
+<div class="card" id="paper-trading-card" data-tab="portfolio">
   <h2>📦 前向跟踪 (Paper Trading)
     <span class="small">把每天系统推荐的组合"假装真买了"，看 N 天后真实表现</span>
   </h2>
@@ -206,13 +232,13 @@
   <div id="paper-cohorts-table" class="small" style="margin-top:12px"></div>
 </div>
 
-<div class="card">
+<div class="card" data-tab="trade">
   <h2>因子归因 <span class="small">今日组合的收益预期由哪些因子贡献</span></h2>
   <div id="attribution-chart" class="chart"></div>
 </div>
 
 <!-- B2 (M15): 今日异动诊断 -->
-<div class="card">
+<div class="card" data-tab="trade">
   <h2>今日异动诊断
     <span class="small">个股贡献 bps + 因子贡献分解</span>
   </h2>
@@ -337,7 +363,7 @@ window.addEventListener('load', () => {
 </script>
 
 <!-- M2 自动因子发现流水 -->
-<div class="card">
+<div class="card" data-tab="factors">
   <h2>自动发现因子流水
     <span class="small" id="proposal-counts"></span>
   </h2>
@@ -363,7 +389,7 @@ window.addEventListener('load', () => {
 </div>
 
 <!-- M16-2: 因子相关性热力图 -->
-<div class="card">
+<div class="card" data-tab="factors">
   <h2>因子相关性矩阵
     <span class="small">cross-section corr 当日截面 — 防止 LLM 推一堆 momentum 变体</span>
   </h2>
@@ -379,7 +405,7 @@ window.addEventListener('load', () => {
 </div>
 
 <!-- A2 (M15): Shadow 战况看板 -->
-<div class="card" id="shadow-card">
+<div class="card" id="shadow-card" data-tab="llm">
   <h2>Shadow 因子战况
     <span class="small">OOS 观察中，等待 promote / demote 判决</span>
   </h2>
@@ -525,7 +551,7 @@ window.addEventListener('load', loadShadowStats);
 </script>
 
 <!-- M14: LLM 因子构建建议（人工审核） -->
-<div class="card">
+<div class="card" data-tab="llm">
   <h2>LLM 因子构建建议
     <span class="small">大模型提议 → 人工审核 → 通过则进入 OOS 观察</span>
   </h2>
@@ -633,6 +659,56 @@ window.addEventListener('load', loadLLMSuggestions);
 #holdings-editor .toolbar input { background: rgba(15,23,42,0.6); border: 1px solid #334155; color: #e2e8f0; padding: 5px 8px; border-radius: 4px; font-family: var(--font-mono); font-size: 13px; }
 #holdings-editor .toolbar input:focus { outline: none; border-color: #5eead4; }
 </style>
+<script>
+// ============================================================
+// /research — Tab 分组切换
+//   4 个 Tab: trade / portfolio / factors / llm
+//   切换走 body[data-active-tab]，CSS 控制 [data-tab] 显隐
+//   URL hash 同步 (#trade #portfolio #factors #llm)
+// ============================================================
+const RESEARCH_TABS = ['trade', 'portfolio', 'factors', 'llm'];
+
+function activateResearchTab(tabKey, opts) {
+  if (!RESEARCH_TABS.includes(tabKey)) tabKey = 'trade';
+  document.body.setAttribute('data-active-tab', tabKey);
+  document.querySelectorAll('#research-tabs .rtab').forEach(btn => {
+    const on = btn.dataset.tab === tabKey;
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  // URL hash 同步 (不触发 scroll)
+  if (!opts || opts.updateHash !== false) {
+    if (location.hash !== '#' + tabKey) {
+      history.replaceState(null, '', '#' + tabKey);
+    }
+  }
+  // 切 tab 后让 ECharts 实例 resize（切回隐藏 → 显示时容器宽度刚刚才有）
+  setTimeout(() => {
+    if (typeof echarts === 'undefined') return;
+    document.querySelectorAll(`[data-tab="${tabKey}"] .chart, [data-tab="${tabKey}"] [id$="-chart"]`).forEach(el => {
+      const inst = echarts.getInstanceByDom(el);
+      if (inst) try { inst.resize(); } catch(e) {}
+    });
+  }, 220);
+}
+
+function setupResearchTabs() {
+  document.querySelectorAll('#research-tabs .rtab').forEach(btn => {
+    btn.addEventListener('click', () => activateResearchTab(btn.dataset.tab));
+  });
+  // 初次从 URL hash 读
+  const initial = (location.hash || '').slice(1);
+  activateResearchTab(RESEARCH_TABS.includes(initial) ? initial : 'trade', { updateHash: false });
+  // 浏览器后退/前进时切换
+  window.addEventListener('hashchange', () => {
+    const k = (location.hash || '').slice(1);
+    activateResearchTab(k, { updateHash: false });
+  });
+}
+// 立即执行（不等 load），避免首屏闪烁全部卡片
+setupResearchTabs();
+</script>
+
 <script>
 // ====== 中文术语映射 ==========
 const DIR_CN  = { long: '做多', short: '做空' };

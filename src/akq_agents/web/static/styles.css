@@ -2168,3 +2168,211 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
 .chat-input textarea:focus {
   border-color: #5eead4;
 }
+
+/* ============================================================
+   /research — Tabs (4 组)
+   ============================================================ */
+.research-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  margin: 0 0 18px;
+  padding: 4px;
+  background: linear-gradient(180deg, rgba(17, 20, 27, 0.92), rgba(11, 13, 18, 0.92));
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+}
+.research-tabs .rtab {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--r-md) - 4px);
+  color: var(--fg-mute);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 160ms var(--ease-out), color 160ms var(--ease-out), transform 160ms var(--ease-out);
+  position: relative;
+  isolation: isolate;
+}
+.research-tabs .rtab:hover {
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--fg);
+}
+.research-tabs .rtab:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.research-tabs .rtab.is-active {
+  background: linear-gradient(180deg, var(--accent-soft), rgba(94, 234, 212, 0.04));
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+.research-tabs .rtab-ico {
+  font-size: 18px;
+  line-height: 1;
+  margin-bottom: 2px;
+  filter: saturate(0.85);
+}
+.research-tabs .rtab.is-active .rtab-ico { filter: none; }
+.research-tabs .rtab-lbl {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.research-tabs .rtab-sub {
+  font-size: 10px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+.research-tabs .rtab.is-active .rtab-sub { color: var(--accent-strong); opacity: 0.85; }
+@media (max-width: 720px) {
+  .research-tabs { padding: 3px; }
+  .research-tabs .rtab { padding: 8px 6px; }
+  .research-tabs .rtab-sub { display: none; }
+}
+
+/* Tab 内容显隐 — 通过 body[data-active-tab] 控制 .card[data-tab] 卡片
+   未激活的 data-tab 卡片 display:none（保留 DOM，所有 JS 继续工作）
+   注意 selector 限定 .card：避免把 nav 里的 .rtab[data-tab] 也隐藏掉 */
+body[data-active-tab="trade"] .card[data-tab]:not([data-tab="trade"]) { display: none !important; }
+body[data-active-tab="portfolio"] .card[data-tab]:not([data-tab="portfolio"]) { display: none !important; }
+body[data-active-tab="factors"] .card[data-tab]:not([data-tab="factors"]) { display: none !important; }
+body[data-active-tab="llm"] .card[data-tab]:not([data-tab="llm"]) { display: none !important; }
+
+/* 切换时淡入动效（只对 card 应用） */
+body[data-active-tab] .card[data-tab] {
+  animation: tab-fade-in 240ms var(--ease-out) both;
+}
+@keyframes tab-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 兼容老 main-row：已经拆掉，但若有遗留旧 CSS 引用，保持中性 */
+
+/* ============================================================
+   KPI overview v2 — 4 主 + 2 次（桌面 >=1100px 时分等级）
+   - 主 KPI 数字加大 (24px)、状态色更克制 (用 token, alpha 0.85)
+   - 次要 KPI 灰一档
+   ============================================================ */
+.kpi-overview.kpi-overview-v2 {
+  grid-template-columns: repeat(4, 1.15fr) repeat(2, 0.85fr);
+}
+.kpi-overview.kpi-overview-v2 .kpi-tile.kpi-primary .kpi-tile-val {
+  font-size: 24px;
+  font-weight: 700;
+}
+.kpi-overview.kpi-overview-v2 .kpi-tile.kpi-secondary {
+  background: linear-gradient(180deg, rgba(15, 18, 24, 0.94), rgba(10, 12, 16, 0.94));
+}
+.kpi-overview.kpi-overview-v2 .kpi-tile.kpi-secondary .kpi-tile-val {
+  font-size: 18px;
+  color: var(--fg-mute);
+}
+.kpi-overview.kpi-overview-v2 .kpi-tile.kpi-secondary .kpi-tile-lbl {
+  color: var(--fg-dim);
+  opacity: 0.78;
+}
+/* 状态色更克制：用 token (token 已经是 80% 饱和度) + 弱 glow 而非强对比 */
+.kpi-overview.kpi-overview-v2 .kpi-tile-val.metric-good {
+  color: var(--ok);
+  text-shadow: 0 0 12px rgba(52, 211, 153, 0.15);
+}
+.kpi-overview.kpi-overview-v2 .kpi-tile-val.metric-bad {
+  color: var(--err);
+  text-shadow: 0 0 12px rgba(248, 113, 113, 0.15);
+}
+@media (max-width: 1100px) {
+  .kpi-overview.kpi-overview-v2 { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 640px) {
+  .kpi-overview.kpi-overview-v2 { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ============================================================
+   /ops — 健康度卡片化（复用 kpi-overview 视觉，但简化）
+   ============================================================ */
+.health-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.health-kpi-row .hk {
+  background: linear-gradient(180deg, rgba(20, 24, 32, 0.94), rgba(13, 16, 22, 0.94));
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.health-kpi-row .hk-lbl {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.health-kpi-row .hk-val {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  color: var(--fg);
+  letter-spacing: -0.015em;
+}
+.health-kpi-row .hk-sub {
+  font-size: 11px;
+  color: var(--fg-mute);
+  line-height: 1.4;
+}
+.health-kpi-row .hk-sub code { font-size: 10.5px; color: var(--fg-dim); }
+@media (max-width: 1024px) {
+  .health-kpi-row { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .health-kpi-row { grid-template-columns: 1fr; }
+}
+
+/* 状态 pill — 圆角小标签，用于"运行中 / 未运行" */
+.pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 2px;
+}
+.pill.alive {
+  background: var(--ok-soft);
+  color: var(--ok);
+  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.32);
+}
+.pill.dead {
+  background: var(--err-soft);
+  color: var(--err);
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.32);
+}
+
+/* ============================================================
+   全局 polish：数字列右对齐 + 表格 zebra 更淡
+   ============================================================ */
+table td.num, table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* zebra 更淡 — 原来 bg-3 太硬，用 bg-1 上 alpha 4% */
+tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.012); }
+tbody tr:hover td { background: var(--accent-soft); transition: background 120ms; }
