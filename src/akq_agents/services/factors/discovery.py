@@ -787,17 +787,21 @@ class DiscoveryEngine:
 def restore_accepted_factors(
     registry: FactorRegistry, proposal_store: FactorProposalStore
 ) -> int:
-    """启动期：把数据库里 status='accepted' 的因子重新 register 到内存 registry。
+    """启动期：把数据库里 status='accepted' 或 'shadow' 的因子 register 到内存 registry。
 
-    注意 list_accepted() 现在同时返回 accepted + shadow，但 shadow 不参与组合 →
-    我们这里只 register 真 accepted。
+    M19: 之前只 register accepted, shadow 因子永远没机会参与组合 (得等 ≥20 OOS 天数 + |IR|≥0.15
+    promote 到 accepted 才行). 现在 builtin/accepted/shadow 都进 registry, 由
+    CompositeScorer 用 min_abs_ir 阈值统一筛选 — 表现达标就用, 不分来源。
+
+    rejected/demoted 不 restore (recipe 已经被人工/自动判定不行)。
     """
     from akq_agents.services.factors.proposal_store import recipe_from_json
 
     count = 0
     for p in proposal_store.list_accepted():
-        if p.status != "accepted":
-            continue  # shadow 不进 registry
+        # list_accepted 返回 accepted + shadow (proposal_store.py:154 注释)
+        if p.status not in ("accepted", "shadow"):
+            continue
         try:
             recipe = recipe_from_json(p.recipe_json)
             factor = make_factor(recipe)

@@ -134,8 +134,12 @@
       </select>
     </label>
     <button onclick="loadPortfolio()" class="primary">查询</button>
+    <button onclick="recomputeTodayPortfolio(this)" class="warn"
+            title="基于最新因子表现 (含 shadow / 新 backfill 历史) 重跑今日组合, 约 30-90 秒"
+            id="btn-recompute-portfolio">🔄 重算今日组合</button>
     <span class="sep"></span>
     <span id="portfolio-summary" class="small" style="margin-left:0"></span>
+    <span id="recompute-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
   </div>
   <div id="industry-chart" class="chart chart-compact"></div>
   <div class="holdings-scroll">
@@ -744,6 +748,24 @@ const BASE_CN = {
   vwap: '成交均价', ret: '收益率',
 };
 function cnOf(map, k) { return map[k] || k; }
+
+// M19: 重算今日组合 — 基于最新因子表现 (含 shadow + 新 backfill) 重跑 batch.post_close
+async function recomputeTodayPortfolio(btn) {
+  await runLongOperation({
+    button: btn || document.getElementById('btn-recompute-portfolio'),
+    url: '/api/control/jobs/batch.post_close/trigger',
+    statusEl: document.getElementById('recompute-status'),
+    runningMessage: '重新计算组合 (约 60s)',
+    successMessage: '完成, 已用最新因子表现重算今日组合',
+    onSuccess: () => {
+      // 刷新所有依赖 portfolio_snapshots 的卡片
+      try { loadPortfolio(); } catch (e) {}
+      try { loadKpiOverview(); } catch (e) {}
+      try { loadTradeList(); } catch (e) {}
+      try { loadDailyAttribution(); } catch (e) {}
+    },
+  });
+}
 
 async function loadPortfolio() {
   const date = document.getElementById('portfolio-date').value;

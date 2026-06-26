@@ -81,7 +81,11 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
         registry.attach_evaluator(evaluator)
         services["factor_evaluator"] = evaluator
         services["preprocessor"] = Preprocessor()
-        services["composite_scorer"] = CompositeScorer(weighting="ir", evaluator=evaluator)
+        # M19: min_abs_ir=0.10 — 因子最近 EWMA |IR| < 0.10 不进组合 (公平筛选,
+        # builtin/accepted/shadow 同标准). 调整: 改 config/system.yaml 暴露此参数。
+        services["composite_scorer"] = CompositeScorer(
+            weighting="ir", evaluator=evaluator, min_abs_ir=0.10,
+        )
         services["portfolio_optimizer"] = PortfolioOptimizer(
             OptimizerConfig(top_n=50, max_single_weight=0.05, turnover_aversion=0.7, max_industry_weight=0.30)
         )

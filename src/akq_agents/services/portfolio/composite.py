@@ -2,8 +2,11 @@
 
 支持两种加权模式：
 - ``equal``: 等权（默认 fallback）；
-- ``ir``: 按因子最近一次 |IR| 加权（取 max(IR, 0) 归一化；负 IR 视为 0；
-  没有 metric 的因子兜底按 equal share 分配，避免新发现的因子被永远 0 权重）。
+- ``ir``: 按因子最近一次 |IR| 加权（取 max(IR, 0) 归一化；负 IR 视为 0）。
+
+M19: 加 ``min_abs_ir`` 阈值 (默认 0.10), 低于阈值的因子权重直接 0 — 让 builtin/auto/llm
+来源不同但表现差的因子统一退场。配合 ``restore_accepted_factors`` 也带 shadow 因子,
+表现达标的 shadow LLM 因子会立即参与今日组合, 不必等 20 天 OOS promote。
 """
 
 from __future__ import annotations
@@ -16,11 +19,18 @@ import pandas as pd
 class CompositeScorer:
     """因子合成器。"""
 
-    def __init__(self, weighting: str = "equal", evaluator: Any | None = None) -> None:
+    def __init__(
+        self,
+        weighting: str = "equal",
+        evaluator: Any | None = None,
+        *,
+        min_abs_ir: float = 0.10,
+    ) -> None:
         if weighting not in {"equal", "ir"}:
             raise ValueError(f"weighting must be 'equal' or 'ir', got {weighting!r}")
         self._weighting = weighting
         self._evaluator = evaluator
+        self._min_abs_ir = float(min_abs_ir)
         self._last_weights: pd.Series = pd.Series(dtype=float)
 
     def score(self, factor_df: pd.DataFrame, *, as_of_date: Any = None) -> pd.Series:
@@ -102,17 +112,17 @@ class CompositeScorer:
                     ir_value = max(float(m.ir), 0.0)
             irs[name] = ir_value if ir_value is not None else -1.0
 
-        # missing 兜底
-        valid = [v for v in irs.values() if v >= 0.0]
-        if not valid:
-            return pd.Series(1.0 / n, index=factor_names, dtype=float)
-        median_v = float(pd.Series(valid).median())
+        # M19: 公平筛选 — builtin/auto/llm 不分来源, 用 min_abs_ir 阈值过滤
+        # (默认 0.10). missing IR 视作 0 (不参与组合); 之前用 median 兜底是为了让
+        # "新因子有机会"补 IR, 但加了入库 90 天 backfill 后这个保护过时了 —
+        # 真"missing"的因子说明 backfill 也算不出 IC, 不该硬塞。
         for name, v in list(irs.items()):
-            if v < 0:
-                irs[name] = max(median_v, 0.0)
+            if v < self._min_abs_ir:  # missing (-1.0) 或低于阈值
+                irs[name] = 0.0
 
         total = sum(irs.values())
         if total <= 0:
+            # 全部因子都未达阈值: 退到等权 (兜底, 至少能出组合)
             return pd.Series(1.0 / n, index=factor_names, dtype=float)
         return pd.Series({name: v / total for name, v in irs.items()}, dtype=float)
 
