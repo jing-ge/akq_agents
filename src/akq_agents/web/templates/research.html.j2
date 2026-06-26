@@ -235,8 +235,19 @@ async function loadDailyAttribution() {
   try {
     const r = await fetch(`/api/research/daily-attribution?date=${date}`);
     if (!r.ok) {
-      const d = await r.json();
-      renderFetchError(out, { detail: d.detail, status: r.status });
+      const d = await r.json().catch(() => ({}));
+      const detail = typeof d.detail === 'string' ? d.detail : '';
+      // 404 "该日期无组合快照" 不是系统错误, 是用户场景 (例如选了今天但 post_close 还没跑)。
+      // 渲染温和提示而不是红色 ⚠️, 引导用户选有数据的日期。
+      if (r.status === 404 && detail.includes('无组合快照')) {
+        out.innerHTML = `<div class="empty-state" style="padding:24px;text-align:center;color:var(--fg-mute)">
+          <div style="font-size:14px;margin-bottom:6px">📅 ${date} 还没有组合快照</div>
+          <div class="small">post_close 每天盘后 16:30 跑出来; 今天还没盘后或者非交易日, 都没今日数据。
+            选最近一个工作日 (今日组合卡片左上 "日期" 下拉里那些) 看历史归因。</div>
+        </div>`;
+      } else {
+        renderFetchError(out, { detail: d.detail, status: r.status });
+      }
       status.textContent = '';
       return;
     }
@@ -312,9 +323,14 @@ if (typeof formatErrorDetail === 'undefined') {
 }
 
 window.addEventListener('load', () => {
-  const today = new Date().toISOString().slice(0, 10);
+  // 默认日期 = 最近一个有组合快照的日期 (snapshot_dates 上下文已经 DESC 排序),
+  // 不是 today — 今天还没盘后跑 post_close 时, portfolio_snapshots 没今日行,
+  // endpoint 必 404 给用户看 "请求失败" 像系统坏了。fallback to today 保底。
+  const latestSnapshot = {{ snapshot_dates[0] | tojson if snapshot_dates else 'null' }};
+  const fallbackToday = new Date().toISOString().slice(0, 10);
+  const defaultDate = latestSnapshot || fallbackToday;
   const di = document.getElementById('attr-date');
-  if (di && !di.value) di.value = today;
+  if (di && !di.value) di.value = defaultDate;
   // 延迟 1.5s 自动加载一次今日异动诊断（仿 correlation 的延迟加载）
   setTimeout(() => { try { loadDailyAttribution(); } catch (e) {} }, 1500);
 });
