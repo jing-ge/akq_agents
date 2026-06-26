@@ -356,6 +356,152 @@ async def factor_metrics(name: str, limit: int = Query(default=120, ge=1, le=500
     }
 
 
+@router.post("/factors/{name}/backtest-single")
+async def backtest_single_factor(
+    name: str,
+    days: int = Query(default=90, ge=10, le=500),
+    rebalance_step: int = Query(default=5, ge=1, le=20),
+    top_n: int = Query(default=50, ge=5, le=200),
+) -> dict[str, Any]:
+    """M19: 单因子组合回测 — 用该因子单独打分跑组合, 返回 NAV 曲线 vs 沪深300.
+
+    设计:
+    - 每 ``rebalance_step`` 天 rebalance 一次, 取该因子 top ``top_n`` 等权 (不行业中性,
+      不 IR 加权 — 看裸信号能力)
+    - direction='short' 因子取最小值, 否则最大
+    - 复用 PortfolioBacktester.backtest_in_memory 算 NAV + cost + benchmark, 不写表
+    - 返回前端画图所需 DataFrame + summary
+
+    用户场景: 选一个 shadow 因子, 一键看"如果让它单独跑组合, 历史上能赚多少钱 vs 沪深300"。
+    """
+    svc: ServiceContainer = get_services()
+    if svc.repo is None or svc.workflow is None:
+        raise HTTPException(503, "services not ready")
+    backtester = svc.workflow.services.get("portfolio_backtester")
+    engine = svc.workflow.services.get("discovery_engine")
+    if backtester is None or engine is None:
+        raise HTTPException(503, "backtester / discovery_engine not ready")
+
+    # 拿 factor 实例 (优先 registry, 否则从 proposal_store 用 recipe make_factor)
+    factor = _resolve_factor_by_name(svc, name)
+    if factor is None:
+        raise HTTPException(404, f"factor not found or unmakeable: {name}")
+
+    # 1) 准备数据
+    from datetime import date as _d
+    from datetime import timedelta as _td
+
+    import pandas as _pd
+
+    as_of = _d.today()
+    try:
+        ohlcv, _ = engine._prepare_data(as_of)  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"prepare_data failed: {exc}")
+    if ohlcv.empty:
+        try:
+            ohlcv, _ = engine._prepare_data(as_of - _td(days=1))  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+    if ohlcv.empty:
+        raise HTTPException(503, "no ohlcv data available")
+
+    close = ohlcv.pivot_table(
+        index="date", columns="symbol", values="close", aggfunc="last"
+    ).sort_index()
+    all_dates = list(close.index)
+    if len(all_dates) < days + 5:
+        raise HTTPException(400,
+            f"insufficient history: only {len(all_dates)} days, need {days+5}")
+
+    # 2) 算因子完整 history (一次性, 复用 discovery)
+    try:
+        factor_history = engine._compute_factor_history(factor, ohlcv, close.index)  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"compute_factor_history failed: {exc}")
+    if factor_history is None or factor_history.empty:
+        raise HTTPException(400, "factor_history empty (因子算不出值)")
+
+    # 3) 每 rebalance_step 天选 top N → 等权
+    direction = getattr(factor, "direction", "long")
+    ascending = (direction == "short")  # short 因子取最小
+    weights_by_date: dict[str, dict[str, float]] = {}
+    sample_dates = all_dates[-days::rebalance_step]
+    for d in sample_dates:
+        if d not in factor_history.index:
+            continue
+        row = factor_history.loc[d].dropna()
+        if len(row) < top_n:
+            continue
+        picks = row.sort_values(ascending=ascending).head(top_n).index.tolist()
+        w = 1.0 / len(picks)
+        weights_by_date[d.isoformat() if hasattr(d, "isoformat") else str(d)] = {
+            sym: w for sym in picks
+        }
+
+    if not weights_by_date:
+        raise HTTPException(400, "no valid rebalance dates (因子值缺失或股票不足)")
+
+    # 4) 跑回测
+    try:
+        result = backtester.backtest_in_memory(weights_by_date)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"backtest failed: {exc}")
+
+    if result.nav.empty:
+        return {
+            "ok": False,
+            "factor_name": name,
+            "reason": result.summary.get("reason", "empty_nav"),
+            "summary": result.summary,
+        }
+
+    # 5) 返回前端可直接画图的数据
+    nav_records = result.nav.to_dict(orient="records")
+    return {
+        "ok": True,
+        "factor_name": name,
+        "direction": direction,
+        "config": {
+            "days": days,
+            "rebalance_step": rebalance_step,
+            "top_n": top_n,
+            "n_rebalances": len(weights_by_date),
+        },
+        "summary": result.summary,
+        "nav": nav_records,  # 每行: {as_of_date, nav_net, nav_gross, daily_return_net, turnover, cost, benchmark_nav, benchmark_return}
+    }
+
+
+def _resolve_factor_by_name(svc: ServiceContainer, name: str):
+    """从 registry 或 proposal_store 反解一个 Factor 实例; 找不到返 None."""
+    if svc.factor_registry is not None:
+        for f in svc.factor_registry.list_all():
+            if f.name == name:
+                return f
+    # registry 里没有, 去 proposal_store 用 recipe 重建
+    if svc.proposal_store is None or svc.repo is None:
+        return None
+    try:
+        from akq_agents.services.data.repository import open_meta_db
+        from akq_agents.services.factors.discovery import make_factor
+        from akq_agents.services.factors.proposal_store import recipe_from_json
+        db_path = svc.repo._base_dir / "meta.db"
+        with open_meta_db(db_path) as conn:
+            row = conn.execute(
+                "SELECT recipe_json FROM factor_proposals WHERE factor_name=?",
+                (name,),
+            ).fetchone()
+        if row is None:
+            return None
+        recipe = recipe_from_json(row[0])
+        factor = make_factor(recipe)
+        factor.name = name  # type: ignore[attr-defined]
+        return factor
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ============================================================
 # M14: LLM 因子构建方向（brainstorm）
 # ============================================================

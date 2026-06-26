@@ -109,6 +109,44 @@ class PortfolioBacktester:
         ])
 
     # ------------------------------------------------------------------
+    # M19: 单因子回测公开 API
+    # ------------------------------------------------------------------
+
+    def backtest_in_memory(
+        self,
+        weights_by_date: dict[str, dict[str, float]],
+        start: date | None = None,
+        end: date | None = None,
+    ) -> BacktestResult:
+        """跑一次内存回测 (不写 portfolio_nav 表), 复用 _replay 的 NAV 算法.
+
+        Args:
+            weights_by_date: {as_of_date_iso: {symbol: weight}} — 每个 rebalance 日的目标权重
+            start / end: 拉 close 的区间; 默认从最早 snapshot_date 到 today
+
+        Returns:
+            BacktestResult(nav=DataFrame, summary=dict). 不写表, 调用方自己处理结果。
+
+        典型用法 (单因子回测): 生成"如果只用某因子打分跑组合"的虚拟 weights → 拿 NAV 曲线
+        vs benchmark, 评估单因子的赚钱能力。
+        """
+        if not weights_by_date:
+            return BacktestResult(nav=pd.DataFrame(), summary={"reason": "no_weights"})
+
+        snapshot_dates = sorted(weights_by_date.keys())
+        symbols = sorted({s for d in weights_by_date.values() for s in d})
+
+        start = start or date.fromisoformat(snapshot_dates[0])
+        end = end or date.today()
+        close = self._load_close(symbols + [self._cfg.benchmark_symbol], start, end)
+        if close.empty:
+            return BacktestResult(nav=pd.DataFrame(), summary={"reason": "no_close_data"})
+
+        nav_df = self._replay(weights_by_date, close)
+        summary = self._summarize(nav_df)
+        return BacktestResult(nav=nav_df, summary=summary)
+
+    # ------------------------------------------------------------------
 
     def _list_snapshot_dates(self) -> list[str]:
         with open_meta_db(self._db) as conn:

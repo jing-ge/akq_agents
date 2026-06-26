@@ -147,9 +147,13 @@
         </select>
       </label>
       <button onclick="loadFactor()" class="primary">查询</button>
+      <button onclick="backtestSingleFactor()" class="warn"
+              title="单独用这个因子跑组合 (top 50 等权, 每 5 天 rebalance), 看历史 NAV vs 沪深300">回测该因子</button>
     </div>
     <div id="factor-table" class="small"></div>
     <div id="ic-chart" class="chart"></div>
+    <div id="single-factor-nav-summary" class="small" style="margin-top:8px"></div>
+    <div id="single-factor-nav-chart" class="chart" style="display:none"></div>
   </div>
 </div>
 
@@ -839,6 +843,84 @@ async function loadFactor() {
       series: series,
     });
   } catch (e) { renderFetchError(tableEl, e); }
+}
+
+// M19: 单因子组合回测 — 选一个因子, 单独跑 top 50 等权组合, 看 NAV vs 沪深300
+async function backtestSingleFactor() {
+  const name = document.getElementById('factor-name').value;
+  if (!name) return;
+  const sumEl = document.getElementById('single-factor-nav-summary');
+  const chartEl = document.getElementById('single-factor-nav-chart');
+  sumEl.textContent = `正在回测 ${name} (top 50 等权, 每 5 天 rebalance, 90 天历史)…`;
+  chartEl.style.display = 'none';
+  try {
+    const r = await fetch(`/api/research/factors/${encodeURIComponent(name)}/backtest-single?days=90&rebalance_step=5&top_n=50`, {method: 'POST'});
+    if (!r.ok) {
+      const detail = await r.text();
+      sumEl.innerHTML = `<span style="color:#fb7185">回测失败 (HTTP ${r.status}): ${detail.slice(0, 200)}</span>`;
+      return;
+    }
+    const d = await r.json();
+    if (!d.ok) {
+      sumEl.innerHTML = `<span style="color:#fbbf24">回测无结果: ${d.reason || 'unknown'}</span>`;
+      return;
+    }
+    // 1) summary 卡片
+    const s = d.summary || {};
+    const fmtPct = v => v == null ? '—' : (v * 100).toFixed(2) + '%';
+    const fmt = (v, n=2) => v == null ? '—' : Number(v).toFixed(n);
+    sumEl.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;background:rgba(94,234,212,0.05);padding:10px;border-radius:6px;border:1px solid rgba(94,234,212,0.2)">
+        <div><span style="color:#94a3b8">回测天数</span><br/><b>${s.n_days || 0}</b></div>
+        <div><span style="color:#94a3b8">累计收益(net)</span><br/><b style="color:${(s.total_return_net||0) >= 0 ? '#34d399' : '#fb7185'}">${fmtPct(s.total_return_net)}</b></div>
+        <div><span style="color:#94a3b8">年化收益</span><br/><b style="color:${(s.annualized_return_net||0) >= 0 ? '#34d399' : '#fb7185'}">${fmtPct(s.annualized_return_net)}</b></div>
+        <div><span style="color:#94a3b8">Sharpe</span><br/><b>${fmt(s.sharpe_net)}</b></div>
+        <div><span style="color:#94a3b8">最大回撤</span><br/><b style="color:#fb7185">${fmtPct(s.max_drawdown)}</b></div>
+        <div><span style="color:#94a3b8">vs HS300 超额</span><br/><b style="color:${(s.excess_return||0) >= 0 ? '#34d399' : '#fb7185'}">${fmtPct(s.excess_return)}</b></div>
+        <div><span style="color:#94a3b8">换手率(均)</span><br/><b>${fmtPct(s.avg_turnover_per_rebalance)}</b></div>
+        <div><span style="color:#94a3b8">总成本</span><br/><b style="color:#94a3b8">${fmtPct(s.total_cost)}</b></div>
+      </div>
+      <div style="color:#6b748a;margin-top:6px;font-size:11px">
+        配置: ${d.config.n_rebalances} 次 rebalance · top ${d.config.top_n} 等权 · direction=${d.direction} · 不行业中性, 不 IR 加权 (裸信号)
+        ${s.excess_aligned_to ? ` · 超额对齐到 ${s.excess_aligned_to}` : ''}
+      </div>
+    `;
+    // 2) NAV 曲线
+    if (typeof echarts === 'undefined') return;
+    chartEl.style.display = '';
+    chartEl.style.height = '320px';
+    const chart = echarts.init(chartEl);
+    const dates = d.nav.map(r => r.as_of_date);
+    const navNet = d.nav.map(r => r.nav_net);
+    const navGross = d.nav.map(r => r.nav_gross);
+    const benchNav = d.nav.map(r => r.benchmark_nav);
+    chart.setOption({
+      backgroundColor: 'transparent',
+      textStyle: { color: '#aab2c5', fontFamily: 'inherit' },
+      title: { text: `${name} 单因子组合 NAV (扣费 net vs 毛 gross vs 沪深300)`, left: 14, top: 10,
+               textStyle: { color: '#e6e9f0', fontSize: 13, fontWeight: 600 } },
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(17,20,27,0.95)',
+                 borderColor: '#2e3648', textStyle: { color: '#e6e9f0' } },
+      legend: { textStyle: { color: '#aab2c5' }, right: 10, top: 8 },
+      grid: { left: 50, right: 24, top: 50, bottom: 36 },
+      xAxis: { type: 'category', data: dates,
+               axisLabel: { color: '#6b748a', fontSize: 10 },
+               axisLine: { lineStyle: { color: '#2e3648' } } },
+      yAxis: { type: 'value', axisLabel: { color: '#6b748a', fontSize: 10 },
+               axisLine: { show: false },
+               splitLine: { lineStyle: { color: '#232936', type: 'dashed' } } },
+      series: [
+        { name: 'NAV (净)', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#5eead4', width: 2.5 }, itemStyle: { color: '#5eead4' }, data: navNet },
+        { name: 'NAV (毛)', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#60a5fa', width: 1.2, type: 'dashed' }, itemStyle: { color: '#60a5fa' }, data: navGross },
+        { name: '沪深300', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#fbbf24', width: 1.5 }, itemStyle: { color: '#fbbf24' }, data: benchNav },
+      ],
+    });
+  } catch (e) {
+    sumEl.innerHTML = `<span style="color:#fb7185">回测异常: ${e.message || e}</span>`;
+  }
 }
 
 // M19: 因子全集总览 — 每个因子每天的 ICIR + 是否入选权重
