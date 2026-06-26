@@ -621,13 +621,33 @@ function renderLLMSuggestions(rows) {
 }
 
 async function reviewLLM(name, action) {
+  // M19: accept 现在同步跑 90 天 IS-IC backfill 约 30 秒, 必须给 loading 提示 +
+  // 禁用按钮防重复点击 (event.target 拿到点的那一行的按钮即可)。
+  const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+  let restoreLabel = null;
+  if (btn) {
+    restoreLabel = btn.innerHTML;
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    btn.innerHTML = action === 'accept' ? '处理中…(约30秒)' : '处理中…';
+  }
   try {
     const r = await fetch(`/api/research/factors/llm-suggestions/${encodeURIComponent(name)}/${action}`, {method:'POST'});
     const d = await r.json();
     if (!r.ok) { toast('失败：' + formatErrorDetail(d), 'error'); return; }
-    toast(`${name} → ${action === 'accept' ? '已接受（进入 shadow 观察）' : '已拒绝'}`, 'ok');
+    const tail = (action === 'accept' && d.is_ic && d.is_ic.ok)
+      ? `（IS IR=${(d.is_ic.ir ?? 0).toFixed(3)}, ${d.is_ic.n_metrics_written || 0} 行历史）`
+      : '';
+    toast(`${name} → ${action === 'accept' ? '已接受' + tail : '已拒绝'}`, 'ok');
     loadLLMSuggestions();
   } catch (e) { toast('网络错误：' + e.message, 'error'); }
+  finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove('is-loading');
+      if (restoreLabel != null) btn.innerHTML = restoreLabel;
+    }
+  }
 }
 
 // 页面加载时自动拉一次

@@ -123,6 +123,27 @@
         if (onError) try { onError(data); } catch (e) {}
         return { ok: false, data, status: r.status };
       }
+      // M19: 业务层 noop (HTTP 200 + ok:false/status:noop) — 不能当成功。
+      // 典型场景: JobRunner 撞 (job_id, partition) UNIQUE 返 ALREADY_OK 防重复触发,
+      // 或 control endpoint 检测到当天/当小时已跑过. 用户点完按钮要看到"⏭ 已跑过"提示,
+      // 而不是 ✅ 完成 (会误导用户以为有新结果)。
+      const isNoop = data && (
+        data.status === 'noop' ||
+        (data.ok === false && data.reason_code) ||
+        data.reason_code === 'ALREADY_OK'
+      );
+      if (isNoop) {
+        stopTicker();
+        const code = data.reason_code || data.status || 'noop';
+        const friendly = {
+          ALREADY_OK: '⏭ 今天/本小时已经跑过一次，跳过（同 partition 防重）',
+          NOT_TRADING_DAY: '⏭ 今天非交易日，跳过',
+          GUARD_ERROR: '⏭ 前置检查不通过',
+        }[code] || `⏭ ${code}`;
+        setStatus(friendly, 'status-warn');
+        if (onError) try { onError(data); } catch (e) {}
+        return { ok: false, noop: true, data };
+      }
       if (!pollUrl) {
         stopTicker();
         setStatus(`✅ ${successMessage || (data && data.result) || '完成'}`, 'status-ok');
