@@ -43,6 +43,17 @@ scheduler:
       hour: 17
       minute: 30
       timeout_s: 1800
+    # M19: 因子池淘汰 (每周一 03:00) — 量化打分 + 排序删低分,
+    # 防止 factor_proposals 池子无限膨胀; 总盘上限 300 个
+    factor_eviction:
+      enabled: true
+      day_of_week: "mon"
+      hour: 3
+      minute: 0
+      timeout_s: 300
+      max_pool_size: 300
+      min_score: 0.05
+      new_factor_grace_days: 14
     # M18-I7: 之前 default 隐式生效，现显式化让 ops 一目了然
     factor_discovery:
       enabled: true

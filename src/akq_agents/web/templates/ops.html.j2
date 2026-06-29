@@ -38,6 +38,9 @@
     <button class="warn"
             title="重算所有 90 天历史 IC 覆盖 db, ~10-15 分钟。数据修复 / 怀疑历史错算时用"
             onclick="confirmAndDeepResearchFull(this)">重算因子表现 (full · 全量)</button>
+    <button class="safe"
+            title="按 factor_score 量化打分淘汰低效因子, 防止池子无限膨胀"
+            onclick="evictFactors(this)">🗑 淘汰低效因子</button>
   </div>
   <pre id="control-output" class="console-output"></pre>
 </div>
@@ -47,6 +50,47 @@
 function confirmAndDeepResearchFull(btn) {
   if (!confirm('full 模式将重算所有因子过去 90 天的 IC, 覆盖 db, 约 10-15 分钟。\n\n确认继续吗?')) return;
   doAction(btn, '/api/control/jobs/batch.deep_research/trigger?force_full=true', 'POST');
+}
+
+// M19: 因子淘汰 — 默认先 dry_run 看名单, 用户在 console output 看准了再点真删
+async function evictFactors(btn) {
+  // 第 1 步: dry_run 看待淘汰名单
+  btn.disabled = true;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '⏳ 计算淘汰名单中...';
+  try {
+    const r = await fetch('/api/control/jobs/factor.eviction/trigger?dry_run=true', {method: 'POST'});
+    const d = await r.json();
+    const out = document.getElementById('control-output');
+    const payload = d.payload || {};
+    const victims = payload.victims || [];
+    out.textContent = '== DRY RUN 待淘汰名单 (前 ' + Math.min(victims.length, 30) + '/' + (payload.victims_n||0) + ') ==\n'
+      + 'pool: ' + (payload.pool_total_before||0) + ' → ' + (payload.pool_total_before - (payload.victims_n||0)) + '\n'
+      + 'min_score=' + (payload.min_score||0) + ', max_pool_size=' + (payload.max_pool_size||0) + '\n\n'
+      + victims.slice(0, 30).map(v => `  ${v.name.padEnd(60)} score=${(v.score||0).toFixed(3)} status=${v.status} reason=${v.reason}`).join('\n');
+    if (!victims.length) {
+      btn.innerHTML = orig;
+      btn.disabled = false;
+      alert('当前没有需要淘汰的因子');
+      return;
+    }
+    // 第 2 步: 用户确认后真删
+    if (!confirm(`待淘汰 ${payload.victims_n} 个因子, 名单已显示在 console output。\n\n确认真删除吗?(物理删除 factor_proposals + factor_metrics, 不可恢复)`)) {
+      btn.innerHTML = orig;
+      btn.disabled = false;
+      return;
+    }
+    btn.innerHTML = '⏳ 执行删除...';
+    const r2 = await fetch('/api/control/jobs/factor.eviction/trigger', {method: 'POST'});
+    const d2 = await r2.json();
+    const p2 = d2.payload || {};
+    out.textContent += '\n\n== 执行结果 ==\n实际淘汰: ' + (p2.victims_n||0) + ' 个, pool ' + (p2.pool_total_before||0) + ' → ' + (p2.pool_total_after||0);
+  } catch (e) {
+    alert('淘汰失败: ' + (e.message || e));
+  } finally {
+    btn.innerHTML = orig;
+    btn.disabled = false;
+  }
 }
 </script>
 

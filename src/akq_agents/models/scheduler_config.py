@@ -80,7 +80,7 @@ class FactorBrainstormConfig(BaseModel):
 class FactorPromoteShadowsConfig(BaseModel):
     """Shadow 因子 OOS 评估 / 晋升 / 降级 job（每日 cron 17:30）。
 
-    M19: 之前 _promote_shadows 耦合在 factor.discovery 主流程中段, ohlcv empty 时
+    M19: 之前 _promote_shadows 耦合在 factor.discovery 主流程, ohlcv empty 时
     discovery 直接 return 不调用它, 导致 shadow OOS 计数永远 NULL. 拆出来独立 daily 跑,
     与 discovery 解耦。
     """
@@ -89,6 +89,24 @@ class FactorPromoteShadowsConfig(BaseModel):
     hour: int = 17
     minute: int = 30
     timeout_s: int = 1800
+
+
+class FactorEvictionConfig(BaseModel):
+    """因子池淘汰 job (M19 weekly 周一 03:00)。
+
+    用量化 factor_score = 0.5*|EWMA_30d_IR| + 0.3*|t_stat|/3 + 0.2*status_weight 排序,
+    低分 + 超出 max_pool_size 的物理删除. 不给 builtin/accepted 绝对保护 (统一量化指标)。
+    """
+
+    enabled: bool = True
+    day_of_week: str = "mon"
+    hour: int = 3
+    minute: int = 0
+    timeout_s: int = 300
+    # 淘汰参数
+    max_pool_size: int = 300              # 总盘硬上限
+    min_score: float = 0.05               # 软淘汰阈值
+    new_factor_grace_days: int = 14       # 新因子保护期 (仅对 shadow/llm_suggested/accepted 生效)
 
 
 class AlerterConfig(BaseModel):
@@ -120,6 +138,7 @@ class SchedulerJobsConfig(BaseModel):
     factor_discovery: FactorDiscoveryConfig = Field(default_factory=FactorDiscoveryConfig)
     factor_brainstorm: FactorBrainstormConfig = Field(default_factory=FactorBrainstormConfig)
     factor_promote_shadows: FactorPromoteShadowsConfig = Field(default_factory=FactorPromoteShadowsConfig)
+    factor_eviction: FactorEvictionConfig = Field(default_factory=FactorEvictionConfig)
     data_refresh: DataRefreshConfig = Field(default_factory=DataRefreshConfig)
     alerter: AlerterConfig = Field(default_factory=AlerterConfig)
 

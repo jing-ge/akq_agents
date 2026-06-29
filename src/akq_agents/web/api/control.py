@@ -31,7 +31,7 @@ router = APIRouter()
 # ---------- manual job trigger --------------------------------------------
 
 
-_SUPPORTED_JOBS = {"batch.post_close", "batch.deep_research", "factor.discovery"}
+_SUPPORTED_JOBS = {"batch.post_close", "batch.deep_research", "factor.discovery", "factor.eviction"}
 
 
 def _manual_partition(base: str) -> str:
@@ -46,7 +46,7 @@ def _manual_partition(base: str) -> str:
 
 
 @router.post("/jobs/{name}/trigger")
-async def trigger_job(name: str, n_candidates: int = 20, force_full: bool = False) -> dict[str, Any]:
+async def trigger_job(name: str, n_candidates: int = 20, force_full: bool = False, dry_run: bool = False) -> dict[str, Any]:
     """同步触发 job。C5: 走 JobRunner 写 job_runs/events，与 daemon cron 路径一致。
 
     M19: partition 改成 `{base}-manual-{hex6}` 唯一格式, **手动触发不走幂等**, 用户
@@ -57,6 +57,7 @@ async def trigger_job(name: str, n_candidates: int = 20, force_full: bool = Fals
         force_full: 仅对 batch.deep_research 生效. False (默认, fast 模式) — 只算 db
             缺失的日期, 通常几分钟跑完. True (full 模式) — 重算全部 90 天历史 IC 覆盖
             db, ~10-15 分钟. 数据修复 / 怀疑历史错算时用。
+        dry_run: 仅对 factor.eviction 生效. True — 只统计待淘汰名单不真删, 用户先看准了再执行。
     """
     if name not in _SUPPORTED_JOBS:
         raise HTTPException(404, f"unknown job: {name}")
@@ -120,6 +121,24 @@ async def trigger_job(name: str, n_candidates: int = 20, force_full: bool = Fals
         # 手动 partition 用 hour 桶 + manual 后缀, 跟 daemon cron hour 桶分开命名空间
         discovery_partition = _manual_partition(_partition_for_now())
         result = svc.job_runner.run(JOB_ID, discovery_partition, _do_discovery, timeout_s=900)
+        return {
+            "status": result.status,
+            "reason_code": result.reason_code,
+            "payload": result.payload,
+        }
+
+    if name == "factor.eviction":
+        from akq_agents.orchestrator.jobs.factor_eviction import _do as _do_eviction
+        from akq_agents.orchestrator.jobs.factor_eviction import JOB_ID
+        from akq_agents.bootstrap import load_scheduler_config
+
+        scheduler_cfg = load_scheduler_config()
+        ws_services = svc.workflow.services if svc.workflow else {}
+
+        def _do_evict() -> dict[str, Any]:
+            return _do_eviction(ws_services, scheduler_cfg, dry_run=dry_run)
+
+        result = svc.job_runner.run(JOB_ID, partition, _do_evict, timeout_s=300)
         return {
             "status": result.status,
             "reason_code": result.reason_code,
