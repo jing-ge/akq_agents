@@ -72,6 +72,16 @@ def _setup_db(tmp_path: Path) -> tuple[Path, SchedulerStateStore, Alerter]:
             con.commit()
         finally:
             con.close()
+    # M20: 给 backup_freshness check 造一个今日备份 manifest, 避免它干扰原本只测
+    # NAV / refresh / decay 的 fixture
+    backup_dir = db.parent / "backup"
+    backup_dir.mkdir(exist_ok=True)
+    from datetime import date as _date
+    (backup_dir / "LAST_BACKUP").write_text(
+        f"date={_date.today().strftime('%Y%m%d')}\n"
+        f"ts={_date.today().isoformat()}\n"
+        f"path={backup_dir}\n"
+    )
     alerter = Alerter(
         meta_db_path=db,
         state_store=store,
@@ -242,6 +252,39 @@ def test_check_factor_metrics_fresh_no_alert(tmp_path: Path) -> None:
         out = alerter.run_check()
     assert "alert.factor_metrics.stale" not in out["alerts"]
     assert "alert.factor_metrics.empty" not in out["alerts"]
+
+
+# ---------- _check_backup_freshness (M20) ----------
+
+def test_check_backup_missing_triggers(tmp_path: Path) -> None:
+    """M20: 没有 LAST_BACKUP 文件 → alert.backup.missing."""
+    db, store, alerter = _setup_db(tmp_path)
+    # 删掉 _setup_db 创的 LAST_BACKUP
+    (db.parent / "backup" / "LAST_BACKUP").unlink()
+    with patch("akq_agents.services.alerter.subprocess.run"):
+        out = alerter.run_check()
+    assert "alert.backup.missing" in out["alerts"]
+
+
+def test_check_backup_stale_triggers(tmp_path: Path) -> None:
+    """M20: 备份 > 10 天前 → alert.backup.stale."""
+    db, store, alerter = _setup_db(tmp_path)
+    old = (date.today() - timedelta(days=15)).strftime("%Y%m%d")
+    (db.parent / "backup" / "LAST_BACKUP").write_text(
+        f"date={old}\nts={old}\npath={db.parent}\n"
+    )
+    with patch("akq_agents.services.alerter.subprocess.run"):
+        out = alerter.run_check()
+    assert "alert.backup.stale" in out["alerts"]
+
+
+def test_check_backup_fresh_no_alert(tmp_path: Path) -> None:
+    """M20: 今日备份 → 不触发任何 backup alert."""
+    db, store, alerter = _setup_db(tmp_path)  # fixture 已塞今日 LAST_BACKUP
+    with patch("akq_agents.services.alerter.subprocess.run"):
+        out = alerter.run_check()
+    assert "alert.backup.missing" not in out["alerts"]
+    assert "alert.backup.stale" not in out["alerts"]
 
 
 # ---------- helpers ----------

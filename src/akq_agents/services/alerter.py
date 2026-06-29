@@ -71,6 +71,10 @@ class Alerter:
             alerts.extend(self._check_factor_metrics_freshness())
         except Exception as exc:  # noqa: BLE001
             logger.exception("alerter: check_factor_metrics_freshness failed: %s", exc)
+        try:
+            alerts.extend(self._check_backup_freshness())
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("alerter: check_backup_freshness failed: %s", exc)
 
         for a in alerts:
             self._maybe_notify(a)
@@ -165,6 +169,48 @@ class Alerter:
                     "threshold": self._factor_metrics_stale_thr,
                 },
             })
+        return out
+
+    def _check_backup_freshness(self) -> list[dict[str, Any]]:
+        """M20: 备份新鲜度告警 — data/backup/LAST_BACKUP > N 天没更新就警告.
+
+        N 默认 10 天 (覆盖周备份 + 周末延迟). scripts/backup.sh 跑完会更新这个文件。
+        """
+        out = []
+        # LAST_BACKUP 文件相对 meta.db 同目录的 data/backup/
+        manifest = self._db.parent / "backup" / "LAST_BACKUP"
+        if not manifest.exists():
+            out.append({
+                "kind": "alert.backup.missing",
+                "level": "warning",
+                "title": "🔒 没有任何备份",
+                "body": f"data/backup/LAST_BACKUP 不存在. 跑 scripts/backup.sh 启动第一次备份.",
+                "payload": {"reason": "no_manifest"},
+            })
+            return out
+        try:
+            content = manifest.read_text()
+            date_line = next((ln for ln in content.splitlines() if ln.startswith("date=")), None)
+            if not date_line:
+                return out
+            date_str = date_line.split("=", 1)[1].strip()
+            # 格式 YYYYMMDD
+            from datetime import date as _date
+            last_date = _date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+            stale_days = (_date.today() - last_date).days
+            if stale_days > 10:
+                out.append({
+                    "kind": "alert.backup.stale",
+                    "level": "warning",
+                    "title": "🔒 备份过期",
+                    "body": (
+                        f"最近一次备份 {date_str} ({stale_days} 天前). "
+                        f"建议 crontab 加: '0 3 * * 0 cd /path && ./scripts/backup.sh --prune'"
+                    ),
+                    "payload": {"last_backup_date": date_str, "stale_days": stale_days},
+                })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("parse LAST_BACKUP failed: %s", exc)
         return out
 
     def _check_factor_decay(self) -> list[dict[str, Any]]:
