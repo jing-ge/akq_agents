@@ -31,17 +31,18 @@
 ## 数据流（盘后一天的真实链路）
 
 ```
-16:00  data.refresh_daily       cron 触发 → akshare 拉全 A 股 OHLCV
+16:00–21:30  data_refresh       窗口 cron（每 30 分钟一次）
+       ↓                        → akshare 拉全 A 股 OHLCV
        ↓                        → 写 ohlcv parquet (date=YYYY-MM-DD)
        ↓                        → quality_gate 校验
                                 → meta.db.refresh_state status=ok
 
-16:30  batch.post_close          cron 触发 → workflow.run_once
+16:30  batch_post_close          cron 触发 → workflow.run_once
        ├─ PortfolioAgent._run_p3
        │   ├─ get_universe(today) → ~5500 股票
        │   ├─ get_ohlcv_loose(...) → 历史 OHLCV
        │   ├─ FactorEngine.compute(ohlcv, registry.list_all())
-       │   │     → 10 个 active 因子 cross-section 值
+       │   │     → 当前已注册 active 因子（默认 7 个预置 + N 个 accepted）
        │   ├─ Preprocessor (winsorize + zscore)
        │   ├─ CompositeScorer (IR-EWMA 加权)
        │   ├─ RiskFilter (新股/停牌/极价/低流动性)
@@ -54,7 +55,11 @@
        │   └─ generate_trade_list → trade_list_cohorts (BUY/SELL/HOLD)
        └─ AnalystAgent (LLM 盘后总结，写 reports/*.md)
 
-每 120 分钟（交易日）factor.discovery
+17:00  batch_deep_research       cron → 深度归因 / 长报告（每日）
+17:30  factor_promote_shadows    cron → 把符合门槛的 shadow 因子转 accepted
+03:00  factor_eviction (周一)    cron → 周度淘汰衰减因子
+
+每 120 分钟（交易日）factor_discovery
        → DSL 抽样 20 个候选 → IS 评估
        → 通过门槛 (IC≥0.015, IR≥0.30, |corr|≤0.7) 进 shadow
        → 已 shadow 因子复评 OOS：
@@ -62,14 +67,14 @@
            - 满 60 天且 |IR|<0.10  → demote (rejected)
            - 中间                  → 继续观察
 
-每天 20:00 factor.brainstorm
+每天 20:00 factor_brainstorm
        → LLM 看现状 (DSL 能力圈 + 历史拒绝率 + 已上线因子) → 提议 20 个新 recipe
        → 写 factor_proposals status='llm_suggested'
        → 等用户在 /research 页 ✓接受 / ✗拒绝
 
-每 5 分钟  retry.fetch_errors / health_heartbeat
+每 5 分钟  retry_fetch_errors / health_heartbeat
 
-每 30 分钟 alert.check
+每 30 分钟 alerter
        → 巡检 3 条规则: NAV 单日异动 / data refresh 连续失败 / accepted 因子衰减
        → 触发时写 events.alert.* + macOS 系统通知（24h cooldown）
 ```
@@ -208,6 +213,16 @@ daemon 每 30 分钟巡检 3 条规则，触发时写 `events.alert.*` + 调 `os
 - 调度：`src/akq_agents/orchestrator/`（scheduler / job_runner / jobs/）
 - Web：`src/akq_agents/web/`（api/ + templates/）
 
+## 辅助脚本（`scripts/`）
+
+| 脚本 | 用途 |
+|---|---|
+| `run_once.py` | 等价于 `cli run-once`，手动跑一次盘后 workflow |
+| `query_latest.py` | 快查最近一日组合/因子产物 |
+| `analyze_research.py` | 离线研究分析脚本 |
+| `backup.sh` | 备份 `data/`（sqlite + parquet） |
+| `backfill_*.py` | 一次性回填工具：benchmark / factor_metrics_history / industry_map / paper_trading / portfolio_history / stock_names / universe_from_ohlcv |
+
 ## 常用 CLI 命令
 
 ```bash
@@ -215,15 +230,25 @@ PY=/opt/anaconda3/envs/akq310/bin/python
 export PYTHONPATH=src
 
 $PY -m akq_agents.cli.app doctor                     # 健康自检
+$PY -m akq_agents.cli.app run-once                   # 手动跑一次盘后 workflow
 $PY -m akq_agents.cli.app data bootstrap --lookback 250  # 首次回填
 $PY -m akq_agents.cli.app data refresh               # 增量当日数据
+$PY -m akq_agents.cli.app data status                # 看 refresh_state
 $PY -m akq_agents.cli.app data inspect 600519        # 看单股缓存
 $PY -m akq_agents.cli.app factors list               # 列因子
 $PY -m akq_agents.cli.app factors inspect momentum_5 # 看因子历史
+$PY -m akq_agents.cli.app factors discover           # 手动跑一轮自动发现
+$PY -m akq_agents.cli.app factors proposals          # 查 LLM 提案
 $PY -m akq_agents.cli.app portfolio explain --date 2026-06-23  # 解释当日组合
+$PY -m akq_agents.cli.app trade-list                 # 看今日交易清单
+$PY -m akq_agents.cli.app paper summary              # paper trading 总览
+$PY -m akq_agents.cli.app holdings list              # 看真实持仓
+$PY -m akq_agents.cli.app holdings set <code> <qty>  # 校准持仓
 $PY -m akq_agents.cli.app daemon status              # daemon 状态
 $PY -m akq_agents.cli.app daemon runs --last 20      # 任务历史
 $PY -m akq_agents.cli.app daemon events --last 20    # 事件流
+$PY -m akq_agents.cli.app llm calls --last 20        # LLM 调用历史
+$PY -m akq_agents.cli.app llm sessions               # LLM session 列表
 $PY -m akq_agents.cli.app chat                       # CLI 聊天 REPL
 ```
 
@@ -255,6 +280,7 @@ $PY -m ruff check src/ tests/                        # lint
 | m14 | LLM 因子方向 brainstorm + 人工审核流 |
 | m15 | 架构清理（删 7 个装饰品 agent + 老库 + NAV 真实性修复） |
 | m16 | LLM 闭环（shadow 战况 + 归因诊断 + factor_postmortem + trade_list 闭环） |
+| m17 | alerter 巡检（NAV 异动 / 数据失败 / 因子衰减 → macOS 系统通知） |
 
 详细设计文档（部分已是历史档案，以代码为准）：`docs/superpowers/specs/`、`docs/superpowers/plans/`。
 </content>
