@@ -403,9 +403,20 @@ window.addEventListener('load', () => {
   </p>
   <div class="toolbar">
     <button class="primary" onclick="loadFactorCorrelation()">刷新</button>
+    <label class="small" style="margin-left:12px;color:var(--fg-mute)">
+      <input type="checkbox" id="corr-show-numbers" style="vertical-align:middle">
+      在格子里显示数字（因子多时不建议勾）
+    </label>
     <span id="corr-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
   </div>
   <div id="factor-corr-chart" style="height: 480px;"></div>
+  <!-- M19 review: Top-K 高相关因子对 — 比看 49x49 矩阵直观 -->
+  <div style="margin-top:14px">
+    <div class="small" style="color:var(--fg-mute); margin-bottom:6px">
+      <b>📌 高相关因子对</b>（|corr| ≥ 0.5, 按绝对值降序）— 重复信息源, 可考虑淘汰其中一个
+    </div>
+    <div id="corr-pairs-table" class="small"></div>
+  </div>
 </div>
 
 <!-- A2 (M15): Shadow 战况看板 -->
@@ -452,9 +463,22 @@ async function loadFactorCorrelation() {
 }
 
 function renderFactorCorrelation(el, d) {
+  const n = d.factors.length;
+
+  // M19 review: 高度自适应 — 每个因子至少 14px, 上下 padding 160px 给轴标签
+  // (旧 480px 固定, 49 因子 = 单格 6px 完全看不清)
+  const cellPx = 14;
+  const padding = 180;  // top 60 + bottom 100 (轴标签) + visualMap
+  const desiredH = Math.max(360, Math.min(n * cellPx + padding, 1200));
+  el.style.height = desiredH + 'px';
+
+  // M19 review: 因子 >20 自动隐藏数字 (除非用户勾了开关)
+  const showNumbers = document.getElementById('corr-show-numbers');
+  const labelShow = showNumbers && showNumbers.checked ? true : (n <= 20);
+
   const cells = [];
-  for (let i = 0; i < d.factors.length; i++) {
-    for (let j = 0; j < d.factors.length; j++) {
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
       const v = d.matrix[i][j];
       cells.push([j, i, (v == null) ? 0 : Number(v.toFixed(3))]);
     }
@@ -470,14 +494,14 @@ function renderFactorCorrelation(el, d) {
         return `${fx}<br>vs<br>${fy}<br><b>corr = ${p.value[2]}</b>`;
       },
     },
-    grid: {top: 60, left: 200, right: 50, bottom: 100},
+    grid: {top: 60, left: 220, right: 50, bottom: 110},
     xAxis: {
       type: 'category', data: d.factors, splitArea: {show: true},
-      axisLabel: {rotate: 45, fontSize: 10, color: '#cbd5e1'},
+      axisLabel: {rotate: 45, fontSize: 9, color: '#cbd5e1'},
     },
     yAxis: {
       type: 'category', data: d.factors, splitArea: {show: true},
-      axisLabel: {fontSize: 10, color: '#cbd5e1'},
+      axisLabel: {fontSize: 9, color: '#cbd5e1'},
     },
     visualMap: {
       min: -1, max: 1, calculable: true, orient: 'horizontal',
@@ -487,10 +511,63 @@ function renderFactorCorrelation(el, d) {
     },
     series: [{
       type: 'heatmap', data: cells,
-      label: {show: true, fontSize: 10, color: '#e6e9f0'},
+      label: {show: labelShow, fontSize: 9, color: '#e6e9f0'},
       emphasis: {itemStyle: {shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.3)'}},
     }],
   });
+
+  // M19 review: 渲染 Top-K 高相关对表 (实用洞察)
+  renderCorrPairs(d);
+}
+
+function renderCorrPairs(d) {
+  const n = d.factors.length;
+  const pairs = [];
+  // 只看上三角 (避免重复), 排除对角线 (corr=1)
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const v = d.matrix[i][j];
+      if (v == null) continue;
+      if (Math.abs(v) >= 0.5) {
+        pairs.push({a: d.factors[i], b: d.factors[j], corr: Number(v.toFixed(3))});
+      }
+    }
+  }
+  pairs.sort((x, y) => Math.abs(y.corr) - Math.abs(x.corr));
+
+  const out = document.getElementById('corr-pairs-table');
+  if (!out) return;
+  if (!pairs.length) {
+    out.innerHTML = '<div class="empty-state" style="padding:10px 0;color:var(--fg-mute);font-size:12px">' +
+      '✓ 没有高相关对 (|corr| < 0.5), 因子池信息源较独立。</div>';
+    return;
+  }
+  const top = pairs.slice(0, 30);
+  const colorCorr = (v) => {
+    const abs = Math.abs(v);
+    if (abs >= 0.7) return 'color:#fb7185;font-weight:600';  // 超阈值 红
+    if (abs >= 0.5) return 'color:#fbbf24';                  // 边缘 黄
+    return 'color:#94a3b8';
+  };
+  let html = '<table class="data-table"><thead><tr>'
+    + '<th>因子 A</th><th>因子 B</th><th>corr</th><th>建议</th>'
+    + '</tr></thead><tbody>';
+  for (const p of top) {
+    const suggest = Math.abs(p.corr) >= 0.7
+      ? '⚠️ 信息重复, 保留 IR 高的一个'
+      : '边缘相关, 可观察';
+    html += `<tr>
+      <td><code>${escapeHtml(p.a)}</code></td>
+      <td><code>${escapeHtml(p.b)}</code></td>
+      <td style="${colorCorr(p.corr)}">${p.corr > 0 ? '+' : ''}${p.corr}</td>
+      <td class="small">${suggest}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  if (pairs.length > 30) {
+    html += `<div class="small" style="color:var(--fg-mute);margin-top:6px">仅显示前 30 对, 实际共 ${pairs.length} 对</div>`;
+  }
+  out.innerHTML = html;
 }
 
 async function loadShadowStats() {
@@ -548,6 +625,9 @@ function renderShadowStats(rows) {
 
 window.addEventListener('load', () => {
   setTimeout(loadFactorCorrelation, 1500);
+  // M19 review: 数字开关切换时重新刷新图 (不需要重拉数据, 但 echarts 要 setOption)
+  const cb = document.getElementById('corr-show-numbers');
+  if (cb) cb.addEventListener('change', () => loadFactorCorrelation());
 });
 
 // 页面加载时自动拉一次
