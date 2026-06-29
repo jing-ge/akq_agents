@@ -293,6 +293,7 @@ class DiscoveryEngine:
             ohlcv, sub_symbols = self._prepare_data(as_of_date)
         except Exception as exc:  # noqa: BLE001
             logger.warning("discovery: prepare_data failed: %s", exc)
+            self._write_event_safe("factor.discovery.prepare_data_failed", str(exc))
             return stats
         if ohlcv.empty:
             return stats
@@ -453,6 +454,10 @@ class DiscoveryEngine:
                 as_of_date = fb  # 同步推进 as_of_date 让下面 get_ohlcv_loose 用同日期
             except Exception as exc2:  # noqa: BLE001
                 logger.warning("discovery._prepare_data: universe fallback also failed: %s", exc2)
+                self._write_event_safe(
+                    "factor.discovery.universe_unavailable",
+                    f"both as_of={as_of_date} and fallback={fb} failed: {exc2}",
+                )
                 return pd.DataFrame(), []
 
         # 用 PortfolioAgent 同款的 loose read 避免 DataNotReady
