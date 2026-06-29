@@ -44,7 +44,10 @@ DEFAULT_TRADING_DAY_REQUIRED: frozenset[str] = frozenset(
         "batch.post_close",
         "batch.deep_research",
         "data.refresh_daily",
-        "factor.brainstorm",
+        # M19 review: factor.brainstorm 不再依赖今日交易数据 — LLM 提议靠 prompt
+        # 里的历史 metrics + 拒绝率统计 + 已上线因子列表, 周末跑出来的提议跟
+        # 工作日跑出来的没差异。之前周末 cron skipped 导致用户周一看不到新提议。
+        # "factor.brainstorm",
         "factor.discovery",
         "factor.promote_shadows",
     }
