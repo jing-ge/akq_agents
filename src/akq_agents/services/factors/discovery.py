@@ -488,12 +488,34 @@ class DiscoveryEngine:
         return pd.DataFrame(rows).T
 
     def _compute_active_factor_history(self, ohlcv: pd.DataFrame, all_dates: pd.Index) -> dict[str, pd.DataFrame]:
-        """计算所有已 active 因子的完整 history（用于时间序列相关性筛选）。
+        """计算所有 **真在用** 因子的完整 history（用于时间序列相关性筛选）。
 
-        返回：{factor_name: DataFrame(index=date, columns=symbol)}
+        M19 review P0-4: registry.list_all() 现在包含 builtin + accepted + shadow.
+        但相关性门槛 (max_abs_corr) 的语义是"新候选 vs 已被组合采用的因子", 不应该把
+        shadow 算进来 — 否则 DSL 空间会被 39 个 shadow 锁死, 新 LLM/auto 候选
+        几乎都会 corr > 0.7 被拒, 自动发现产出率持续下降。
+
+        过滤策略: 只看 builtin + accepted, shadow/demoted 不算 "在用".
         """
+        # P0-4: 查 proposal_store 拿 shadow 名字集 (builtin 不在 proposals, 自动通过)
+        shadow_names: set[str] = set()
+        try:
+            from akq_agents.services.data.repository import open_meta_db
+            db_path = getattr(self.proposal_store, "_db", None)
+            if db_path is not None:
+                with open_meta_db(db_path) as conn:
+                    rows = conn.execute(
+                        "SELECT factor_name FROM factor_proposals "
+                        "WHERE status='shadow' AND evicted_at IS NULL"
+                    ).fetchall()
+                shadow_names = {r[0] for r in rows}
+        except Exception:  # noqa: BLE001
+            pass
+
         out: dict[str, pd.DataFrame] = {}
         for f in self.registry.list_all():
+            if f.name in shadow_names:
+                continue  # shadow 不算"已在用", 不参与相关性门槛
             try:
                 hist = self._compute_factor_history(f, ohlcv, all_dates)
                 if hist is not None and not hist.empty:

@@ -153,6 +153,7 @@ def _collect_factors_for_dropdown(svc) -> list[dict]:
                            1 AS factor_version
                     FROM factor_proposals
                     WHERE status IN ('accepted', 'shadow', 'rejected', 'demoted')
+                      AND evicted_at IS NULL
                     """
                 ).fetchall():
                     # 跳过 compute_error 类

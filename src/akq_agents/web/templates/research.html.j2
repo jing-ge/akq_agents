@@ -135,8 +135,8 @@
     </label>
     <button onclick="loadPortfolio()" class="primary">查询</button>
     <button onclick="recomputeTodayPortfolio(this)" class="warn"
-            title="基于最新因子表现 (含 shadow / 新 backfill 历史) 重跑今日组合, 约 30-90 秒"
-            id="btn-recompute-portfolio">🔄 重算今日组合</button>
+            title="跑完整盘后流程 (数据刷新+因子评估+组合优化+归因), 1-5 分钟。基于最新因子表现 (含 shadow / 新 backfill) 重算今日组合"
+            id="btn-recompute-portfolio">🔄 跑完整盘后流程</button>
     <span class="sep"></span>
     <span id="portfolio-summary" class="small" style="margin-left:0"></span>
     <span id="recompute-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
@@ -749,13 +749,14 @@ const BASE_CN = {
 };
 function cnOf(map, k) { return map[k] || k; }
 
-// M19: 重算今日组合 — 基于最新因子表现 (含 shadow + 新 backfill) 重跑 batch.post_close
+// M19: 重算今日组合 — 调 batch.post_close 跑完整盘后流程
+// (注: 包含数据刷新 + 因子评估 + 组合优化 + 归因, 1-5 分钟; 不是只重算组合那一步)
 async function recomputeTodayPortfolio(btn) {
   await runLongOperation({
     button: btn || document.getElementById('btn-recompute-portfolio'),
     url: '/api/control/jobs/batch.post_close/trigger',
     statusEl: document.getElementById('recompute-status'),
-    runningMessage: '重新计算组合 (约 60s)',
+    runningMessage: '跑完整盘后流程 (1-5 分钟)',
     successMessage: '完成, 已用最新因子表现重算今日组合',
     onSuccess: () => {
       // 刷新所有依赖 portfolio_snapshots 的卡片

@@ -78,7 +78,7 @@ async function evictFactors(btn) {
       return;
     }
     // 第 2 步: 用户确认后真删
-    if (!confirm(`待淘汰 ${payload.victims_n} 个因子, 名单已显示在 console output。\n\n确认真删除吗?(物理删除 factor_proposals + factor_metrics, 不可恢复)`)) {
+    if (!confirm(`待淘汰 ${payload.victims_n} 个因子, 名单已显示在 console output。\n\n确认执行吗?(软删除, factor_metrics 历史保留可查; 因子标 evicted_at 不再参与组合)`)) {
       return;
     }
     btn.innerHTML = '⏳ 执行删除...';

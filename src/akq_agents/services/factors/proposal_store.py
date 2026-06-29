@@ -82,6 +82,9 @@ class FactorProposalStore:
                 ("shadow_started_at", "ALTER TABLE factor_proposals ADD COLUMN shadow_started_at TEXT"),
                 ("oos_observations", "ALTER TABLE factor_proposals ADD COLUMN oos_observations INTEGER"),
                 ("oos_ir", "ALTER TABLE factor_proposals ADD COLUMN oos_ir REAL"),
+                # M19 review P0-2: 软删除 — 淘汰因子标 evicted_at 而非物理 DELETE,
+                # 保留 factor_metrics 历史让 portfolio_snapshots 老快照仍可解释
+                ("evicted_at", "ALTER TABLE factor_proposals ADD COLUMN evicted_at TEXT"),
             ]:
                 if col not in existing_cols:
                     conn.execute(ddl)
@@ -151,7 +154,10 @@ class FactorProposalStore:
             conn.commit()
 
     def list_accepted(self) -> list[FactorProposal]:
-        """已晋升 / shadow 的因子（status in (accepted, shadow)）—— 都进内存 registry。"""
+        """已晋升 / shadow 的因子（status in (accepted, shadow)）—— 都进内存 registry。
+
+        M19 review P0-2: 过滤 evicted_at IS NOT NULL — 被淘汰的不进 registry。
+        """
         with open_meta_db(self._db) as conn:
             rows = conn.execute(
                 """
@@ -160,13 +166,17 @@ class FactorProposalStore:
                        created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir
                 FROM factor_proposals
                 WHERE status IN ('accepted', 'shadow')
+                  AND evicted_at IS NULL
                 ORDER BY evaluated_at DESC
                 """
             ).fetchall()
         return [FactorProposal(*r) for r in rows]
 
     def list_shadow(self) -> list[FactorProposal]:
-        """正在 OOS 观察的 shadow 因子（每轮 discovery 复评、N 天后 promote）。"""
+        """正在 OOS 观察的 shadow 因子（每轮 discovery 复评、N 天后 promote）。
+
+        M19 review P0-2: 过滤 evicted — 被淘汰的不再参与 promote_shadows。
+        """
         with open_meta_db(self._db) as conn:
             rows = conn.execute(
                 """
@@ -174,7 +184,7 @@ class FactorProposalStore:
                        ic_mean, ic_std, ir, t_stat, max_abs_corr, reason,
                        created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir
                 FROM factor_proposals
-                WHERE status = 'shadow'
+                WHERE status = 'shadow' AND evicted_at IS NULL
                 ORDER BY shadow_started_at ASC
                 """
             ).fetchall()
@@ -189,6 +199,7 @@ class FactorProposalStore:
                            ic_mean, ic_std, ir, t_stat, max_abs_corr, reason,
                            created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir
                     FROM factor_proposals
+                    WHERE evicted_at IS NULL
                     ORDER BY created_at DESC LIMIT ?
                     """,
                     (limit,),
@@ -200,7 +211,7 @@ class FactorProposalStore:
                            ic_mean, ic_std, ir, t_stat, max_abs_corr, reason,
                            created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir
                     FROM factor_proposals
-                    WHERE status = ?
+                    WHERE status = ? AND evicted_at IS NULL
                     ORDER BY created_at DESC LIMIT ?
                     """,
                     (status, limit),
@@ -210,7 +221,8 @@ class FactorProposalStore:
     def counts(self) -> dict[str, int]:
         with open_meta_db(self._db) as conn:
             rows = conn.execute(
-                "SELECT status, COUNT(*) FROM factor_proposals GROUP BY status"
+                "SELECT status, COUNT(*) FROM factor_proposals "
+                "WHERE evicted_at IS NULL GROUP BY status"
             ).fetchall()
         return {status: count for status, count in rows}
 

@@ -153,6 +153,7 @@ async def factors_list() -> dict[str, Any]:
                            ic_mean, ir, shadow_started_at, evaluated_at
                     FROM factor_proposals
                     WHERE status IN ('accepted', 'shadow', 'rejected', 'demoted')
+                      AND evicted_at IS NULL
                     """
                 ).fetchall()
             for name, status, reason, oos_obs, oos_ir, p_ic, p_ir, shadow_at, eval_at in rows:

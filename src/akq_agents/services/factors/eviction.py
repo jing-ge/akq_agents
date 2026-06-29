@@ -18,6 +18,8 @@ factor_score = 0.5 * |EWMA_30d_IR|
    (明天掉出 top 50 就可以淘了, 跟"是否 builtin"无关)
 
 物理删除 factor_proposals + factor_metrics + factor.evicted event 记账。
+（M19 review P0-2: 已改成软删除 — 标 evicted_at 不动 factor_metrics, 保留
+portfolio_snapshots 老快照的归因可解释性. 读路径过滤 evicted_at IS NULL.）
 不动 registry (内存) — daemon restart 后 restore_accepted_factors 会自动同步。
 """
 
@@ -136,6 +138,7 @@ def compute_factor_scores(
             """
             SELECT factor_name, status, ir, t_stat, created_at
             FROM factor_proposals
+            WHERE evicted_at IS NULL
             """
         ).fetchall()
 
@@ -303,7 +306,7 @@ def evict_factors(
     ]
 
     if not cfg.dry_run and victims:
-        _physical_delete(meta_db_path, [v.factor_name for v in victims])
+        _soft_delete(meta_db_path, [v.factor_name for v in victims])
 
     stats = {
         "dry_run": cfg.dry_run,
@@ -333,8 +336,34 @@ def evict_factors(
     return stats
 
 
+def _soft_delete(meta_db_path: Path, names: list[str]) -> None:
+    """M19 review P0-2: 软删除 — 标 evicted_at 而非物理 DELETE.
+
+    不动 factor_metrics 历史行, 让 portfolio_snapshots 老快照引用的因子仍可解释
+    (用户查 30 天前的 attribution 不会断链).
+
+    factor_proposals 行保留, 通过 evicted_at IS NULL 过滤. restore_accepted_factors
+    / compute_factor_scores / list_active 等读路径需要 (并已经) 过滤掉 evicted。
+    """
+    if not names:
+        return
+    ts = datetime.now().isoformat(timespec="seconds")
+    placeholders = ",".join(["?"] * len(names))
+    with open_meta_db(meta_db_path) as conn:
+        conn.execute(
+            f"UPDATE factor_proposals SET evicted_at=? WHERE factor_name IN ({placeholders}) AND evicted_at IS NULL",
+            (ts, *names),
+        )
+        conn.commit()
+
+
 def _physical_delete(meta_db_path: Path, names: list[str]) -> None:
-    """物理删 factor_proposals + factor_metrics (按 factor_name)."""
+    """物理删 factor_proposals + factor_metrics (按 factor_name).
+
+    M19 review P0-2: 已不被 evict_factors 默认使用 (改成软删除). 保留供未来
+    "彻底清理超老 evicted 因子" cron 调用; 调用方需自己确认 portfolio_snapshots
+    引用已迁移。
+    """
     if not names:
         return
     placeholders = ",".join(["?"] * len(names))

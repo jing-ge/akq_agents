@@ -31,7 +31,8 @@ def _setup_db(tmp_path: Path) -> Path:
                 ic_mean REAL, ic_std REAL, ir REAL, t_stat REAL,
                 max_abs_corr REAL, reason TEXT,
                 created_at TEXT, evaluated_at TEXT,
-                shadow_started_at TEXT, oos_observations INTEGER, oos_ir REAL
+                shadow_started_at TEXT, oos_observations INTEGER, oos_ir REAL,
+                evicted_at TEXT
             )
         """)
         con.execute("""
@@ -182,20 +183,29 @@ def test_evict_dry_run_does_not_delete(tmp_path: Path) -> None:
 
 
 def test_evict_real_deletes(tmp_path: Path) -> None:
-    """dry_run=False 真删除."""
+    """dry_run=False 软删除 — 标 evicted_at, 不物理 DELETE (M19 review P0-2)."""
     db = _setup_db(tmp_path)
     cfg = EvictionConfig(dry_run=False)
     result = evict_factors(meta_db_path=db, cfg=cfg)
     assert result["dry_run"] is False
     assert result["victims_n"] >= 2
     with sqlite3.connect(db) as con:
-        names = {r[0] for r in con.execute("SELECT factor_name FROM factor_proposals").fetchall()}
-    assert "auto_bad_old" not in names
-    assert "auto_bad_new" not in names
-    # 受保护的因子还在
-    assert "llm_good_xyz" in names
-    assert "llm_grace_new" in names
-    assert "llm_in_use_low" in names
+        # 软删除: 行还在, 但 evicted_at 已填
+        evicted_names = {r[0] for r in con.execute(
+            "SELECT factor_name FROM factor_proposals WHERE evicted_at IS NOT NULL"
+        ).fetchall()}
+        alive_names = {r[0] for r in con.execute(
+            "SELECT factor_name FROM factor_proposals WHERE evicted_at IS NULL"
+        ).fetchall()}
+        # 总行数不变 (软删除)
+        total = con.execute("SELECT COUNT(*) FROM factor_proposals").fetchone()[0]
+    assert total == 5  # 一个都没物理删
+    assert "auto_bad_old" in evicted_names
+    assert "auto_bad_new" in evicted_names
+    # 受保护的还在 alive
+    assert "llm_good_xyz" in alive_names
+    assert "llm_grace_new" in alive_names
+    assert "llm_in_use_low" in alive_names
 
 
 def test_max_pool_size_caps_pool(tmp_path: Path) -> None:
@@ -207,3 +217,19 @@ def test_max_pool_size_caps_pool(tmp_path: Path) -> None:
     # 5 个里 3 个受保护 (good_xyz/grace_new/in_use_low), 上限 2 → 2 个 unprotected 被淘 + 1 个 unprotected 即使超盘也按 over_pool_size 删
     # 实际: bot_2 unprotected → low_score=0 不触发, 走 over_pool_size 删到 max_pool_size
     assert result["victims_n"] >= 2
+
+
+def test_soft_delete_excluded_from_next_scoring(tmp_path: Path) -> None:
+    """M19 review P0-2: 软删除后再跑 compute_factor_scores, evicted 因子不再出现 — 防止重复淘汰."""
+    db = _setup_db(tmp_path)
+    # 第一轮: 真删
+    cfg = EvictionConfig(dry_run=False)
+    r1 = evict_factors(meta_db_path=db, cfg=cfg)
+    first_victims = r1["victims_n"]
+    assert first_victims >= 2
+
+    # 第二轮: 重新跑 scoring, 池里应该少了 first_victims 个
+    scores2 = compute_factor_scores(meta_db_path=db, cfg=cfg)
+    assert len(scores2) == 5 - first_victims, (
+        f"compute_factor_scores 应该过滤 evicted, 但还看到 {len(scores2)} 个 (原始 5 个, 已淘汰 {first_victims})"
+    )
