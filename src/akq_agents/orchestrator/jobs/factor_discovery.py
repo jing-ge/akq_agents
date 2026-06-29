@@ -79,6 +79,21 @@ def _has_required_services(services: dict[str, Any]) -> bool:
 
 
 def _do(services: dict[str, Any], *, n_candidates: int) -> dict[str, Any]:
+    # M20 review: 盘中 (周一~五 9:30-15:00) 跑 discovery 用的是实时 close, 算出的因子
+    # 跟最终收盘后的值不一致, 影响候选评估准确性 (虽然算不上真 lookahead).
+    # 直接 silent skip — daemon cron 每 2h 触发, 跳过几次没问题, 17:30 / 22:30
+    # 等盘后触发就会跑。手动触发 (web /control/jobs/factor.discovery/trigger)
+    # 不走这个 _do, 直接调 engine.run_batch — 用户主动想跑就让它跑。
+    now = datetime.now()
+    is_weekday = now.weekday() < 5  # 周一-五 0-4
+    minutes_since_midnight = now.hour * 60 + now.minute
+    INTRADAY_START = 9 * 60 + 30   # 9:30
+    INTRADAY_END = 15 * 60          # 15:00
+    if is_weekday and INTRADAY_START <= minutes_since_midnight <= INTRADAY_END:
+        return {
+            "skipped": True,
+            "reason": "intraday: 跳过盘中 (9:30-15:00) 的 discovery 触发, 等盘后",
+        }
     engine = services["discovery_engine"]
     stats = engine.run_batch(n_candidates=n_candidates)
     return stats.as_dict()

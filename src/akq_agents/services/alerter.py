@@ -75,6 +75,10 @@ class Alerter:
             alerts.extend(self._check_backup_freshness())
         except Exception as exc:  # noqa: BLE001
             logger.exception("alerter: check_backup_freshness failed: %s", exc)
+        try:
+            alerts.extend(self._check_factor_metrics_sparse())
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("alerter: check_factor_metrics_sparse failed: %s", exc)
 
         for a in alerts:
             self._maybe_notify(a)
@@ -211,6 +215,59 @@ class Alerter:
                 })
         except Exception as exc:  # noqa: BLE001
             logger.warning("parse LAST_BACKUP failed: %s", exc)
+        return out
+
+    def _check_factor_metrics_sparse(self) -> list[dict[str, Any]]:
+        """M20: 某 active 因子最近 30 天 IC 数据 < 20 条 → 告警 (数据稀疏说明 evaluate 反复失败).
+
+        触发场景: SQLite BUSY / factor.compute 偶发异常 / OHLCV 数据缺失。
+        只对 active 因子告警 (registry 在用的), evicted/rejected 稀疏正常。
+        """
+        out = []
+        with open_meta_db(self._db) as conn:
+            # 取 active 因子 (accepted + shadow), 排除 evicted
+            active_names = {
+                r[0] for r in conn.execute(
+                    "SELECT factor_name FROM factor_proposals "
+                    "WHERE status IN ('accepted', 'shadow') AND evicted_at IS NULL"
+                ).fetchall()
+            }
+            # builtin (proposals 表没有) — 从 factor_metrics 推
+            for pre in _BUILTIN_PREFIXES:
+                rows = conn.execute(
+                    "SELECT DISTINCT factor_name FROM factor_metrics WHERE factor_name LIKE ?",
+                    (pre + "%",),
+                ).fetchall()
+                active_names.update(r[0] for r in rows)
+
+            # 各因子最近 30 天 IC 行数
+            counts = conn.execute(
+                "SELECT factor_name, COUNT(*) FROM factor_metrics "
+                "WHERE as_of_date >= date('now', '-30 days') "
+                "GROUP BY factor_name"
+            ).fetchall()
+        counts_map = dict(counts)
+        # 30 天 ≈ 22 个交易日, 阈值 20 留 buffer
+        sparse = [(n, counts_map.get(n, 0)) for n in active_names if counts_map.get(n, 0) < 20]
+        if not sparse:
+            return out
+        sparse_sorted = sorted(sparse, key=lambda x: x[1])
+        sample = sparse_sorted[:5]
+        out.append({
+            "kind": "alert.factor_metrics.sparse",
+            "level": "warning",
+            "title": "📉 因子 IC 数据稀疏",
+            "body": (
+                f"{len(sparse)} 个 active 因子最近 30 天 IC 行数 < 20. "
+                f"示例: " + ", ".join(f"{n}={c}" for n, c in sample)
+                + ". 可能 SQLite BUSY 写失败 / factor.compute 异常被吞."
+            ),
+            "payload": {
+                "n_sparse_factors": len(sparse),
+                "sample": [{"factor": n, "rows": c} for n, c in sample],
+                "threshold": 20,
+            },
+        })
         return out
 
     def _check_factor_decay(self) -> list[dict[str, Any]]:

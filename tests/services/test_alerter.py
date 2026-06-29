@@ -53,22 +53,27 @@ def _setup_db(tmp_path: Path) -> tuple[Path, SchedulerStateStore, Alerter]:
                 ic_mean REAL, ic_std REAL, ir REAL, t_stat REAL,
                 max_abs_corr REAL, reason TEXT,
                 created_at TEXT, evaluated_at TEXT,
-                shadow_started_at TEXT, oos_observations INTEGER, oos_ir REAL
+                shadow_started_at TEXT, oos_observations INTEGER, oos_ir REAL,
+                evicted_at TEXT
             )
         """)
         con.commit()
         # M19: 塞一行今日 factor_metrics, 避免新加的 _check_factor_metrics_freshness 触发
         # alert.factor_metrics.empty / .stale 干扰原本只测 NAV / refresh / decay 的用例。
-        # 用例如果要专门测 freshness, 应该单独清空这条数据。
+        # M20: 同时塞 25 行近 30 天数据避免 _check_factor_metrics_sparse 触发。
+        # 用例如果要专门测 sparse, 应该删掉这些行。
         from datetime import date as _date
+        from datetime import timedelta as _td
         con = sqlite3.connect(db)
         try:
-            con.execute(
-                "INSERT INTO factor_metrics (factor_name, factor_version, as_of_date, "
-                "window_days, ic_mean, ic_std, ir, t_stat, status, reason) "
-                "VALUES (?, 1, ?, 60, 0.01, 0.05, 0.20, 1.5, 'active', NULL)",
-                ("momentum_5", _date.today().isoformat()),
-            )
+            for i in range(25):
+                d = (_date.today() - _td(days=i)).isoformat()
+                con.execute(
+                    "INSERT INTO factor_metrics (factor_name, factor_version, as_of_date, "
+                    "window_days, ic_mean, ic_std, ir, t_stat, status, reason) "
+                    "VALUES (?, 1, ?, 60, 0.01, 0.05, 0.20, 1.5, 'active', NULL)",
+                    ("momentum_5", d),
+                )
             con.commit()
         finally:
             con.close()
@@ -285,6 +290,53 @@ def test_check_backup_fresh_no_alert(tmp_path: Path) -> None:
         out = alerter.run_check()
     assert "alert.backup.missing" not in out["alerts"]
     assert "alert.backup.stale" not in out["alerts"]
+
+
+# ---------- _check_factor_metrics_sparse (M20) ----------
+
+def test_check_factor_metrics_sparse_triggers(tmp_path: Path) -> None:
+    """M20: shadow 因子最近 30 天 IC 行数 < 20 → alert.factor_metrics.sparse."""
+    db, store, alerter = _setup_db(tmp_path)
+    with sqlite3.connect(db) as con:
+        # 加 1 个 shadow 因子, 只写 5 行 metrics (远 < 20 阈值)
+        con.execute(
+            "INSERT INTO factor_proposals (factor_name, recipe_json, direction, status, "
+            "created_at) VALUES ('llm_sparse_xyz', '{}', 'long', 'shadow', ?)",
+            (date.today().isoformat(),),
+        )
+        for i in range(5):
+            d = (date.today() - timedelta(days=i)).isoformat()
+            con.execute(
+                "INSERT INTO factor_metrics (factor_name, factor_version, as_of_date, "
+                "window_days, ir, status) VALUES ('llm_sparse_xyz', 1, ?, 60, 0.1, 'active')",
+                (d,),
+            )
+        con.commit()
+    with patch("akq_agents.services.alerter.subprocess.run"):
+        out = alerter.run_check()
+    assert "alert.factor_metrics.sparse" in out["alerts"]
+
+
+def test_check_factor_metrics_sparse_no_alert_when_dense(tmp_path: Path) -> None:
+    """M20: shadow 因子 IC 行数 >= 20 → 不触发."""
+    db, store, alerter = _setup_db(tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT INTO factor_proposals (factor_name, recipe_json, direction, status, "
+            "created_at) VALUES ('llm_dense_xyz', '{}', 'long', 'shadow', ?)",
+            (date.today().isoformat(),),
+        )
+        for i in range(25):  # 25 行 > 阈值 20
+            d = (date.today() - timedelta(days=i)).isoformat()
+            con.execute(
+                "INSERT INTO factor_metrics (factor_name, factor_version, as_of_date, "
+                "window_days, ir, status) VALUES ('llm_dense_xyz', 1, ?, 60, 0.1, 'active')",
+                (d,),
+            )
+        con.commit()
+    with patch("akq_agents.services.alerter.subprocess.run"):
+        out = alerter.run_check()
+    assert "alert.factor_metrics.sparse" not in out["alerts"]
 
 
 # ---------- helpers ----------
