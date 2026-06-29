@@ -190,6 +190,10 @@ class DiscoveryThresholds:
     # M7-C: OOS promote 规则
     shadow_min_oos_days: int = 20      # 至少累计 20 个 OOS 交易日观察
     shadow_min_oos_ir: float = 0.15    # OOS IR 仍需 >= 0.15 才 promote
+    # M19 review (oracle): |IR|>=0.15 在 20 天样本下 t_stat ≈ 0.67, 统计上完全不显著.
+    # 必须同时满足 |t_stat| >= 2.0 才 promote — t_stat 自然带样本量归一化,
+    # 60 天 IR=0.15 跟 20 天 IR=0.15 的显著性差 1.7 倍, 不能等同对待.
+    shadow_min_oos_t_stat: float = 2.0
     # M15-A: shadow 宽限期 — 满 shadow_min_oos_days 但未达标时不立刻 demote，
     # 继续观察到 shadow_max_days；满 shadow_max_days 仍 |IR| < shadow_min_keep_ir 才 demote。
     shadow_max_days: int = 60         # 最长观察 60 天
@@ -738,8 +742,16 @@ class DiscoveryEngine:
             oos_ic_mean = float(ic_clean.mean())
             oos_ic_std = float(ic_clean.std(ddof=1)) if ic_clean.std(ddof=1) > 0 else None
             oos_ir = (oos_ic_mean / oos_ic_std) if oos_ic_std else None
+            # M19 review: t_stat = IR * sqrt(N), 自然带样本量归一化, 防止小样本假阳
+            import math as _math
+            oos_t_stat = (oos_ir * _math.sqrt(len(ic_clean))) if oos_ir is not None else None
 
-            if oos_ir is not None and abs(oos_ir) >= self.th.shadow_min_oos_ir:
+            # M19 review: 同时检查 IR 和 t_stat — IR>=0.15 + |t_stat|>=2.0 才 promote.
+            # |t_stat|<2.0 (相当于 p>0.05) 说明 OOS 这段 IR 大概率是噪音, 不该 promote 进组合。
+            ir_pass = oos_ir is not None and abs(oos_ir) >= self.th.shadow_min_oos_ir
+            t_pass = oos_t_stat is not None and abs(oos_t_stat) >= self.th.shadow_min_oos_t_stat
+            if ir_pass and t_pass:
+                assert oos_ir is not None  # ir_pass 已保证, 给 type checker
                 # Promote → accepted + register
                 # M9-B: 如果 OOS IR 为负，说明原 direction 反了，自动反转
                 if oos_ir < 0:

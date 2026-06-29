@@ -157,7 +157,12 @@ async def proposal_trace(factor_name: str) -> dict[str, Any]:
 
 @router.get("/nav")
 async def get_nav() -> dict[str, Any]:
-    """读取组合净值曲线（扣费后） + benchmark 对比 + 汇总指标。"""
+    """读取组合净值曲线（扣费后） + benchmark 对比 + 汇总指标。
+
+    M20: 区分 backfill 段 vs 真实 paper trading 段 — daemon 第一次 batch.post_close
+    成功的日期作为 paper_start_date, 之前的 NAV 都是 rebuild_full_history 回填的
+    in-sample 回测, 不构成真实 alpha 证据。前端据此分段渲染避免用户自欺。
+    """
     svc: ServiceContainer = get_services()
     workflow = svc.workflow
     backtester = workflow.services.get("portfolio_backtester") if workflow else None
@@ -177,10 +182,49 @@ async def get_nav() -> dict[str, Any]:
         for _, r in df.iterrows()
     ]
     # 汇总（直接调一次 backtester 在不重算的情况下也能算）
-    import pandas as pd
-
     summary = backtester._summarize(df)
+
+    # M20: paper_start_date = 真实第一次 batch.post_close ok 的日期 (job_runs 表查)
+    paper_start_date = _resolve_paper_start_date(svc)
+    if paper_start_date is not None:
+        paper_df = df[df["as_of_date"] >= paper_start_date]
+        if len(paper_df) >= 2:
+            paper_summary = backtester._summarize(paper_df.reset_index(drop=True))
+        else:
+            paper_summary = {"n_days": len(paper_df), "reason": "paper 段样本不足 (<2)"}
+        summary["paper_start_date"] = paper_start_date
+        summary["paper_n_days"] = len(paper_df)
+        summary["paper_summary"] = paper_summary
+        summary["disclaimer"] = (
+            f"⚠️ {paper_start_date} 之前 NAV 是 rebuild_full_history 回填的 in-sample 回测; "
+            f"之后 {len(paper_df)} 天才是 forward-only paper trading. "
+            "Sharpe / 累积收益等指标仅看 paper 段。"
+        )
+
     return {"nav": nav_list, "summary": summary, "n": len(nav_list)}
+
+
+def _resolve_paper_start_date(svc) -> str | None:
+    """从 job_runs 表查最早 batch.post_close ok 的日期作为 paper trading 起点.
+
+    M20: 之前的 portfolio_nav 全是 rebuild 回填, 不构成真实 alpha 证据。
+    """
+    if svc.repo is None:
+        return None
+    try:
+        from akq_agents.services.data.repository import open_meta_db
+        db_path = svc.repo._base_dir / "meta.db"
+        with open_meta_db(db_path) as conn:
+            row = conn.execute(
+                "SELECT MIN(partition) FROM job_runs "
+                "WHERE job_id='batch.post_close' AND status='ok'"
+            ).fetchone()
+        if row and row[0]:
+            # partition 可能是 'YYYY-MM-DD' 或 'YYYY-MM-DD-manual-xxxxxx' — 取前 10 位
+            return str(row[0])[:10]
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 @router.post("/nav/rebuild")

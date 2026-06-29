@@ -1779,9 +1779,31 @@ async function loadNav() {
     summaryEl.textContent = `${d.nav.length} 个交易日`;
     // 汇总卡片
     const s = d.summary || {};
+    const ps = s.paper_summary || {};
     const fmt = (v, suffix='%', mult=100) => v == null ? '-' : (v * mult).toFixed(2) + suffix;
+    // M20: paper_start_date 分段 — 之前全是 backfill, 之后才是真 paper trading
+    const paperStartDate = s.paper_start_date;
+    const paperBlock = (paperStartDate && ps && ps.n_days >= 2) ? `
+      <div class="small" style="margin-top:14px;padding:12px;background:rgba(94,234,212,0.05);border-left:3px solid #5eead4;border-radius:6px">
+        <div style="color:#5eead4;font-weight:600;margin-bottom:8px">
+          ✅ 真实 Paper Trading 段 (forward-only, ${paperStartDate} 起 · ${ps.n_days} 天)
+        </div>
+        <div class="kpi-strip" style="margin-bottom:0">
+          <div class="kpi"><span class="lbl">累计收益</span><span class="val ${(ps.total_return_net||0)>=0?'metric-good':'metric-bad'}">${fmt(ps.total_return_net)}</span></div>
+          <div class="kpi"><span class="lbl">年化收益</span><span class="val">${fmt(ps.annualized_return_net)}</span></div>
+          <div class="kpi"><span class="lbl">夏普</span><span class="val">${ps.sharpe_net != null ? ps.sharpe_net.toFixed(2) : '—'}</span></div>
+          <div class="kpi"><span class="lbl">最大回撤</span><span class="val metric-bad">${fmt(ps.max_drawdown)}</span></div>
+          <div class="kpi"><span class="lbl">超额收益</span><span class="val ${(ps.excess_return||0)>=0?'metric-good':'metric-bad'}">${fmt(ps.excess_return)}</span></div>
+        </div>
+        ${ps.n_days < 60 ? `<div class="small" style="color:#fbbf24;margin-top:8px">⚠️ paper 段只有 ${ps.n_days} 天, 任何统计推断都不显著 (Sharpe 需要 60+ 天才有参考价值)</div>` : ''}
+      </div>` : '';
+
     statsEl.innerHTML = `
-      <div class="kpi-strip">
+      ${paperBlock}
+      <div class="small" style="margin-top:14px;color:#94a3b8">
+        📊 全段统计 (含 backfill, ${s.n_days || d.nav.length} 天 · 仅参考):
+      </div>
+      <div class="kpi-strip" style="opacity:0.75">
         <div class="kpi"><span class="lbl">累计收益（扣费）</span><span class="val ${(s.total_return_net||0)>=0?'metric-good':'metric-bad'}">${fmt(s.total_return_net)}</span></div>
         <div class="kpi"><span class="lbl">年化收益</span><span class="val">${fmt(s.annualized_return_net)}</span></div>
         <div class="kpi"><span class="lbl">夏普比率</span><span class="val">${s.sharpe_net != null ? s.sharpe_net.toFixed(2) : '—'}</span></div>
@@ -1791,6 +1813,7 @@ async function loadNav() {
         <div class="kpi"><span class="lbl">累计成本</span><span class="val">${fmt(s.total_cost)}</span></div>
         <div class="kpi"><span class="lbl">平均换手</span><span class="val">${fmt(s.avg_turnover_per_rebalance)}</span></div>
       </div>
+      ${s.disclaimer ? `<div class="small" style="margin-top:8px;color:#fbbf24;line-height:1.6">${s.disclaimer}</div>` : ''}
       <div class="small" style="margin-top:8px;color:var(--fg-dim);line-height:1.6">
         ⚠️ <b>回测口径披露</b>: 历史 OHLCV 仅含<b>当前在交易</b>的 ~5500 只股票 (akshare 默认接口),
         不含 2025-09 至今约 30-50 只退市股. 这部分 survivorship bias 估算贡献 +15-25% 假超额,
@@ -1802,6 +1825,14 @@ async function loadNav() {
     const dates = d.nav.map(p => p.date);
     const navNet = d.nav.map(p => p.nav_net);
     const benchNav = d.nav.map(p => p.benchmark_nav);
+    // M20: paper_start_date 之前是 backfill 段, 用更暗的灰色显示提醒用户;
+    // 之后才是真实 paper trading 段, 用主色
+    const navBackfill = paperStartDate
+      ? d.nav.map(p => p.date < paperStartDate ? p.nav_net : null)
+      : navNet;
+    const navPaper = paperStartDate
+      ? d.nav.map(p => p.date >= paperStartDate ? p.nav_net : null)
+      : null;
     // 计算从 peak 起的回撤（用于阴影区）：相对于历史最高净值的偏离
     let peak = -Infinity;
     const ddArea = navNet.map(v => {
@@ -1823,7 +1854,7 @@ async function loadNav() {
         axisPointer: { lineStyle: { color: '#5eead4', opacity: 0.5 } },
       },
       legend: {
-        data: ['组合（扣费）', '沪深300', '回撤区'],
+        data: paperStartDate ? ['回测段', '真实 Paper', '沪深300', '回撤区'] : ['组合（扣费）', '沪深300', '回撤区'],
         textStyle: { color: '#aab2c5' },
         right: 10, top: 0,
       },
@@ -1843,7 +1874,13 @@ async function loadNav() {
       }],
       grid: { left: 56, right: 28, top: 36, bottom: 36 },
       series: [
-        {
+        paperStartDate ? {
+          // M20: backfill 段 — 灰色 + dashed 提醒用户这是回填的, 不是真赚的
+          name: '回测段', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#6b748a', width: 1.5, type: 'dashed' },
+          itemStyle: { color: '#6b748a' },
+          data: navBackfill,
+        } : {
           name: '组合（扣费）', type: 'line', smooth: true, showSymbol: false,
           lineStyle: { color: '#5eead4', width: 2 },
           itemStyle: { color: '#5eead4' },
@@ -1864,6 +1901,32 @@ async function loadNav() {
             data: [{ coord: [mddIdx, navNet[mddIdx]], value: '最大回撤' }],
           } : undefined,
         },
+        // M20: 真 paper trading 段 — 主色, 带 markLine 标记起点
+        ...(paperStartDate ? [{
+          name: '真实 Paper', type: 'line', smooth: true, showSymbol: false,
+          lineStyle: { color: '#5eead4', width: 2.5 },
+          itemStyle: { color: '#5eead4' },
+          areaStyle: {
+            color: {
+              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: 'rgba(94,234,212,0.22)' },
+                { offset: 1, color: 'rgba(94,234,212,0)' },
+              ],
+            },
+          },
+          data: navPaper,
+          markLine: {
+            silent: true,
+            symbol: 'none',
+            lineStyle: { color: '#5eead4', type: 'dashed', width: 1.5, opacity: 0.7 },
+            label: {
+              color: '#5eead4', fontSize: 11, fontWeight: 600,
+              position: 'insideEndTop', formatter: '↓ Paper 起点',
+            },
+            data: [{ xAxis: paperStartDate }],
+          },
+        }] : []),
         {
           name: '沪深300', type: 'line', smooth: true, showSymbol: false,
           lineStyle: { color: '#60a5fa', width: 1.5, type: 'dashed' },
