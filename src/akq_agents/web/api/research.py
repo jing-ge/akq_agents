@@ -561,7 +561,9 @@ async def trigger_brainstorm(payload: dict[str, Any] | None = None) -> dict[str,
     # cron 路径仍用裸 day 桶, 防 misfire/重叠的语义不变。
     from akq_agents.web.api.control import _manual_partition
     partition = _manual_partition(_date.today().isoformat())
-    result = svc.job_runner.run(JOB_ID, partition, _do_brainstorm, timeout_s=120)
+    # M19 review P0-6: timeout 120→300 — 一轮 brainstorm 含 90 天 backfill 实测 60-125s,
+    # 老 timeout 容易 120s 超时但后台仍跑完, 前端 button 永转 用户看不到结果。
+    result = svc.job_runner.run(JOB_ID, partition, _do_brainstorm, timeout_s=300)
     return {
         "ok": result.status == "ok",
         "status": result.status,

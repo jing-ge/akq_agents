@@ -205,6 +205,8 @@ def backfill_one(
             "ok": True,
             "n_metrics_written": 0,
             "n_skipped": n_skipped,
+            "n_failed": 0,
+            "failed_dates": [],
             "latest_ic_mean": getattr(latest, "ic_mean", None) if latest else None,
             "latest_ir": getattr(latest, "ir", None) if latest else None,
             "latest_t_stat": getattr(latest, "t_stat", None) if latest else None,
@@ -217,14 +219,17 @@ def backfill_one(
         logger.warning("history_backfill: factor_history(%s) failed: %s", factor.name, exc)
         return {"ok": False, "reason": f"factor_history_failed: {exc}",
                 "n_metrics_written": 0, "n_skipped": n_skipped,
+                "n_failed": 0, "failed_dates": [],
                 "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
     if factor_history is None or factor_history.empty:
         return {"ok": False, "reason": "factor_history_empty",
                 "n_metrics_written": 0, "n_skipped": n_skipped,
+                "n_failed": 0, "failed_dates": [],
                 "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
 
     n_written = 0
     latest_metric = None
+    failed_dates: list[str] = []  # P0-3: 累加失败日期, 上报上层避免 silent data loss
     for as_of, _iso in todo:  # candidate_dates DESC, 最新在前
         as_of_d = as_of.date() if hasattr(as_of, "date") else as_of
         fh_sub = factor_history.loc[:as_of]
@@ -243,17 +248,22 @@ def backfill_one(
             if latest_metric is None:  # todo DESC, 第一个就是最新
                 latest_metric = metric
         except Exception as exc:  # noqa: BLE001
-            logger.debug("history_backfill: evaluate(%s, %s) failed: %s",
-                         factor.name, as_of_d, exc)
+            # P0-3: SQLite WAL 写并发 BUSY 超时, factor.compute 偶发异常等 — 累加而非吞掉,
+            # 让上层 (batch_deep_research / brainstorm) 能 write events 让用户看到
+            failed_dates.append(as_of_d.isoformat())
+            logger.warning("history_backfill: evaluate(%s, %s) failed: %s",
+                           factor.name, as_of_d, exc)
 
     if n_written == 0 and n_skipped == 0:
         return {"ok": False, "reason": "no_metric_written (insufficient history per as_of_date)",
                 "n_metrics_written": 0, "n_skipped": 0,
+                "n_failed": len(failed_dates), "failed_dates": failed_dates[:10],
                 "latest_ic_mean": None, "latest_ir": None, "latest_t_stat": None}
 
-    # full 模式标 backfill (避免 evaluator 内部 _read_recent_history 误标 inactive);
-    # fast 模式只新写少数行, 可能就是正常顺序写入, status 判定有意义 — 不强标
-    if mode == "full":
+    # P1-4 (review): fast 模式也 mark, 避免 evaluator._read_recent_history 看到"未来"
+    # row 把刚写入的行错标 inactive。强 active 不伤 — 真 inactive 由 _check_factor_decay
+    # 监控覆盖。
+    if todo:
         _mark_backfill_status(evaluator, factor.name, [d for d, _ in todo])
 
     # 拿到最新 metric: 优先用本次写入的; 没写入 (全 skip) 时从 db 拿
@@ -267,6 +277,8 @@ def backfill_one(
         "ok": True,
         "n_metrics_written": n_written,
         "n_skipped": n_skipped,
+        "n_failed": len(failed_dates),  # P0-3: 上层据此 write events
+        "failed_dates": failed_dates[:10],  # 截断防 event payload 过大
         "latest_ic_mean": latest_metric.ic_mean if latest_metric else None,
         "latest_ir": latest_metric.ir if latest_metric else None,
         "latest_t_stat": latest_metric.t_stat if latest_metric else None,

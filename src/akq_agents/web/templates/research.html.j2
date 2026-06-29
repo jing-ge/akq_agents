@@ -616,18 +616,18 @@ function renderLLMSuggestions(rows) {
       <td title="${escapeHtml(reason)}">${escapeHtml(reason.slice(0, 80))}${reason.length > 80 ? '…' : ''}</td>
       <td>${created}</td>
       <td>
-        <button class="primary" onclick="reviewLLM('${r.factor_name}','accept')">接受</button>
-        <button class="warn" onclick="reviewLLM('${r.factor_name}','reject')">拒绝</button>
+        <button class="primary" onclick="reviewLLM(this, '${r.factor_name}', 'accept')">接受</button>
+        <button class="warn" onclick="reviewLLM(this, '${r.factor_name}', 'reject')">拒绝</button>
       </td>
     </tr>`;
   }
   return html + '</tbody></table>';
 }
 
-async function reviewLLM(name, action) {
-  // M19: accept 现在同步跑 90 天 IS-IC backfill 约 30 秒, 必须给 loading 提示 +
-  // 禁用按钮防重复点击 (event.target 拿到点的那一行的按钮即可)。
-  const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+async function reviewLLM(btn, name, action) {
+  // P1-2 (review): 显式 btn 参数 — 之前用 event.target 拿按钮, 键盘 / a11y / 程序触发
+  // 时 event 不可用 → btn=null → "处理中…" 不出现, 用户连点触发多次 backfill。
+  // accept 现在同步跑 90 天 IS-IC backfill 约 30 秒, 必须给 loading + 禁用。
   let restoreLabel = null;
   if (btn) {
     restoreLabel = btn.innerHTML;

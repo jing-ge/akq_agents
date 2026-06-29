@@ -58,10 +58,15 @@ async function evictFactors(btn) {
   btn.disabled = true;
   const orig = btn.innerHTML;
   btn.innerHTML = '⏳ 计算淘汰名单中...';
+  const out = document.getElementById('control-output');
   try {
     const r = await fetch('/api/control/jobs/factor.eviction/trigger?dry_run=true', {method: 'POST'});
-    const d = await r.json();
-    const out = document.getElementById('control-output');
+    const d = await r.json().catch(() => ({}));
+    // P1-1 (review): 非 200 也要友好报错, 之前 ok=false 时下游 .payload undefined → "pool: NaN → NaN"
+    if (!r.ok) {
+      out.textContent = `❌ 淘汰失败 HTTP ${r.status}\n${formatErrorDetail(d || {})}`;
+      return;
+    }
     const payload = d.payload || {};
     const victims = payload.victims || [];
     out.textContent = '== DRY RUN 待淘汰名单 (前 ' + Math.min(victims.length, 30) + '/' + (payload.victims_n||0) + ') ==\n'
@@ -69,24 +74,24 @@ async function evictFactors(btn) {
       + 'min_score=' + (payload.min_score||0) + ', max_pool_size=' + (payload.max_pool_size||0) + '\n\n'
       + victims.slice(0, 30).map(v => `  ${v.name.padEnd(60)} score=${(v.score||0).toFixed(3)} status=${v.status} reason=${v.reason}`).join('\n');
     if (!victims.length) {
-      btn.innerHTML = orig;
-      btn.disabled = false;
       alert('当前没有需要淘汰的因子');
       return;
     }
     // 第 2 步: 用户确认后真删
     if (!confirm(`待淘汰 ${payload.victims_n} 个因子, 名单已显示在 console output。\n\n确认真删除吗?(物理删除 factor_proposals + factor_metrics, 不可恢复)`)) {
-      btn.innerHTML = orig;
-      btn.disabled = false;
       return;
     }
     btn.innerHTML = '⏳ 执行删除...';
     const r2 = await fetch('/api/control/jobs/factor.eviction/trigger', {method: 'POST'});
-    const d2 = await r2.json();
+    const d2 = await r2.json().catch(() => ({}));
+    if (!r2.ok) {
+      out.textContent += `\n\n❌ 真删除失败 HTTP ${r2.status}\n${formatErrorDetail(d2 || {})}`;
+      return;
+    }
     const p2 = d2.payload || {};
     out.textContent += '\n\n== 执行结果 ==\n实际淘汰: ' + (p2.victims_n||0) + ' 个, pool ' + (p2.pool_total_before||0) + ' → ' + (p2.pool_total_after||0);
   } catch (e) {
-    alert('淘汰失败: ' + (e.message || e));
+    out.textContent = `❌ 网络异常: ${(e && e.message) || e}`;
   } finally {
     btn.innerHTML = orig;
     btn.disabled = false;

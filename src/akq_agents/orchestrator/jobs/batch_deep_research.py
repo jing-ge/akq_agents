@@ -186,21 +186,31 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
             )
             return (factor.name, r.get("ok", False),
                     r.get("n_metrics_written", 0), r.get("n_skipped", 0),
+                    r.get("n_failed", 0), r.get("failed_dates", []),
                     r.get("reason"))
         except Exception as exc:  # noqa: BLE001
-            return (factor.name, False, 0, 0, f"exception: {exc}")
+            return (factor.name, False, 0, 0, 0, [], f"exception: {exc}")
 
     # 4 worker — pandas/numpy 大量 C 层释放 GIL, ThreadPool 有效。SQLite WAL 写并发
     # 由 evaluator._upsert 各自 open_meta_db 处理 (短事务, 写互斥但读不阻塞)。
     total_written = 0
     total_skipped = 0
+    total_failed_dates = 0  # P0-3: 累加因 SQLite BUSY / compute 异常等真失败的行数
+    factors_with_failures: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="deep-research") as ex:
         futures = [ex.submit(_process_one, f) for f in evaluation_targets]
         for fut in as_completed(futures):
             try:
-                name, ok, n_w, n_s, reason = fut.result()
+                name, ok, n_w, n_s, n_f, failed_dates, reason = fut.result()
                 total_written += n_w
                 total_skipped += n_s
+                total_failed_dates += n_f
+                if n_f > 0:
+                    factors_with_failures.append({
+                        "factor": name,
+                        "n_failed": n_f,
+                        "failed_dates": failed_dates,
+                    })
                 if ok and (n_w > 0 or n_s > 0):
                     metrics_written += 1
                 else:
@@ -211,6 +221,24 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
                 logger.warning("batch.deep_research: future raised: %s", exc)
                 failures += 1
 
+    # P0-3: 真有失败行的话 写 events 让 ops 看板可见
+    if total_failed_dates > 0:
+        state_store = services.get("scheduler_state_store")
+        if state_store is not None:
+            try:
+                state_store.write_event(
+                    level="warning",
+                    kind="factor.evaluate_failed_rows",
+                    source="batch.deep_research",
+                    payload={
+                        "total_failed_dates": total_failed_dates,
+                        "n_factors_with_failures": len(factors_with_failures),
+                        "sample": factors_with_failures[:5],  # 前 5 个截断防过大
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
     return {
         "factors_evaluated": metrics_written,
         "factors_failed": failures,
@@ -219,6 +247,7 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
         "mode": mode,
         "rows_written": total_written,
         "rows_skipped": total_skipped,
+        "rows_failed": total_failed_dates,  # P0-3: 真失败行数 (SQLite BUSY / 异常)
     }
 
 

@@ -127,10 +127,13 @@
       // 典型场景: JobRunner 撞 (job_id, partition) UNIQUE 返 ALREADY_OK 防重复触发,
       // 或 control endpoint 检测到当天/当小时已跑过. 用户点完按钮要看到"⏭ 已跑过"提示,
       // 而不是 ✅ 完成 (会误导用户以为有新结果)。
+      // P1-5 (review): noop 白名单 — 之前 (data.ok === false && data.reason_code) 太宽,
+      // 任何业务失败带 reason_code 都会被误标 noop 显示成 ⏭ 友好提示而非 ❌ 失败。
+      // 白名单只放真正"幂等跳过"语义的 code。
+      const NOOP_CODES = new Set(['ALREADY_OK', 'NOT_TRADING_DAY', 'GUARD_ERROR']);
       const isNoop = data && (
         data.status === 'noop' ||
-        (data.ok === false && data.reason_code) ||
-        data.reason_code === 'ALREADY_OK'
+        NOOP_CODES.has(data.reason_code)
       );
       if (isNoop) {
         stopTicker();
