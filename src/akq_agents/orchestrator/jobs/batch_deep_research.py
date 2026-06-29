@@ -88,19 +88,23 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
     proposal_store = services.get("factor_proposal_store")
 
     today = date.today()
+    # M19 review: 周末 / 节假日 / 盘中 today 数据没刷 — 用 calendar 找最近交易日.
+    # 旧逻辑 fallback today-1 跨周末会死.
+    cal = getattr(repo, "_calendar", None)
     # M19-A: 凌晨 / 盘前 today 数据还没刷, get_universe 会抛 DataNotReady.
-    # fallback 用昨天的 universe (历史滚动评估对 universe 精确性要求不高).
     try:
         universe = repo.get_universe(today)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("batch.deep_research: get_universe(today) failed: %s; fallback to today-1", exc)
+        fb = cal.previous_trading_day(today) if cal is not None else (today - timedelta(days=1))
+        logger.warning("batch.deep_research: get_universe(today) failed: %s; fallback to %s", exc, fb)
         try:
-            universe = repo.get_universe(today - timedelta(days=1))
+            universe = repo.get_universe(fb)
+            today = fb  # 同步推进, 让下面 OHLCV 拉同日期段
         except Exception as exc2:  # noqa: BLE001
             return {"factors_evaluated": 0, "reason": f"no_universe: {exc2}"}
     full_symbols = universe.symbols
 
-    # 限制 universe 减少计算量：取 top 500 by 流动性，与 PortfolioAgent 一致
+    # 限制 universe 减少计算量:取 top 500 by 流动性, 与 PortfolioAgent 一致
     from akq_agents.services.portfolio.combined_universe import build_portfolio_universe
 
     # 1) 汇总评估对象 (builtin + accepted + shadow + 历史 rejected/demoted, 跳过 compute_error)
@@ -115,8 +119,12 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
     start = today - timedelta(days=history_days * 2)
     ohlcv = repo.get_ohlcv_loose(full_symbols, start, today)
     if ohlcv.empty:
-        # 凌晨/盘前 today 可能还没数据；fallback 用 today-1
-        ohlcv = repo.get_ohlcv_loose(full_symbols, start, today - timedelta(days=1))
+        # 凌晨 / 盘前 / 周末 today 可能还没数据; fallback 用上一交易日
+        try:
+            prev_d = cal.previous_trading_day(today) if cal is not None else (today - timedelta(days=1))
+            ohlcv = repo.get_ohlcv_loose(full_symbols, start, prev_d)
+        except Exception:  # noqa: BLE001
+            pass
     if ohlcv.empty:
         return {"factors_evaluated": 0, "reason": "no_data", "n_targets": len(evaluation_targets)}
     portfolio_universe = build_portfolio_universe(

@@ -427,15 +427,21 @@ class DiscoveryEngine:
     def _prepare_data(self, as_of_date: date) -> tuple[pd.DataFrame, list[str]]:
         from datetime import timedelta
 
+        # M19 review: 周末 / 节假日 / 盘中 today 数据没刷 — 用 calendar 找最近交易日。
+        # 旧逻辑 fallback today-1 跨周末会死 (周一 → 周日 → 还是没数据)。
+        cal = getattr(self.repo, "_calendar", None)
+
         # M19-A: get_universe(today) 在 today 数据还没刷时会抛 DataNotReady,
-        # fallback 用 today-1 (历史滚动评估对 universe 精确性要求不高).
+        # fallback 用最近交易日 (历史滚动评估对 universe 精确性要求不高).
         try:
             full = self.repo.get_universe(as_of_date)
         except Exception as exc:  # noqa: BLE001
+            fb = cal.previous_trading_day(as_of_date) if cal is not None else (as_of_date - timedelta(days=1))
             logger.warning("discovery._prepare_data: get_universe(%s) failed: %s; fallback to %s",
-                           as_of_date, exc, as_of_date - timedelta(days=1))
+                           as_of_date, exc, fb)
             try:
-                full = self.repo.get_universe(as_of_date - timedelta(days=1))
+                full = self.repo.get_universe(fb)
+                as_of_date = fb  # 同步推进 as_of_date 让下面 get_ohlcv_loose 用同日期
             except Exception as exc2:  # noqa: BLE001
                 logger.warning("discovery._prepare_data: universe fallback also failed: %s", exc2)
                 return pd.DataFrame(), []
@@ -445,10 +451,13 @@ class DiscoveryEngine:
         start = as_of_date - timedelta(days=max_lookback * 2)
         ohlcv = self.repo.get_ohlcv_loose(full.symbols, start, as_of_date)
         # M19-A: 凌晨 / 盘前 today 数据还没刷, get_ohlcv_loose 可能返回 empty.
-        # fallback 用 today-1 重试一次, 避免 discovery 在凌晨触发时整轮空跑
-        # (导致 _promote_shadows 也不被调用, shadow OOS 计数无法推进).
+        # fallback 用上一交易日重试 (calendar 优先, 没有就裸 -1 天)
         if ohlcv.empty:
-            ohlcv = self.repo.get_ohlcv_loose(full.symbols, start, as_of_date - timedelta(days=1))
+            try:
+                prev_d = cal.previous_trading_day(as_of_date) if cal is not None else (as_of_date - timedelta(days=1))
+                ohlcv = self.repo.get_ohlcv_loose(full.symbols, start, prev_d)
+            except Exception:  # noqa: BLE001
+                pass
         if ohlcv.empty:
             return ohlcv, []
         from akq_agents.services.portfolio.combined_universe import build_portfolio_universe

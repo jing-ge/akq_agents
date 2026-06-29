@@ -58,14 +58,36 @@ class HistoryBackfillContext:
         as_of = as_of_date or date.today()
         window = getattr(evaluator, "_window", 60)
 
-        # M19-A universe fallback (跟 batch.deep_research / DiscoveryEngine._prepare_data 一致)
+        # M19 review: 周末 / 节假日 / 盘中触发时 today 没数据, 用 calendar 找最近交易日
+        # (旧逻辑只回退 1 天到 today-1, 跨周末必死). 没 calendar 就硬上 today。
+        cal = getattr(repo, "_calendar", None)
+        if cal is not None:
+            try:
+                # 探活今日数据是否就绪
+                repo.get_universe(as_of)
+            except Exception:  # noqa: BLE001
+                try:
+                    as_of = cal.previous_trading_day(as_of)
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                if not cal.is_trading_day(as_of):
+                    as_of = cal.previous_trading_day(as_of)
+            except Exception:  # noqa: BLE001
+                pass
+
         try:
             universe = repo.get_universe(as_of)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("history_backfill: get_universe(%s) failed: %s; fallback today-1",
+            logger.warning("history_backfill: get_universe(%s) failed: %s; fallback prev trading day",
                            as_of, exc)
             try:
-                universe = repo.get_universe(as_of - timedelta(days=1))
+                # 用 calendar 再退一步 (上面 fallback 失败时兜底)
+                if cal is not None:
+                    as_of = cal.previous_trading_day(as_of)
+                else:
+                    as_of = as_of - timedelta(days=1)
+                universe = repo.get_universe(as_of)
             except Exception as exc2:  # noqa: BLE001
                 logger.warning("history_backfill: universe fallback also failed: %s", exc2)
                 return None
@@ -75,7 +97,14 @@ class HistoryBackfillContext:
         pull_start = as_of - timedelta(days=(max_lb + window + days) * 2)
         ohlcv = repo.get_ohlcv_loose(universe.symbols, pull_start, as_of)
         if ohlcv.empty:
-            ohlcv = repo.get_ohlcv_loose(universe.symbols, pull_start, as_of - timedelta(days=1))
+            # ohlcv 空也尝试退一交易日
+            try:
+                prev_d = cal.previous_trading_day(as_of) if cal is not None else as_of - timedelta(days=1)
+                ohlcv = repo.get_ohlcv_loose(universe.symbols, pull_start, prev_d)
+                if not ohlcv.empty:
+                    as_of = prev_d
+            except Exception:  # noqa: BLE001
+                pass
         if ohlcv.empty:
             logger.warning("history_backfill: ohlcv empty for as_of=%s", as_of)
             return None
