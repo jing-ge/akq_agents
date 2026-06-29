@@ -395,17 +395,37 @@ async def backtest_single_factor(
     import pandas as _pd
 
     as_of = _d.today()
+    # M19 review: 周末 / 节假日 / 盘中 (today 是交易日但还没刷数据) 都会触发 OHLCV 空。
+    # 用 get_universe 探活今日数据是否就绪, 不就绪直接回退到上一个交易日。
+    try:
+        cal = svc.repo._calendar
+        # 试拿 today universe; 抛 DataNotReady 说明今天数据还没刷 (盘中常见)
+        try:
+            svc.repo.get_universe(as_of)
+        except Exception:  # noqa: BLE001
+            as_of = cal.previous_trading_day(as_of)
+        # 即便 universe 拿到, 还要确认是 trading_day (防万一)
+        if not cal.is_trading_day(as_of):
+            as_of = cal.previous_trading_day(as_of)
+    except Exception:  # noqa: BLE001
+        pass  # calendar 不可用 / 老 db 没数据, 硬上 today
+
     try:
         ohlcv, _ = engine._prepare_data(as_of)  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"prepare_data failed: {exc}")
     if ohlcv.empty:
+        # 再退一个交易日兜底
         try:
-            ohlcv, _ = engine._prepare_data(as_of - _td(days=1))  # type: ignore[attr-defined]
+            prev = svc.repo._calendar.previous_trading_day(as_of)
+            ohlcv, _ = engine._prepare_data(prev)  # type: ignore[attr-defined]
+            as_of = prev
         except Exception:  # noqa: BLE001
             pass
     if ohlcv.empty:
-        raise HTTPException(503, "no ohlcv data available")
+        raise HTTPException(503,
+            f"no ohlcv data available (尝试日期 {as_of.isoformat()} 及之前一交易日均无数据; "
+            f"可能数据未刷新, 等盘后或手动 /ops 触发 '拉取今日数据' 后重试)")
 
     close = ohlcv.pivot_table(
         index="date", columns="symbol", values="close", aggfunc="last"
