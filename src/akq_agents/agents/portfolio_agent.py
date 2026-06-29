@@ -31,7 +31,7 @@ def _compute_vol_20(ohlcv: pd.DataFrame) -> pd.Series:
     close = ohlcv.pivot_table(index="date", columns="symbol", values="close", aggfunc="last").sort_index()
     if len(close) < 21:
         return pd.Series(dtype=float, name="vol_20")
-    returns = close.pct_change().iloc[-20:]
+    returns = close.pct_change(fill_method=None).iloc[-20:]
     vol = pd.Series(returns.std(ddof=1))
     vol.name = "vol_20"
     return vol

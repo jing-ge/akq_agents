@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import random
+import warnings
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -94,27 +95,31 @@ def _apply_op(wide: pd.DataFrame, op: str, window: int) -> pd.DataFrame | None:
     # 但实际所有分支都返回 wide-format DataFrame。逐行 ignore 让类型检查闭嘴。
     if len(wide) < window + 1:
         return None
-    if op == "pct_change":
-        return wide.pct_change(periods=window, fill_method=None)  # pyright: ignore[reportReturnType]
-    if op == "rolling_mean":
-        return wide.rolling(window).mean()  # pyright: ignore[reportReturnType]
-    if op == "rolling_std":
-        return wide.pct_change(fill_method=None).rolling(window).std()  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
-    if op == "zscore":
-        rolled = wide.rolling(window)
-        return (wide - rolled.mean()) / rolled.std(ddof=0).replace(0, np.nan)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
-    if op == "rsi":
-        delta = wide.diff()
-        gain = delta.clip(lower=0).rolling(window).mean()
-        loss = (-delta.clip(upper=0)).rolling(window).mean()
-        rs = gain / loss.replace(0, np.nan)  # pyright: ignore[reportAttributeAccessIssue]
-        return 100 - (100 / (1 + rs))  # pyright: ignore[reportReturnType]
-    if op == "rolling_skew":
-        return wide.pct_change(fill_method=None).rolling(window).skew()  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
-    if op == "ts_max_norm":
-        return wide / wide.rolling(window).max().replace(0, np.nan) - 1.0  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
-    if op == "ts_min_norm":
-        return wide / wide.rolling(window).min().replace(0, np.nan) - 1.0
+    # rolling().skew()/std() 在窗口起始段全 NaN 时会发 RuntimeWarning，是设计内行为，
+    # 局部静音避免 daemon.log 噪音淹没真实告警。
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered", category=RuntimeWarning)
+        if op == "pct_change":
+            return wide.pct_change(periods=window, fill_method=None)  # pyright: ignore[reportReturnType]
+        if op == "rolling_mean":
+            return wide.rolling(window).mean()  # pyright: ignore[reportReturnType]
+        if op == "rolling_std":
+            return wide.pct_change(fill_method=None).rolling(window).std()  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "zscore":
+            rolled = wide.rolling(window)
+            return (wide - rolled.mean()) / rolled.std(ddof=0).replace(0, np.nan)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "rsi":
+            delta = wide.diff()
+            gain = delta.clip(lower=0).rolling(window).mean()
+            loss = (-delta.clip(upper=0)).rolling(window).mean()
+            rs = gain / loss.replace(0, np.nan)  # pyright: ignore[reportAttributeAccessIssue]
+            return 100 - (100 / (1 + rs))  # pyright: ignore[reportReturnType]
+        if op == "rolling_skew":
+            return wide.pct_change(fill_method=None).rolling(window).skew()  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "ts_max_norm":
+            return wide / wide.rolling(window).max().replace(0, np.nan) - 1.0  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "ts_min_norm":
+            return wide / wide.rolling(window).min().replace(0, np.nan) - 1.0
     raise ValueError(f"unknown op: {op}")
 
 

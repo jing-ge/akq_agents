@@ -30,7 +30,7 @@ class _Volatility20:
         # 至少需要 window+1 天才能算出 window 个收益率
         if len(close) < self.window + 1:
             return pd.Series({sym: np.nan for sym in close.columns}, name=self.name)
-        returns = close.pct_change().iloc[-self.window:]
+        returns = close.pct_change(fill_method=None).iloc[-self.window:]
         vol = returns.std(ddof=1)
         vol.name = self.name
         return vol.replace([np.inf, -np.inf], np.nan)
