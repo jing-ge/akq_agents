@@ -1421,15 +1421,25 @@ async function loadTradeList() {
     }
     const fmt = (v, d=2) => v == null ? '-' : Number(v).toLocaleString('en', {maximumFractionDigits: d});
 
+    // 待执行（!executed）统计 — 与顶部 KPI "今日 BUY/SELL" 口径一致
+    const pendingBuy = d.items.filter(i => i.action === 'BUY' && !i.executed).length;
+    const pendingSell = d.items.filter(i => i.action === 'SELL' && !i.executed).length;
+    const pendingBuyAmount = d.items
+      .filter(i => i.action === 'BUY' && !i.executed)
+      .reduce((s, i) => s + Math.abs(Number(i.delta_amount) || 0), 0);
+    const pendingSellAmount = d.items
+      .filter(i => i.action === 'SELL' && !i.executed)
+      .reduce((s, i) => s + Math.abs(Number(i.delta_amount) || 0), 0);
+
     sumEl.innerHTML = `
       ${d.stale_warning ? `<div class="stale-banner">${d.stale_warning}</div>` : ''}
       <div class="kpi-strip">
         <div style="grid-column: span 2" title="execution_date: 该按此清单下单的日; cohort_date: 系统算出该清单的日(收盘后)"><span class="small">建议执行日</span><span class="stat-num" style="white-space:nowrap">${d.execution_date || d.cohort_date}</span>${d.is_today ? '' : ' <span class="small" style="color:#fbbf24">(非今日)</span>'} <span class="small" style="color:var(--fg-dim)">(算于 ${d.cohort_date} 盘后)</span></div>
-        <div><span class="small">买入</span><span class="stat-num metric-good">${d.n_buy}</span></div>
-        <div><span class="small">卖出</span><span class="stat-num metric-bad">${d.n_sell}</span></div>
+        <div><span class="small">待买入</span><span class="stat-num ${pendingBuy > 0 ? 'metric-good' : ''}">${pendingBuy}</span></div>
+        <div><span class="small">待卖出</span><span class="stat-num ${pendingSell > 0 ? 'metric-bad' : ''}">${pendingSell}</span></div>
         <div><span class="small">不动</span><span class="stat-num">${d.n_hold}</span></div>
-        <div><span class="small">总买入额</span><span class="stat-num metric-good">¥${fmt(d.total_buy_amount, 0)}</span></div>
-        <div><span class="small">总卖出额</span><span class="stat-num metric-bad">¥${fmt(d.total_sell_amount, 0)}</span></div>
+        <div><span class="small">待买入额</span><span class="stat-num ${pendingBuyAmount > 0 ? 'metric-good' : ''}">¥${fmt(pendingBuyAmount, 0)}</span></div>
+        <div><span class="small">待卖出额</span><span class="stat-num ${pendingSellAmount > 0 ? 'metric-bad' : ''}">¥${fmt(pendingSellAmount, 0)}</span></div>
       </div>
     `;
 
@@ -1439,14 +1449,13 @@ async function loadTradeList() {
       if (a === 'SELL') return '<span class="status-error" style="font-weight:600">卖出</span>';
       return '<span style="color:#94a3b8">保持</span>';
     };
-    // 只显示 BUY/SELL，HOLD 折叠
+    // 只显示 BUY/SELL，HOLD 折叠；executed=true 的从主表收起到独立折叠区
     const tradable = d.items.filter(it => it.action !== 'HOLD');
+    const pendingTradable = tradable.filter(it => !it.executed);
+    const executedTradable = tradable.filter(it => it.executed);
     const holdItems = d.items.filter(it => it.action === 'HOLD');
-    let html = `<table class="trade-table"><thead><tr>
-      <th>动作</th><th>代码</th><th>行业</th>
-      <th>当前 → 目标</th><th>变动股数</th><th>金额</th>
-      <th>当前价</th><th>原因</th><th>操作</th>
-    </tr></thead><tbody>${tradable.map(it => `<tr>
+
+    const renderRow = (it, executedCol) => `<tr>
       <td>${actBadge(it.action)}</td>
       <td><code>${it.symbol}</code>${it.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(it.name)}</div>` : ''}</td>
       <td class="small">${it.industry || '-'}</td>
@@ -1455,8 +1464,26 @@ async function loadTradeList() {
       <td class="${it.delta_amount>=0?'metric-good':'metric-bad'}">¥${fmt(Math.abs(it.delta_amount), 0)}</td>
       <td>${fmt(it.current_price, 2)}</td>
       <td class="small">${it.reason || ''}</td>
-      <td>${it.executed ? '✓ 已执行' : `<button onclick="markExecuted('${it.symbol}', '${d.cohort_date}', this)" class="small">标记完成</button>`}</td>
-    </tr>`).join('')}</tbody></table>`;
+      <td>${executedCol ? '✓ 已执行' : `<button onclick="markExecuted('${it.symbol}', '${d.cohort_date}', this)" class="small">标记完成</button>`}</td>
+    </tr>`;
+
+    const tableHead = `<table class="trade-table"><thead><tr>
+      <th>动作</th><th>代码</th><th>行业</th>
+      <th>当前 → 目标</th><th>变动股数</th><th>金额</th>
+      <th>当前价</th><th>原因</th><th>操作</th>
+    </tr></thead>`;
+
+    let html = '';
+    if (pendingTradable.length > 0) {
+      html += `${tableHead}<tbody>${pendingTradable.map(it => renderRow(it, false)).join('')}</tbody></table>`;
+    } else if (executedTradable.length > 0) {
+      // 全部已执行的完成态 — 复用 empty-state 系列样式
+      html += `<div class="empty-state"><div class="empty-state-icon" style="color:var(--ok, #10b981)">✅</div><div>今日 ${executedTradable.length} 条交易已全部执行</div></div>`;
+    }
+    if (executedTradable.length > 0) {
+      html += `<details style="margin-top:14px"><summary class="small">展开 ${executedTradable.length} 条已执行交易</summary>`;
+      html += `${tableHead.replace('class="trade-table"', 'class="trade-table" style="margin-top:8px"')}<tbody>${executedTradable.map(it => renderRow(it, true)).join('')}</tbody></table></details>`;
+    }
     if (holdItems.length > 0) {
       html += `<details style="margin-top:14px"><summary class="small">展开 ${holdItems.length} 个保持不动的持仓</summary>`;
       html += `<table class="trade-table" style="margin-top:8px"><thead><tr>
