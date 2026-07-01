@@ -421,8 +421,8 @@ window.addEventListener('load', () => {
 
 <!-- A2 (M15): Shadow 战况看板 -->
 <div class="card" id="shadow-card" data-tab="llm">
-  <h2>Shadow 因子战况
-    <span class="small">OOS 观察中，等待 promote / demote 判决</span>
+  <h2>SHADOW 因子池
+    <span class="small">已参与组合选股（按 IS IR 加权），OOS 验证 promote / demote 判决中</span>
   </h2>
   <p class="small" style="margin:-6px 0 10px;color:var(--fg-mute)">
     阈值: OOS ≥ 20 天 + |IR| ≥ 0.15 → <b class="status-ok">promote</b>；
@@ -594,30 +594,65 @@ function renderShadowStats(rows) {
   const order = {'should_demote': 0, 'promote_eligible': 1, 'edge': 2, 'no_data': 3, 'evaluating': 4};
   rows.sort((a, b) => (order[a.verdict] ?? 5) - (order[b.verdict] ?? 5));
 
-  const verdictMap = {
-    'evaluating': '<span class="metric-dim">评估中（< 20d）</span>',
-    'no_data': '<span class="metric-warn">无 OOS 数据</span>',
-    'promote_eligible': '<span class="status-ok">达标 ✓</span>',
-    'edge': '<span class="metric-warn">边缘观察</span>',
-    'should_demote': '<span class="status-error">该 demote ⚠</span>',
-  };
-
   let html = '<table class="data-table"><thead><tr>'
-    + '<th>因子名</th><th>来源</th><th>方向</th><th>观察(天)</th><th>OOS 观察次数</th><th>OOS IR</th><th>判定</th>'
+    + '<th>因子名</th><th>来源</th><th>方向</th>'
+    + '<th title="因子历史 IS 期 (In-Sample) 的信息比率。CompositeScorer 会用这个值加权，绝对值越高在组合里权重越大。">IS IR</th>'
+    + '<th>观察 (天)</th><th>OOS 观察次数</th><th>OOS IR</th><th>判定</th>'
     + '</tr></thead><tbody>';
   for (const s of rows) {
-    const ir = s.oos_ir != null ? s.oos_ir.toFixed(3) : '—';
     const days = s.days_observed != null ? s.days_observed : '—';
     const obs = s.oos_observations != null ? s.oos_observations : '—';
     const source = s.is_llm ? '<span class="metric-dim">LLM</span>' : '<span class="metric-dim">auto</span>';
+
+    // IS IR 列 (M20): 展示 CompositeScorer 用来加权的 IS 期 IR
+    let isIrCell = '—';
+    if (s.ir != null) {
+      const absIr = Math.abs(s.ir);
+      const cls = absIr >= 0.15 ? 'metric-good' : (absIr < 0.10 ? 'metric-bad' : '');
+      isIrCell = cls ? `<span class="${cls}">${s.ir.toFixed(3)}</span>` : s.ir.toFixed(3);
+    }
+
+    // OOS IR 列 (M20): 区分「观察期未满」vs「data sparse 异常」
+    let oosIrCell;
+    if (s.oos_ir != null) {
+      oosIrCell = s.oos_ir.toFixed(3);
+    } else if ((s.oos_observations ?? 0) < 20) {
+      oosIrCell = `<span class="metric-dim">&lt;20d (${s.oos_observations ?? 0}/20)</span>`;
+    } else {
+      oosIrCell = '<span class="metric-warn">— (data sparse)</span>';
+    }
+
+    // 判定列 (M20): 中性化表述, 不再暗示 shadow 因子"没在工作"
+    let verdictCell;
+    switch (s.verdict) {
+      case 'evaluating':
+        verdictCell = `<span class="metric-dim">验证期 ${s.oos_observations ?? 0}/20d</span>`;
+        break;
+      case 'no_data':
+        verdictCell = '<span class="metric-warn">⚠️ 数据稀疏</span>';
+        break;
+      case 'promote_eligible':
+        verdictCell = '<span class="status-ok">✓ 满足晋升</span>';
+        break;
+      case 'should_demote':
+        verdictCell = '<span class="status-error">✗ 拟淘汰</span>';
+        break;
+      case 'edge':
+        verdictCell = `<span class="metric-dim">观察中 (${s.days_observed ?? 0}d)</span>`;
+        break;
+      default:
+        verdictCell = s.verdict;
+    }
+
     html += `<tr>
       <td><code>${s.factor_name}</code></td>
       <td>${source}</td>
       <td>${s.direction}</td>
+      <td>${isIrCell}</td>
       <td>${days}</td>
       <td>${obs}</td>
-      <td>${ir}</td>
-      <td>${verdictMap[s.verdict] || s.verdict}</td>
+      <td>${oosIrCell}</td>
+      <td>${verdictCell}</td>
     </tr>`;
   }
   return html + '</tbody></table>';
