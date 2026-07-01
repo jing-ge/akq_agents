@@ -42,12 +42,15 @@ class JobRunResult:
 DEFAULT_TRADING_DAY_REQUIRED: frozenset[str] = frozenset(
     {
         "batch.post_close",
-        "batch.deep_research",
         "data.refresh_daily",
         # M19 review: factor.brainstorm 不再依赖今日交易数据 — LLM 提议靠 prompt
         # 里的历史 metrics + 拒绝率统计 + 已上线因子列表, 周末跑出来的提议跟
         # 工作日跑出来的没差异。之前周末 cron skipped 导致用户周一看不到新提议。
         # "factor.brainstorm",
+        # batch.deep_research 不限交易日 — 用历史数据滚动评估 factor_metrics,
+        # 周末也要跑, 否则 shadow OOS 计数拖慢 (少 2 天/周 = 晋升周期拉长 28%)。
+        # yaml 注释明确写"不限交易日 (节假日也跑)", 之前白名单包含它属于配置/代码矛盾。
+        # "batch.deep_research",
         "factor.discovery",
         "factor.promote_shadows",
     }

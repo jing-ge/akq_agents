@@ -94,6 +94,19 @@ def test_run_trading_day_guard_only_for_whitelist(store: SchedulerStateStore) ->
     assert result.status == "ok"
 
 
+def test_batch_deep_research_runs_on_non_trading_day(store: SchedulerStateStore) -> None:
+    """S3 regression: batch.deep_research 不在 trading-day 白名单里, 周末/节假日也应跑,
+    否则 factor_metrics 少 2 天/周, shadow OOS 计数拖慢晋升周期。
+    yaml (scheduler.yaml:16-23) 明确 '不限交易日 (节假日也跑)'。"""
+    runner = JobRunner(
+        store,
+        is_trading_day=lambda _d: False,
+        executor=ThreadPoolExecutor(max_workers=1),
+    )
+    result = runner.run("batch.deep_research", "2026-06-27", lambda: {"factors_evaluated": 10}, timeout_s=10)
+    assert result.status == "ok", f"batch.deep_research 应能在非交易日跑, 但被 {result.reason_code} 阻止"
+
+
 def test_run_timeout_records_timeout_status(store: SchedulerStateStore) -> None:
     runner = JobRunner(
         store,
