@@ -38,11 +38,20 @@ class ChatSubConfig(BaseModel):
     history_window: int = 20
 
 
+class BrainstormSubConfig(BaseModel):
+    """factor.brainstorm LLM 参数（原本复用 chat 的 2000 tokens 会截断）。"""
+    model: str = "Claude-Opus-4.7"
+    # 20 个 recipe × ~200 token/条 (JSON + 中文 rationale) = ~4000 token 保险起见给 6000
+    max_tokens: int = 6000
+    temperature: float = 1.0
+
+
 class LLMConfig(BaseModel):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     default_model: str = "Claude-Opus-4.7"
     analyst: AnalystSubConfig = Field(default_factory=AnalystSubConfig)
     chat: ChatSubConfig = Field(default_factory=ChatSubConfig)
+    brainstorm: BrainstormSubConfig = Field(default_factory=BrainstormSubConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
 
     @classmethod

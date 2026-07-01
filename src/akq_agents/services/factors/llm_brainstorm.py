@@ -135,16 +135,76 @@ def _recipe_to_name(recipe: dict) -> str:
     return f"llm_{recipe['op']}_{recipe['base']}_{recipe['window']}_{recipe['direction']}_{h}"
 
 
+def _extract_complete_objects(arr_body: str) -> list[dict]:
+    """从 suggestions 数组体里逐个提取完整 JSON 对象（用于 LLM 截断兜底）。
+
+    输入是 "[" 之后 "]" 之前那段（可能不完整），扫描 top-level 花括号，
+    每匹配到一对完整的 {...} 就 json.loads 之，失败的对象跳过。
+    """
+    out: list[dict] = []
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    for k, ch in enumerate(arr_body):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = k
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    out.append(json.loads(arr_body[start:k + 1]))
+                except Exception:  # noqa: BLE001
+                    pass
+                start = -1
+    return out
+
+
 def _parse_llm_response(text: str) -> list[dict]:
     """从 LLM 返回里提取 suggestions 列表。
 
     宽容点：找最外层 {...} 即可（兼容 ```json fence、前后多余文字）。
+    LLM 输出被 max_tokens 截断时，走 fallback 从 "suggestions": [ 起逐个提取
+    完整对象，返回前 N 个成功解析的（不整包失败）。
     """
     i = text.find("{")
     j = text.rfind("}")
     if i < 0 or j < 0:
         raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
-    data = json.loads(text[i:j + 1])
+    try:
+        data = json.loads(text[i:j + 1])
+    except json.JSONDecodeError:
+        # 截断兜底：从 suggestions 数组头部起，逐个提取完整对象
+        arr_start = text.find('"suggestions"')
+        if arr_start < 0:
+            raise
+        bracket = text.find("[", arr_start)
+        if bracket < 0:
+            raise
+        # 尽量吃到 text 末尾（不管有没有 "]"），_extract_complete_objects 只认完整 {...}
+        arr_end = text.rfind("]")
+        arr_body = text[bracket + 1 : arr_end if arr_end > bracket else len(text)]
+        suggestions = _extract_complete_objects(arr_body)
+        if not suggestions:
+            raise
+        logger.warning(
+            "LLM response truncated (JSONDecodeError); recovered %d complete suggestions via fallback parser",
+            len(suggestions),
+        )
+        return suggestions
     suggestions = data.get("suggestions")
     if not isinstance(suggestions, list):
         raise ValueError(f"LLM output missing 'suggestions' list: keys={list(data.keys())}")

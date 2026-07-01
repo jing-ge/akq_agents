@@ -2,7 +2,10 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from akq_agents.services.factors.llm_brainstorm import build_state_summary
+from akq_agents.services.factors.llm_brainstorm import (
+    _parse_llm_response,
+    build_state_summary,
+)
 from akq_agents.services.factors.proposal_store import (
     FactorProposal, FactorProposalStore, now_iso,
 )
@@ -162,3 +165,31 @@ def test_brainstormer_skips_duplicate_recipe(tmp_path: Path) -> None:
     stats = brainstormer.run(n=1)
     assert stats["duplicate"] == 1
     assert stats["accepted_into_review"] == 0
+
+
+def test_parse_llm_response_recovers_from_truncation():
+    """LLM 输出被 max_tokens 截断时应回退到"提取前 N 个完整对象"，
+    而不是整包 JSONDecodeError 爆掉。"""
+    # 模拟：3 个完整 suggestion + 第 4 个截断在 rationale 中间
+    truncated = (
+        '{\n'
+        '  "suggestions": [\n'
+        '    {"recipe": {"base":"close","op":"pct_change","window":5,"direction":"long"}, "rationale": "短期动量"},\n'
+        '    {"recipe": {"base":"amount","op":"rolling_mean","window":20,"direction":"long"}, "rationale": "流动性"},\n'
+        '    {"recipe": {"base":"vwap","op":"rsi","window":10,"direction":"short"}, "rationale": "反转"},\n'
+        '    {"recipe": {"base":"close","op":"zscore","window":5,"direction":"lo'
+        # 到这里就断了，没有 ", "rationale": ..., "]", "}" 三层收尾
+    )
+    got = _parse_llm_response(truncated)
+    # 应该救回前 3 个完整的
+    assert len(got) == 3
+    assert got[0]["recipe"]["op"] == "pct_change"
+    assert got[2]["recipe"]["op"] == "rsi"
+
+
+def test_parse_llm_response_normal_still_works():
+    """回归：完整 JSON 应该走原路径，不受截断兜底影响。"""
+    complete = '{"suggestions": [{"recipe": {"base": "close", "op": "pct_change", "window": 5, "direction": "long"}, "rationale": "test"}]}'
+    got = _parse_llm_response(complete)
+    assert len(got) == 1
+    assert got[0]["recipe"]["window"] == 5

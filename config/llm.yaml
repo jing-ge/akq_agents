@@ -23,5 +23,10 @@ llm:
     temperature: 1.0
     max_iterations: 6
     history_window: 20
+  brainstorm:
+    # factor.brainstorm 独立配置；20 个 recipe × ~200 token/条会撑爆 chat 的 2000
+    model: "Claude-Opus-4.7"
+    max_tokens: 6000
+    temperature: 1.0
   safety:
     disclaimer_header: "本报告由 LLM 生成，仅供研究参考，不构成投资建议；系统不执行任何交易指令。"

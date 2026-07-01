@@ -170,9 +170,9 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             registry=services["factor_registry"],
             evaluator=services["factor_evaluator"],
             repo=services["data_repository"],  # M19: 让 brainstorm 入库时跑 90 天 IC backfill
-            model=llm_cfg.chat.model,
-            max_tokens=llm_cfg.chat.max_tokens,
-            temperature=llm_cfg.chat.temperature,
+            model=llm_cfg.brainstorm.model,
+            max_tokens=llm_cfg.brainstorm.max_tokens,
+            temperature=llm_cfg.brainstorm.temperature,
         )
 
         # M17: Alerter（每 30 分钟巡检 NAV / data refresh / 因子衰减，触发 macOS 通知）
