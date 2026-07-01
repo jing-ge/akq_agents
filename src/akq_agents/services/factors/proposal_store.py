@@ -121,6 +121,10 @@ class FactorProposalStore:
                    created_at, evaluated_at, shadow_started_at, oos_observations, oos_ir)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(factor_name) DO UPDATE SET
+                  -- promote 时 OOS IR < 0 会 flip direction 并改写 recipe_json;
+                  -- 之前 update set 里漏了这两个字段, 落库丢失, daemon 重启 restore 会读老 recipe.
+                  recipe_json=excluded.recipe_json,
+                  direction=excluded.direction,
                   status=excluded.status,
                   ic_mean=excluded.ic_mean,
                   ic_std=excluded.ic_std,

@@ -193,3 +193,38 @@ def test_parse_llm_response_normal_still_works():
     got = _parse_llm_response(complete)
     assert len(got) == 1
     assert got[0]["recipe"]["window"] == 5
+
+
+def test_proposal_store_upsert_persists_direction_flip(tmp_path: Path) -> None:
+    """F2 regression: promote 时 OOS IR<0 会 flip direction 并改写 recipe_json,
+    upsert 必须把这两个字段落库, 否则 daemon 重启 restore_accepted_factors 读到老 recipe,
+    flip 静默失效。"""
+    store = FactorProposalStore(tmp_path / "meta.db")
+
+    # 1) 初始入库 long 方向
+    p = FactorProposal(
+        factor_name="llm_test_flip_direction",
+        recipe_json='{"base":"close","op":"pct_change","window":5,"direction":"long"}',
+        direction="long",
+        status="shadow",
+        ic_mean=0.01, ic_std=0.05, ir=0.20, t_stat=2.5, max_abs_corr=0.30,
+        reason="initial",
+        created_at=now_iso(),
+        evaluated_at=None,
+    )
+    store.upsert(p)
+
+    # 2) promote 时 flip: 改 recipe_json/direction 后再 upsert
+    p.recipe_json = '{"base":"close","op":"pct_change","window":5,"direction":"short"}'
+    p.direction = "short"
+    p.status = "accepted"
+    p.reason = "promoted after flip"
+    store.upsert(p)
+
+    # 3) 读回来必须是 short (之前 bug: 只 update status, recipe/direction 保持老值)
+    rows = store.list_recent(status="accepted")
+    got = next(r for r in rows if r.factor_name == "llm_test_flip_direction")
+    assert got.direction == "short", f"direction 落库丢失: 实际 {got.direction!r}"
+    assert '"direction":"short"' in got.recipe_json, \
+        f"recipe_json 落库丢失: {got.recipe_json}"
+
