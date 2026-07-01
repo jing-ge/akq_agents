@@ -87,6 +87,10 @@ async def trigger_job(name: str, n_candidates: int = 20, force_full: bool = Fals
         from akq_agents.orchestrator.jobs.batch_post_close import _do, JOB_ID
         # 把 recorder 通过 services 临时传入（避免改 _do 签名）
         ws_services = dict(svc.workflow.services)
+        # bootstrap.py:303 里 daemon_services 除了 workflow.services 还额外注入了
+        # workflow 自身；手动 trigger 路径要与 daemon 对齐，否则 _do 里
+        # services["workflow"] 会 KeyError。
+        ws_services["workflow"] = svc.workflow
         if recorder is not None:
             ws_services["__recorder__"] = recorder  # batch_post_close._make_recorder 会忽略这个，按需扩展
         result = svc.job_runner.run(JOB_ID, partition, lambda: _do(ws_services), timeout_s=5400)
