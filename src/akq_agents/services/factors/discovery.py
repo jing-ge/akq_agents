@@ -1,15 +1,22 @@
 """自动因子发现引擎。
 
-核心思想：
-- **DSL 空间**：通过 base × op × window 三轴组合，可生成大量"算子-基线-窗口"候选因子；
-- **运行时编译**：每个 recipe 在 `compute(ohlcv)` 时直接计算，无需手写 Factor 子类；
-- **门槛筛选**：调用现有 `FactorEvaluator` 算 IC/IR，叠加"与已 active 因子的相关性"门槛；
-- **持久化决策**：写入 `factor_proposals` 表，accepted 因子注册进 `FactorRegistry`。
+核心思想（重构后, 双通道并存）:
+- **DSL 空间 (auto 路径)**: 通过 base × op × window × direction 笛卡尔积, 结构化生成
+  大量"算子-基线-窗口"候选因子; 安全稳定, 不依赖 LLM.
+- **Code 空间 (LLM 路径)**: LLM 自由写 Python `compute(ohlcv) -> pd.Series`,
+  走 sandbox 受限执行; 探索空间不受 DSL 约束限制.
 
-设计原则（YAGNI）：
-- 不写 LLM 生成因子；仅用结构化 DSL 即可产出几百种候选；
-- 不引入符号回归/遗传算法；纯随机/穷举抽样足以提供发现能力；
-- 一个候选的 compute 不需要是"最优"的——只要 IC/IR 满足门槛就接收。
+- **运行时编译 (DSL)**: 每个 recipe 在 `compute(ohlcv)` 时直接计算, 无需手写 Factor 子类;
+- **沙箱执行 (Code)**: source_code 走 sandbox.py AST 静态检查 + 受控 builtin exec,
+  失败 / 危险 / 超时直接拒绝.
+- **门槛筛选**: 两条路径共用 FactorEvaluator 算 IC/IR, 叠加"与已 active 因子的相关性"门槛;
+- **持久化决策**: 写入 `factor_proposals` 表 (recipe_kind 区分 dsl/code),
+  accepted 因子注册进 `FactorRegistry`.
+
+设计原则（YAGNI）:
+- DSL 路径不引入 LLM 生成; 5×8×5×2=400 组合, 抽样 + dedup 即可;
+- Code 路径不引入符号回归/遗传算法; LLM 直出 Python 是最直接的"自由空间";
+- 一个候选的 compute 不需要是"最优"的——只要 IC/IR 满足门槛就接收.
 """
 
 from __future__ import annotations
@@ -25,12 +32,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from akq_agents.services.factors.base import Factor, FactorRegistry
+from akq_agents.services.factors.base import CodeFactor, Factor, FactorRegistry
 from akq_agents.services.factors.proposal_store import (
     FactorProposal,
     FactorProposalStore,
     now_iso,
     recipe_to_json,
+)
+from akq_agents.services.factors.sandbox import (
+    UnsafeCodeError,
+    compile_code_factor,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,9 +144,39 @@ def _recipe_to_name(recipe: dict) -> str:
     return f"auto_{recipe['op']}_{recipe['base']}_{recipe['window']}_{recipe['direction']}_{h}"
 
 
-def make_factor(recipe: dict, *, factor_version: int = 1) -> Factor:
-    """从 recipe 字典实例化一个 Runtime Factor（duck-typed Factor）。"""
-    name = _recipe_to_name(recipe)
+def make_factor(
+    recipe: dict,
+    *,
+    factor_version: int = 1,
+    name: str | None = None,
+) -> Factor:
+    """从 recipe 字典实例化一个 Runtime Factor (duck-typed Factor)。
+
+    重构: 如果 recipe 里有 ``_source_code`` 字段, 走 sandbox 编译成 CodeFactor.
+    这种情况一般只在 restore (启动期从 db 读回) 时发生 ——
+    正在运行的 discovery 主流程只抽样 DSL recipe, LLM 提议走 LLMCodeBrainstormer.
+    """
+    if "_source_code" in recipe:
+        # 启动期 restore 用: db 里的 recipe_json 里塞了 source_code (重 serialize)
+        source = recipe["_source_code"]
+        direction = recipe.get("direction", "long")
+        try:
+            fn, ch = compile_code_factor(source, timeout_s=10.0)
+        except UnsafeCodeError:
+            # restore 时 source 已变不安全 (人改库 / schema 漂移) → 退回 DSL 部分编译
+            # 实际不应发生, 兜底
+            raise
+        return CodeFactor(
+            name=name or f"code_unknown_{ch[:6]}",
+            source_code=source,
+            fn=fn,
+            factor_version=factor_version,
+            direction=direction,
+            code_hash=ch,
+            description=recipe.get("description", ""),
+        )
+
+    name = name or _recipe_to_name(recipe)
     lookback = max(recipe["window"] * 3, 60)  # 给评估留余量
     f = _RuntimeFactor(
         name=name,
@@ -153,8 +194,28 @@ def make_factor(recipe: dict, *, factor_version: int = 1) -> Factor:
 
 
 @dataclass
+class CodeProposal:
+    """Code-kind 候选 (LLM 出的 source_code, 不走 DSL).
+
+    discovery 主流程目前不直接采样 (Code 来源主要是 LLM brainstormer),
+    但保留数据结构以便 FactorSpace.sample_code_candidates 在未来从历史 rejected
+    code 里 mutation 二次探索.
+    """
+
+    source_code: str
+    code_hash: str
+    direction: str = "long"
+    description: str = ""
+
+
+@dataclass
 class FactorSpace:
-    """三轴笛卡尔积空间 + 随机/穷举抽样。"""
+    """重构: 三轴 DSL 笛卡尔积 + Code 子空间.
+
+    DSL 路径: bases × ops × windows × directions (5×8×5×2=400)
+    Code 路径: source_code 字符串, 不限制 base/op/window/direction, 由
+    LLMCodeBrainstormer 在 brainstorming 时填充. discovery 自身不主动生成.
+    """
 
     bases: tuple[str, ...] = tuple(_BASES.keys())
     ops: tuple[str, ...] = _OPS
@@ -654,7 +715,7 @@ class DiscoveryEngine:
         )
         self.proposal_store.upsert(proposal)
 
-    def _promote_shadows(self, *, stats: "DiscoveryStats", as_of_date: date) -> None:
+    def _promote_shadows(self, *, stats: DiscoveryStats, as_of_date: date) -> None:
         """遍历 shadow 因子，根据 shadow_started_at 算出累计 OOS 天数。
 
         - 累计 OOS 天数 < shadow_min_oos_days：跳过
@@ -847,6 +908,8 @@ def restore_accepted_factors(
     CompositeScorer 用 min_abs_ir 阈值统一筛选 — 表现达标就用, 不分来源。
 
     rejected/demoted 不 restore (recipe 已经被人工/自动判定不行)。
+
+    重构: 支持 recipe_kind='code' — 从 ``p.recipe_code`` 读 source, sandbox 编译成 CodeFactor.
     """
     from akq_agents.services.factors.proposal_store import recipe_from_json
 
@@ -856,8 +919,25 @@ def restore_accepted_factors(
         if p.status not in ("accepted", "shadow"):
             continue
         try:
-            recipe = recipe_from_json(p.recipe_json)
-            factor = make_factor(recipe)
+            if p.recipe_kind == "code":
+                # Code 路径: 从 recipe_code 字段取 source, sandbox 编译
+                if not p.recipe_code:
+                    logger.warning("restore: code factor %s missing recipe_code, skip",
+                                   p.factor_name)
+                    continue
+                fn, ch = compile_code_factor(p.recipe_code, timeout_s=10.0)
+                factor = CodeFactor(
+                    name=p.factor_name,
+                    source_code=p.recipe_code,
+                    fn=fn,
+                    factor_version=p.factor_name and 1 or 1,  # code 路径暂无 version 概念, 默认 1
+                    direction=p.direction,
+                    code_hash=ch or p.code_hash or "",
+                )
+            else:
+                # DSL 路径 (默认)
+                recipe = recipe_from_json(p.recipe_json)
+                factor = make_factor(recipe)
             # 强制保持 db 里的 factor_name（即便 recipe 改过 direction）
             # 这样 factor_metrics / portfolio_attribution 等历史表的 key 一致
             factor.name = p.factor_name  # type: ignore[attr-defined]

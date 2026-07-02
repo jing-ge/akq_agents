@@ -237,6 +237,121 @@ class JobRunner:
             return "DATA_NOT_READY", "skipped"
         return "UNKNOWN", "failed"
 
+    def submit(
+        self,
+        job_id: str,
+        partition: str,
+        fn: Callable[[], dict[str, Any] | None],
+        *,
+        timeout_s: int,
+    ) -> "concurrent.futures.Future[JobRunResult]":
+        """M22: 提交后立即返回, 不阻塞 caller. 用于 web /api/jobs/{name}/trigger force_full
+        这类用户手动触发但耗时长的场景 — web 端拿到 future 后立即返回 202 + job_id,
+        用户去 /api/ops/job-runs 看进度。
+
+        行为对齐 run() 的 4 步:
+          1) 幂等检查 (ALREADY_OK → 立即返回 noop future)
+          2) trading_day 护栏 (skip)
+          3) 记 running
+          4) 提交 fn 到 threadpool, future.result() 完成后由后台线程写 ok/failed/timeout
+
+        区别: 不在 caller 线程等 result, 由 threadpool worker 完成后自己写 job_runs。
+        即使 caller (web handler) 已经 return response, 后台仍会写完。
+        """
+        import concurrent.futures  # local import 避免污染模块顶部
+
+        # 1) 幂等检查
+        existing = self._store.get_job_run(job_id, partition)
+        if existing is not None and existing.status == "ok":
+            fut: concurrent.futures.Future = concurrent.futures.Future()
+            fut.set_result(JobRunResult(job_id, partition, "noop", reason_code="ALREADY_OK"))
+            return fut
+
+        # 2) trading_day 护栏
+        if job_id in self._required:
+            today = date.today()
+            try:
+                if not self._is_trading_day(today):
+                    self._record_skipped(job_id, partition, "NOT_TRADING_DAY")
+                    fut2: concurrent.futures.Future = concurrent.futures.Future()
+                    fut2.set_result(JobRunResult(job_id, partition, "skipped", reason_code="NOT_TRADING_DAY"))
+                    return fut2
+            except Exception as exc:  # noqa: BLE001
+                self._record_failed(job_id, partition, "GUARD_ERROR", str(exc))
+                fut3: concurrent.futures.Future = concurrent.futures.Future()
+                fut3.set_result(JobRunResult(job_id, partition, "failed", reason_code="GUARD_ERROR"))
+                return fut3
+
+        # 3) 记 running
+        started_at = datetime.now().isoformat()
+        self._store.upsert_job_run(
+            job_id=job_id,
+            partition=partition,
+            status="running",
+            started_at=started_at,
+        )
+
+        # 4) 提交到 JobRunner 自带的 4-worker pool. 不同于 run() 的"嵌套 submit 再 result",
+        # submit 路径必须直接在 worker 线程里跑 fn(), 否则 caller 释放 future 后 web handler
+        # 立即返回, 但实际业务函数 _do(...) 还卡在"4 worker 池等自己嵌套的 future.result()"上.
+        # 正确做法: 在 worker 线程直接调 fn, fn 内部自己管理 (asyncio.to_thread / ThreadPoolExecutor).
+        def _wrapped() -> JobRunResult:
+            start_mono = time.monotonic()
+            try:
+                payload = fn()
+            except FuturesTimeout:
+                return self._finish_run(job_id, partition, started_at, start_mono,
+                                         "timeout", "TIMEOUT", payload=None)
+            except Exception as exc:  # noqa: BLE001
+                reason_code, kind_suffix = self._classify_exception(exc)
+                return self._finish_run(job_id, partition, started_at, start_mono,
+                                         "failed" if kind_suffix == "failed" else "skipped",
+                                         reason_code, payload=None, exc=exc)
+            else:
+                return self._finish_run(job_id, partition, started_at, start_mono,
+                                         "ok", None, payload=payload)
+
+        return self._executor.submit(_wrapped)
+
+    def _finish_run(
+        self, job_id: str, partition: str, started_at: str, start_mono: float,
+        status: str, reason_code: str | None,
+        *, payload: Any = None, exc: Exception | None = None,
+    ) -> JobRunResult:
+        """submit() 路径的后处理: 写 job_runs + event, 返回 JobRunResult。"""
+        duration_ms = int((time.monotonic() - start_mono) * 1000)
+        finished_at = datetime.now().isoformat()
+        self._store.upsert_job_run(
+            job_id=job_id,
+            partition=partition,
+            status=status,
+            reason_code=reason_code,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            payload=payload if isinstance(payload, dict) and status == "ok" else (
+                {"error": str(exc)} if exc is not None else None
+            ),
+        )
+        if status == "ok":
+            self._store.write_event(
+                level="info", kind=f"{job_id}.completed", source=job_id,
+                payload={"partition": partition, "duration_ms": duration_ms,
+                         **(payload if isinstance(payload, dict) else {})},
+            )
+        elif status == "timeout":
+            self._store.write_event(
+                level="warning", kind=f"{job_id}.timeout", source=job_id,
+                payload={"partition": partition, "timeout_s": duration_ms // 1000},
+            )
+        else:
+            self._store.write_event(
+                level="error", kind=f"{job_id}.failed", source=job_id,
+                payload={"partition": partition, "reason_code": reason_code,
+                         "error": str(exc) if exc else None},
+            )
+        return JobRunResult(job_id, partition, status, reason_code=reason_code, duration_ms=duration_ms, payload=payload)
+
     def shutdown(self, *, wait: bool = False) -> None:
         """关闭内部 executor。"""
         self._executor.shutdown(wait=wait)

@@ -195,6 +195,57 @@ def test_parse_llm_response_normal_still_works():
     assert got[0]["recipe"]["window"] == 5
 
 
+def test_proposal_store_list_existing_recipes_dedup_and_recent_first(tmp_path: Path) -> None:
+    """M24: 列出所有已尝试过的 recipe_json, 按 created_at DESC 倒序, 重复去重。"""
+    store = FactorProposalStore(tmp_path / "meta.db")
+    r1 = '{"base":"close","op":"pct_change","window":5,"direction":"long"}'
+    r2 = '{"base":"close","op":"zscore","window":30,"direction":"long"}'
+    # r1 入库两次 (去重)
+    store.upsert(FactorProposal(
+        factor_name="a_close_pct_change_5_long", recipe_json=r1,
+        direction="long", status="rejected",
+        ic_mean=None, ic_std=None, ir=None, t_stat=None, max_abs_corr=None,
+        reason="x", created_at=now_iso(), evaluated_at=now_iso(),
+    ))
+    store.upsert(FactorProposal(
+        factor_name="b_close_pct_change_5_long", recipe_json=r1,
+        direction="long", status="rejected",
+        ic_mean=None, ic_std=None, ir=None, t_stat=None, max_abs_corr=None,
+        reason="x", created_at=now_iso(), evaluated_at=now_iso(),
+    ))
+    store.upsert(FactorProposal(
+        factor_name="c_close_zscore_30_long", recipe_json=r2,
+        direction="long", status="rejected",
+        ic_mean=None, ic_std=None, ir=None, t_stat=None, max_abs_corr=None,
+        reason="x", created_at=now_iso(), evaluated_at=now_iso(),
+    ))
+
+    out = store.list_existing_recipes()
+    assert len(out) == 2  # 去重
+    assert set(out) == {r1, r2}
+
+
+def test_build_state_summary_includes_existing_recipes_section(tmp_path: Path) -> None:
+    """M24: build_state_summary 必须在末尾追加"已被尝试过的 recipe 列表"章节, 给 LLM 用来避开。"""
+    registry = MagicMock()
+    registry.list_all.return_value = []
+    evaluator = MagicMock(get_latest=MagicMock(return_value=None))
+
+    store = FactorProposalStore(tmp_path / "meta.db")
+    store.upsert(FactorProposal(
+        factor_name="auto_zscore_close_20_long_x", recipe_json='{"base":"close","op":"zscore","window":20,"direction":"long"}',
+        direction="long", status="rejected",
+        ic_mean=None, ic_std=None, ir=None, t_stat=None, max_abs_corr=None,
+        reason="x", created_at=now_iso(), evaluated_at=now_iso(),
+    ))
+
+    md = build_state_summary(registry, evaluator, store)
+
+    assert "已被尝试过的 recipe" in md
+    # 已尝试的具体 recipe_json 字符串应在 prompt 里
+    assert '{"base":"close","op":"zscore","window":20,"direction":"long"}' in md
+
+
 def test_proposal_store_upsert_persists_direction_flip(tmp_path: Path) -> None:
     """F2 regression: promote 时 OOS IR<0 会 flip direction 并改写 recipe_json,
     upsert 必须把这两个字段落库, 否则 daemon 重启 restore_accepted_factors 读到老 recipe,

@@ -31,7 +31,21 @@ router = APIRouter()
 # ---------- manual job trigger --------------------------------------------
 
 
-_SUPPORTED_JOBS = {"batch.post_close", "batch.deep_research", "factor.discovery", "factor.eviction"}
+_SUPPORTED_JOBS = {
+    "batch.post_close", "batch.deep_research", "factor.discovery", "factor.eviction",
+    # M24: 4 个 user-facing 业务, picker 跑完写 job_results, 前端 GET /result 端点轮询.
+    "factor.backtest_single", "factor.brainstorm",
+    "portfolio.trade_list_recompute", "portfolio.nav_rebuild",
+}
+
+# M24: 这 4 个 job_id 走 picker 时 payload 字段映射, control.trigger 透传给 daemon.
+# 其他 8 个 (batch.* / factor.discovery / factor.eviction) 沿用原 payload schema.
+_USER_FACING_PAYLOAD_KEYS: dict[str, list[str]] = {
+    "factor.backtest_single": ["factor_name", "days", "rebalance_step", "top_n"],
+    "factor.brainstorm": ["n"],
+    "portfolio.trade_list_recompute": [],
+    "portfolio.nav_rebuild": [],
+}
 
 
 def _manual_partition(base: str) -> str:
@@ -46,110 +60,121 @@ def _manual_partition(base: str) -> str:
 
 
 @router.post("/jobs/{name}/trigger")
-async def trigger_job(name: str, n_candidates: int = 20, force_full: bool = False, dry_run: bool = False) -> dict[str, Any]:
-    """同步触发 job。C5: 走 JobRunner 写 job_runs/events，与 daemon cron 路径一致。
+async def trigger_job(
+    name: str,
+    body: dict[str, Any] | None = None,
+    n_candidates: int = 20,
+    force_full: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """统一手动触发入口。M24: 8 + 4 = 12 个 job 全部走 pending_triggers 异步通道, 立即 202.
 
-    M19: partition 改成 `{base}-manual-{hex6}` 唯一格式, **手动触发不走幂等**, 用户
-    点多少次跑多少次。cron 路径仍用裸 hour/day 桶, (job_id, partition) UNIQUE 防 misfire
-    重复触发的语义不变。前端 button.disabled 防连点导致的 race。
+    M23: web 永远不跑业务, 写 pending_triggers + 立即 202, daemon picker 5s 扫一次 claim 跑.
+    M19: partition = `{base}-manual-{hex6}` 唯一, 多次手动点击各自独立.
 
-    Args:
-        force_full: 仅对 batch.deep_research 生效. False (默认, fast 模式) — 只算 db
-            缺失的日期, 通常几分钟跑完. True (full 模式) — 重算全部 90 天历史 IC 覆盖
-            db, ~10-15 分钟. 数据修复 / 怀疑历史错算时用。
-        dry_run: 仅对 factor.eviction 生效. True — 只统计待淘汰名单不真删, 用户先看准了再执行。
+    Args (兼容老 query param + M24 body):
+    - query 模式: n_candidates (factor.discovery), force_full (batch.deep_research), dry_run (factor.eviction)
+    - body 模式 (M24): factor.backtest_single {factor_name, days, rebalance_step, top_n} 等
+    - 优先级: body 优先; query 缺省值仅给老 job 用, M24 新 job 完全靠 body.
     """
     if name not in _SUPPORTED_JOBS:
         raise HTTPException(404, f"unknown job: {name}")
     svc: ServiceContainer = get_services()
-    if svc.job_runner is None:
-        raise HTTPException(503, "job_runner not ready (web container 未装配)")
+    if svc.sched_store is None:
+        raise HTTPException(503, "sched_store not ready (web container 未装配)")
     base_partition = date.today().isoformat()
     partition = _manual_partition(base_partition)
 
-    if name == "batch.post_close":
-        if svc.workflow is None:
-            raise HTTPException(503, "workflow not ready")
-        # M11: 加上 step recorder 让 UI 能看见子步骤
-        recorder = None
-        try:
-            from akq_agents.orchestrator.step_recorder import StepRecorder
-            repo = svc.workflow.services.get("data_repository")
-            if repo is not None:
-                recorder = StepRecorder(
-                    repo._base_dir / "meta.db",
-                    parent_job_id="batch.post_close",
-                    parent_partition=partition,
-                )
-        except Exception:  # noqa: BLE001
-            recorder = None
+    # 并发防护
+    if svc.sched_store.has_pending_or_running_for_job(name):
+        raise HTTPException(
+            409,
+            f"{name} 已有 pending/running 任务, 请等当前任务结束再触发 (看 /api/ops/job-runs 状态)",
+        )
 
-        from akq_agents.orchestrator.jobs.batch_post_close import _do, JOB_ID
-        # 把 recorder 通过 services 临时传入（避免改 _do 签名）
-        ws_services = dict(svc.workflow.services)
-        # bootstrap.py:303 里 daemon_services 除了 workflow.services 还额外注入了
-        # workflow 自身；手动 trigger 路径要与 daemon 对齐，否则 _do 里
-        # services["workflow"] 会 KeyError。
-        ws_services["workflow"] = svc.workflow
-        if recorder is not None:
-            ws_services["__recorder__"] = recorder  # batch_post_close._make_recorder 会忽略这个，按需扩展
-        result = svc.job_runner.run(JOB_ID, partition, lambda: _do(ws_services), timeout_s=5400)
-        return {
-            "status": result.status,
-            "reason_code": result.reason_code,
-            "payload": result.payload,
-        }
-
+    # 构造 payload: 老 job 走 query param, M24 新 job 走 body 透传.
+    payload: dict[str, Any] = dict(body or {})
     if name == "batch.deep_research":
-        from akq_agents.orchestrator.jobs.batch_deep_research import _do, JOB_ID
+        payload.setdefault("mode", "full" if force_full else "fast")
+    elif name == "factor.discovery":
+        payload.setdefault("n_candidates", n_candidates)
+    elif name == "factor.eviction":
+        payload.setdefault("dry_run", dry_run)
+    elif name in _USER_FACING_PAYLOAD_KEYS:
+        # M24: 业务参数 (factor_name / days / n 等) 必须在 body 传, 缺关键字段 400.
+        if name == "factor.backtest_single" and not payload.get("factor_name"):
+            raise HTTPException(400, "factor.backtest_single 需要 body.factor_name")
+        # 截白名单外的字段 (前端不小心多塞字段也不会被 daemon 误用)
+        allowed = set(_USER_FACING_PAYLOAD_KEYS[name])
+        payload = {k: v for k, v in payload.items() if k in allowed}
 
-        ws_services = svc.workflow.services if svc.workflow else {}
-        mode = "full" if force_full else "fast"
-        result = svc.job_runner.run(JOB_ID, partition, lambda: _do(ws_services, mode=mode), timeout_s=5400)
+    trigger_id = svc.sched_store.create_pending_trigger(
+        job_id=name, partition=partition, payload=payload,
+    )
+
+    # 立即写一行 job_runs.status='pending' 让 UI /api/ops/job-runs 立刻能看到记录.
+    try:
+        svc.sched_store.upsert_job_run(
+            job_id=name, partition=partition, status="pending",
+            payload={"trigger_id": trigger_id, **(payload or {})},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("upsert job_runs pending failed (non-fatal): %s", exc)
+
+    # M24: user-facing job 给前端多返一个 result_poll_url 端点, 业务跑完读 result.
+    result_poll_url = None
+    if name in _USER_FACING_PAYLOAD_KEYS:
+        result_poll_url = f"/api/control/jobs/{name}/{partition}/result"
+
+    return {
+        "status": "accepted",
+        "reason_code": "ASYNC_QUEUED",
+        "payload": {
+            "job_id": name,
+            "partition": partition,
+            "trigger_id": trigger_id,
+            "poll_url": f"/api/ops/job-runs/{name}/{partition}/detail",
+            "result_poll_url": result_poll_url,
+            "hint": "任务已入队, daemon 5s 内 pick 起来跑, 进度查 poll_url, M24 user-facing job 跑完结果查 result_poll_url",
+        },
+    }
+
+
+@router.get("/jobs/{name}/{partition}/result")
+async def get_job_result(name: str, partition: str) -> dict[str, Any]:
+    """M24: 前端轮询读 user-facing job 的业务结果.
+
+    返回:
+    - 200 + result JSON: picker 写好了
+    - 200 + {status: "running"}: trigger 存在, picker 还没写 result (前端继续 poll)
+    - 200 + {status: "not_found"}: 没 trigger 过 (前端报 404, 让用户重 trigger)
+    - 503: sched_store 没装
+    """
+    svc: ServiceContainer = get_services()
+    if svc.sched_store is None:
+        raise HTTPException(503, "sched_store not ready")
+    if name not in _SUPPORTED_JOBS:
+        raise HTTPException(404, f"unknown job: {name}")
+    # 先看 trigger 行存不存在 (写 pending_triggers 时落地)
+    # 没直接接口, 但 job_runs 一定有 pending/ok/failed 行 — 用它判定 "not_found" vs "running"
+    jr = svc.sched_store.get_job_run(name, partition)
+    if jr is None:
+        return {"status": "not_found", "job_id": name, "partition": partition}
+    result = svc.sched_store.get_job_result(name, partition)
+    if result is None:
+        # trigger 存在但 result_json 还是 NULL → 业务还在跑
         return {
-            "status": result.status,
-            "reason_code": result.reason_code,
-            "payload": result.payload,
+            "status": "running",
+            "job_id": name,
+            "partition": partition,
+            "job_run_status": jr.status,
         }
-
-    if name == "factor.discovery":
-        engine = svc.discovery_engine
-        if engine is None:
-            raise HTTPException(503, "discovery_engine not ready")
-        from akq_agents.orchestrator.jobs.factor_discovery import JOB_ID, _partition_for_now
-
-        def _do_discovery() -> dict[str, Any]:
-            stats = engine.run_batch(n_candidates=n_candidates, as_of_date=date.today())
-            return stats.as_dict()
-
-        # 手动 partition 用 hour 桶 + manual 后缀, 跟 daemon cron hour 桶分开命名空间
-        discovery_partition = _manual_partition(_partition_for_now())
-        result = svc.job_runner.run(JOB_ID, discovery_partition, _do_discovery, timeout_s=900)
-        return {
-            "status": result.status,
-            "reason_code": result.reason_code,
-            "payload": result.payload,
-        }
-
-    if name == "factor.eviction":
-        from akq_agents.orchestrator.jobs.factor_eviction import _do as _do_eviction
-        from akq_agents.orchestrator.jobs.factor_eviction import JOB_ID
-        from akq_agents.bootstrap import load_scheduler_config
-
-        scheduler_cfg = load_scheduler_config()
-        ws_services = svc.workflow.services if svc.workflow else {}
-
-        def _do_evict() -> dict[str, Any]:
-            return _do_eviction(ws_services, scheduler_cfg, dry_run=dry_run)
-
-        result = svc.job_runner.run(JOB_ID, partition, _do_evict, timeout_s=300)
-        return {
-            "status": result.status,
-            "reason_code": result.reason_code,
-            "payload": result.payload,
-        }
-
-    raise HTTPException(500, "unreachable")
+    return {
+        "status": "ok",
+        "job_id": name,
+        "partition": partition,
+        "result": result,
+    }
 
 
 # ============================================================

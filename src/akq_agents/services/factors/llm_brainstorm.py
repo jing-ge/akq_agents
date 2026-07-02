@@ -1,7 +1,12 @@
-"""LLM-based factor brainstorming.
+"""LLM-based factor brainstorming (DSL 受限路径).
 
 让大模型看现状 → 提出新 recipe → 入库为 llm_suggested。
 **不**直接进 OOS 流程；需人工审核。
+
+**重构**: 该模块只负责 DSL 受限路径 (base × op × window × direction 笛卡尔积).
+不限制空间的 code 自由路径在 :mod:`akq_agents.services.factors.llm_code_brainstorm`.
+本模块类名 ``LLMDSLFactorBrainstormer`` 是新名, 旧名 ``LLMFactorBrainstormer`` 保留
+作为别名 (向后兼容 bootstrap / tests / web 端现有引用).
 """
 
 from __future__ import annotations
@@ -12,9 +17,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from akq_agents.services.factors.discovery import _BASES, _OPS, _WINDOWS, _DIRECTIONS
+from akq_agents.services.factors.discovery import _BASES, _DIRECTIONS, _OPS, _WINDOWS
 from akq_agents.services.factors.proposal_store import (
-    FactorProposal, FactorProposalStore, now_iso, recipe_to_json,
+    FactorProposal,
+    FactorProposalStore,
+    now_iso,
+    recipe_to_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,6 +110,20 @@ def build_state_summary(
         lines.append("")
         for name, reason in recent_rejected:
             lines.append(f"- `{name}`: {reason[:100]}")
+        lines.append("")
+
+    # 5) M24 brainstorm: 列出所有已尝试过的 recipe (去重)，让 LLM 直接看到要避开的组合。
+    # DSL 候选空间只有 5×8×5×2=400，随机提 N 个极易全撞重复 → 全部 dedup 掉 → 用户看不到任何
+    # llm_suggested。这里把已用 recipe 显式塞 prompt, 让 LLM 主动挑未用过的。
+    existing = store.list_existing_recipes(limit=400)
+    if existing:
+        lines.append(
+            f"# 已被尝试过的 recipe 列表（共 {len(existing)} 种；请避开这些组合，"
+            f"只从剩余未用过的组合中挑）"
+        )
+        lines.append("")
+        for rj in existing:
+            lines.append(f"- {rj}")
         lines.append("")
 
     return "\n".join(lines)
@@ -211,8 +233,12 @@ def _parse_llm_response(text: str) -> list[dict]:
     return suggestions
 
 
-class LLMFactorBrainstormer:
-    """让 LLM 提因子，写入 factor_proposals 为 llm_suggested 等人工审核。"""
+class LLMDSLFactorBrainstormer:
+    """让 LLM 在 DSL 受限空间内提 recipe, 写入 factor_proposals 为 llm_suggested.
+
+    DSL 受限: base × op × window × direction 四元组, 组合空间 5×8×5×2=400.
+    想探索不受限空间 (LLM 自由写 Python) 请用 LLMCodeFactorBrainstormer.
+    """
 
     def __init__(
         self,
@@ -375,3 +401,7 @@ class LLMFactorBrainstormer:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("backfill_one(%s) failed: %s", name, exc)
         stats["backfilled"] = n_backfilled
+
+
+# 重构: 保留旧名作为向后兼容别名, 让 bootstrap / tests / web 现有引用继续工作
+LLMFactorBrainstormer = LLMDSLFactorBrainstormer

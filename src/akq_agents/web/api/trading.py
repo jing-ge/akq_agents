@@ -124,7 +124,9 @@ async def list_holdings() -> dict[str, Any]:
 
 @router.put("/holdings/{symbol}")
 async def upsert_holding(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """手动校准持仓：shares / avg_cost / note。修改后立即重算今日 trade_list。"""
+    """手动校准持仓：shares / avg_cost / note。M24: 改完 fire-and-forget 写一个
+    portfolio.trade_list_recompute trigger 到 daemon, 立即返回 200, 不阻塞 web.
+    """
     svc = get_services()
     workflow = svc.workflow
     store = workflow.services.get("holdings_store") if workflow else None
@@ -146,32 +148,61 @@ async def upsert_holding(symbol: str, payload: dict[str, Any]) -> dict[str, Any]
             )
     store.upsert(symbol, shares, avg_cost=avg_cost, note=note)
 
-    # L-1: 持仓改了 → 重算今日 trade_list
-    recompute_result = _recompute_today_trade_list()
+    # M24: fire-and-forget trade_list 重算到 daemon. 失败也不影响 PUT 200.
+    # 用 sched_store 直接写 trigger 避免走 trigger_job 的 409 检查 — 持仓 PUT 不该被
+    # "已有 pending trade_list_recompute" 阻塞, 反正 picker 会按 FIFO 跑, 多个 trigger
+    # 会让 trade_list 算多次 (取最后一个的结果).
+    if svc.sched_store is not None:
+        try:
+            from akq_agents.web.api.control import _manual_partition
+            partition = _manual_partition(_date.today().isoformat())
+            trig_id = svc.sched_store.create_pending_trigger(
+                job_id="portfolio.trade_list_recompute", partition=partition, payload={},
+            )
+            svc.sched_store.upsert_job_run(
+                job_id="portfolio.trade_list_recompute", partition=partition, status="pending",
+                payload={"trigger_id": trig_id, "from": "upsert_holding", "symbol": symbol},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("upsert_holding: enqueue trade_list_recompute failed (non-fatal): %s", exc)
 
-    return {"status": "ok", "symbol": symbol, "shares": shares, "recompute": recompute_result}
+    return {"status": "ok", "symbol": symbol, "shares": shares}
 
 
 @router.delete("/holdings/{symbol}")
 async def delete_holding(symbol: str) -> dict[str, Any]:
-    """删除一只持仓（等价于 shares=0）。修改后立即重算今日 trade_list。"""
+    """删除一只持仓（等价于 shares=0）。M24: 同上, fire-and-forget trade_list_recompute."""
     svc = get_services()
     workflow = svc.workflow
     store = workflow.services.get("holdings_store") if workflow else None
     if store is None:
         raise HTTPException(503, "holdings_store not ready")
     store.upsert(symbol, 0.0)
-    recompute_result = _recompute_today_trade_list()
-    return {"status": "ok", "recompute": recompute_result}
+    if svc.sched_store is not None:
+        try:
+            from akq_agents.web.api.control import _manual_partition
+            partition = _manual_partition(_date.today().isoformat())
+            trig_id = svc.sched_store.create_pending_trigger(
+                job_id="portfolio.trade_list_recompute", partition=partition, payload={},
+            )
+            svc.sched_store.upsert_job_run(
+                job_id="portfolio.trade_list_recompute", partition=partition, status="pending",
+                payload={"trigger_id": trig_id, "from": "delete_holding", "symbol": symbol},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("delete_holding: enqueue trade_list_recompute failed (non-fatal): %s", exc)
+    return {"status": "ok"}
 
 
 @router.post("/holdings/recompute")
 async def recompute_trade_list_manual() -> dict[str, Any]:
-    """手动触发 trade_list 重算（用于调试 / 用户主动刷新）。"""
-    result = _recompute_today_trade_list()
-    if not result.get("recomputed"):
-        raise HTTPException(503, result.get("error", "unknown"))
-    return result
+    """M24: trade_list 重算走 daemon 异步通道. 立即 202 + result_poll_url.
+
+    之前同步跑: 读 snapshot + 拉 close + generate_trade_list, 1-5s, 把 web event loop 阻塞.
+    现在 web 立即 202, 前端用 result_poll_url 轮询 /jobs/portfolio.trade_list_recompute/{partition}/result.
+    """
+    from akq_agents.web.api.control import trigger_job as _trigger
+    return await _trigger(name="portfolio.trade_list_recompute", body={})
 
 
 @router.get("/today-list")

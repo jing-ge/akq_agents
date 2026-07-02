@@ -64,7 +64,7 @@ class DataRefreshConfig(BaseModel):
 
 
 class FactorBrainstormConfig(BaseModel):
-    """LLM 因子构建方向建议 job（每日 cron 20:00）。
+    """LLM 因子构建方向建议 job（每日 cron 20:00, DSL 受限路径）。
 
     走 trading_day 白名单。每次产出 n_suggestions 条 status='llm_suggested' 记录，
     等待人工 /research 页审核。
@@ -75,6 +75,26 @@ class FactorBrainstormConfig(BaseModel):
     minute: int = 0
     timeout_s: int = 120
     n_suggestions: int = 20
+
+
+class FactorCodeBrainstormConfig(BaseModel):
+    """重构: LLM 自由 Python 代码因子构建 job (每日 cron 21:00, 不限制空间路径).
+
+    与 FactorBrainstormConfig 的区别:
+    - LLM 输出 Python ``def compute(ohlcv) -> pd.Series`` 源码, 走 sandbox 编译
+    - 不限定 base × op × window × direction 笛卡尔积, 探索空间无限
+    - 跨 session 同源代码 sha1 自动去重
+    - 同样走 trading_day 白名单 + 人工审核 + OOS 评估
+
+    错开调度: factor.brainstorm 20:00 跑, factor.code_brainstorm 21:00 跑,
+    避免 LLM gateway 限速 / 单轮 50s backfill 撞车.
+    """
+
+    enabled: bool = True
+    hour: int = 21
+    minute: int = 0
+    timeout_s: int = 180   # sandbox 编译 + LLM 90s + 90 天 IC backfill 20 因子 ~50s
+    n_suggestions: int = 10  # code 路径更慢, 默认少一些
 
 
 class FactorPromoteShadowsConfig(BaseModel):
@@ -109,6 +129,20 @@ class FactorEvictionConfig(BaseModel):
     new_factor_grace_days: int = 14       # 新因子保护期 (仅对 shadow/llm_suggested/accepted 生效)
 
 
+class ManualTriggerPickerConfig(BaseModel):
+    """M23: web → daemon 手动触发通道 picker 配置.
+
+    走秒级 interval (5s 一次扫 pending_triggers). 不同于其他用 ``interval_minutes`` 的
+    job, 这里用 ``interval_seconds`` 因为 picker 想要秒级响应 (用户点完 trigger
+    按钮后 5s 内能 daemon claim 起来跑). ``timeout_s`` 是单行被 claim 后给 JobRunner
+    跑业务的硬上限 (跟 batch.* / factor.* 业务的最大耗时对齐, 5400s = 90min).
+    """
+
+    enabled: bool = True
+    interval_seconds: int = 5
+    timeout_s: int = 5400
+
+
 class AlerterConfig(BaseModel):
     """M17 alerter job：定期巡检几项关键指标，触发条件就写 events.alert.* + macOS notify。"""
 
@@ -137,10 +171,17 @@ class SchedulerJobsConfig(BaseModel):
     )
     factor_discovery: FactorDiscoveryConfig = Field(default_factory=FactorDiscoveryConfig)
     factor_brainstorm: FactorBrainstormConfig = Field(default_factory=FactorBrainstormConfig)
+    # 重构: LLM 自由代码路径, 不限定 DSL 空间
+    factor_code_brainstorm: FactorCodeBrainstormConfig = Field(
+        default_factory=FactorCodeBrainstormConfig
+    )
     factor_promote_shadows: FactorPromoteShadowsConfig = Field(default_factory=FactorPromoteShadowsConfig)
     factor_eviction: FactorEvictionConfig = Field(default_factory=FactorEvictionConfig)
     data_refresh: DataRefreshConfig = Field(default_factory=DataRefreshConfig)
     alerter: AlerterConfig = Field(default_factory=AlerterConfig)
+    manual_trigger_picker: ManualTriggerPickerConfig = Field(
+        default_factory=ManualTriggerPickerConfig
+    )
 
 
 class RetentionConfig(BaseModel):

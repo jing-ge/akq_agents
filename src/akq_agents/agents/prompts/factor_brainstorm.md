@@ -9,6 +9,13 @@
 2. 当前已上线（accepted）因子及其 IC / IR
 3. 历史 proposal 按 (base, op) 聚合的拒绝率
 4. 最近被拒绝的因子和拒绝原因（参考避开）
+5. **所有已被尝试过的 recipe 列表（必须避开这些组合）**
+
+# 关键约束
+
+DSL 候选空间只有 `5 base × 8 op × 5 window × 2 direction = 400` 种 recipe。系统里**已经用过的 recipe 我会显式列在状态报告末尾**，你**必须避开**这些组合，只从剩余未尝试的组合中挑选。
+
+如果可用组合不足 N 个，请**老实输出少于 N 个**，不要重复、不要瞎编新 base/op/window/direction。
 
 # 输出格式（严格 JSON）
 

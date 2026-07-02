@@ -12,6 +12,7 @@ P3b 起：根据连续 N 周 IR 退化判定 'inactive'，CompositeScorer 才会
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -103,13 +104,64 @@ def _rolling_ic(
     return pd.Series(ic_series, index=f.index, dtype=float)
 
 
+def _rolling_ic_full(
+    factor_history: pd.DataFrame,
+    forward_returns: pd.DataFrame,
+) -> pd.Series:
+    """M22: 一次算完所有日期的逐日 Spearman IC，返回完整 series。
+
+    之前 evaluate 90 次每次重算同一 60 天 IC，浪费 90x CPU。
+    新 API 给 batch backfill 用：对一个因子算 1 次 90 天 IC series，
+    然后取 tail(60) 算 mean/std/IR/t_stat 各 90 次（O(1) 每次）。
+    """
+    aligned_idx = factor_history.index.intersection(forward_returns.index)
+    if len(aligned_idx) < 3:
+        return pd.Series(dtype=float)
+    f = factor_history.loc[aligned_idx]
+    r = forward_returns.loc[aligned_idx]
+    ic_series = []
+    ic_index = []
+    for d in f.index:
+        f_row = f.loc[d]
+        r_row = r.loc[d]
+        try:
+            f_s = pd.Series(f_row).dropna()
+            r_s = pd.Series(r_row).dropna()
+        except (TypeError, ValueError):
+            ic_series.append(np.nan)
+            ic_index.append(d)
+            continue
+        common = f_s.index.intersection(r_s.index)
+        if len(common) < 3:
+            ic_series.append(np.nan)
+            ic_index.append(d)
+            continue
+        ic_series.append(f_s.loc[common].rank().corr(r_s.loc[common].rank()))
+        ic_index.append(d)
+    return pd.Series(ic_series, index=ic_index, dtype=float)
+
+
 class FactorEvaluator:
     """对每个因子计算滚动 IC / IR / t-stat 并写 factor_metrics 表。"""
 
     def __init__(self, meta_db_path: Path, window: int = 60) -> None:
         self._db = Path(meta_db_path)
         self._window = window
+        # M22: evaluate_batch / batch() context manager 的 buffer + flag.
+        # 关键: 必须 thread-local. 8 worker 共享 evaluator 实例时, 共享 buffer 会导致
+        # 互相看到对方的 metrics, 互相 flush, 状态完全乱. history_backfill 在 batch_deep_research
+        # 8 worker pool 下跑必须 thread-local 才能安全.
+        import threading
+        self._tls = threading.local()
         self._ensure_schema()
+
+    def _pending_metrics(self) -> list:
+        if not hasattr(self._tls, "pending"):
+            self._tls.pending = []
+        return self._tls.pending
+
+    def _in_batch(self) -> bool:
+        return getattr(self._tls, "in_batch", False)
 
     def _ensure_schema(self) -> None:
         with open_meta_db(self._db) as conn:
@@ -179,8 +231,143 @@ class FactorEvaluator:
                 status=status,
                 reason=reason,
             )
-        self._upsert(metric)
+        # M22: 写入 thread-local buffer. 默认 evaluate 单调走单 commit. history_backfill 在
+        # batch() context 内累积 buffer 不 flush, context exit 时一次 _upsert_many.
+        # 8 worker 共享 evaluator 时, thread-local 隔离各 worker 的 buffer.
+        buf = self._pending_metrics()
+        buf.append(metric)
+        if not self._in_batch():
+            if buf:
+                self._upsert_many(buf)
+                self._tls.pending = []
         return metric
+
+    @contextmanager
+    def batch(self):
+        """M22: 进入 batch 模式, evaluate 内部 _pending_metrics 累积, 退出时一次 _upsert_many.
+
+        适合 history_backfill (90 天 1 因子) / batch_deep_research 之后需要 N 行同写场景.
+        异常路径自动 flush 已累积的 (best-effort), 仍抛原异常.
+
+        Thread-local: 同一 evaluator 实例在 8 worker 下各自独立 buffer, 互不干扰.
+        """
+        prev = self._in_batch()
+        self._tls.in_batch = True
+        try:
+            yield
+        except BaseException:
+            # 异常前 flush 已写入的, 不让脏数据卡住下次 batch
+            buf = self._pending_metrics()
+            if buf:
+                try:
+                    self._upsert_many(buf)
+                except Exception:
+                    pass
+                self._tls.pending = []
+            raise
+        finally:
+            self._tls.in_batch = prev
+            buf = self._pending_metrics()
+            if not self._in_batch() and buf:
+                self._upsert_many(buf)
+                self._tls.pending = []
+
+    def evaluate_batch(
+        self,
+        *,
+        factor: "Factor",
+        factor_history: pd.DataFrame,
+        forward_returns: pd.DataFrame,
+        as_of_dates: list,
+    ) -> list:
+        """M22: 批量评估. 内部按日期循环 evaluate 逻辑 (status 判定要最新历史), 但累积
+        metrics 不立即写, 结束后 _upsert_many 一次 commit.
+
+        与 evaluate() 区别: evaluate() 写 1 行 1 commit (默认); evaluate_batch() 写 N 行 1 commit.
+        history_backfill.py 90 天回填走这个, 锁争用从 90x 降到 1x.
+
+        重要: 每个 as_of_date 的 status 判定依赖"前 N 期的历史", 所以中途不能
+        _upsert_many (会改变 _read_recent_history 结果). 严格串行执行.
+        """
+        results: list = []
+        try:
+            for as_of_date in as_of_dates:
+                fh_sub = factor_history.loc[:as_of_date]
+                fr_sub = forward_returns.loc[:as_of_date]
+                common_idx = fh_sub.index.intersection(fr_sub.index)
+                if len(common_idx) < self._window:
+                    metric = FactorMetric(
+                        factor_name=factor.name,
+                        factor_version=factor.factor_version,
+                        as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
+                        window_days=self._window,
+                        ic_mean=None, ic_std=None, ir=None, t_stat=None,
+                        status="active", reason="insufficient_data",
+                    )
+                else:
+                    metric = self._compute_metric(
+                        factor=factor,
+                        factor_history=fh_sub.loc[common_idx],
+                        forward_returns=fr_sub.loc[common_idx],
+                        as_of_date=as_of_date,
+                    )
+                # 不立即写, 暂存到 instance buffer
+                self._pending_metrics.append(metric)
+                results.append(metric)
+            # 一次 commit
+            if self._pending_metrics:
+                self._upsert_many(self._pending_metrics)
+                self._pending_metrics = []
+        finally:
+            # 异常路径清理 buffer, 避免下次误用
+            self._pending_metrics = []
+        return results
+
+    def _compute_metric(
+        self,
+        *,
+        factor: "Factor",
+        factor_history: pd.DataFrame,
+        forward_returns: pd.DataFrame,
+        as_of_date,
+    ) -> "FactorMetric":
+        """M22: evaluate() 的纯计算部分, 不写 db, 供 evaluate_batch 复用."""
+        ic = _rolling_ic(factor_history, forward_returns, self._window)
+        ic_clean = ic.dropna()
+        if len(ic_clean) < 5:
+            return FactorMetric(
+                factor_name=factor.name,
+                factor_version=factor.factor_version,
+                as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
+                window_days=self._window,
+                ic_mean=None, ic_std=None, ir=None, t_stat=None,
+                status="active", reason="insufficient_data",
+            )
+        ic_mean = float(ic_clean.mean())
+        ic_std = float(ic_clean.std(ddof=1))
+        ir = ic_mean / ic_std if ic_std > 0 else None
+        t_stat = ir * np.sqrt(len(ic_clean)) if ir is not None else None
+        status = "active"
+        reason: str | None = None
+        if ir is None or abs(ir) < 0.15:
+            recent = self._read_recent_history(factor.name, factor.factor_version, limit=4)
+            low_count = 1 if (ir is None or abs(ir) < 0.15) else 0
+            for m in recent:
+                if m.ir is None or abs(m.ir) < 0.15:
+                    low_count += 1
+            if low_count >= 3:
+                status = "inactive"
+                reason = "low_ir_persistent"
+            else:
+                reason = f"low_ir_observed_{low_count}/5"
+        return FactorMetric(
+            factor_name=factor.name,
+            factor_version=factor.factor_version,
+            as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
+            window_days=self._window,
+            ic_mean=ic_mean, ic_std=ic_std, ir=ir, t_stat=t_stat,
+            status=status, reason=reason,
+        )
 
     def _upsert(self, metric: FactorMetric) -> None:
         with open_meta_db(self._db) as conn:
@@ -211,6 +398,41 @@ class FactorEvaluator:
                     metric.status,
                     metric.reason,
                 ),
+            )
+            conn.commit()
+
+    def _upsert_many(self, metrics: list[FactorMetric]) -> None:
+        """M22: 批量 upsert。1 个因子 90 天 metrics 一次事务, vs 之前 90 次单事务.
+
+        单事务减少 90x 的 BEGIN/COMMIT 开销 + 减少 sqlite WAL 写锁切换,
+        这是 web 卡死的关键缓解 (写时锁争用从 ~90 次降到 1 次).
+        """
+        if not metrics:
+            return
+        rows = [
+            (
+                m.factor_name, m.factor_version, m.as_of_date, m.window_days,
+                m.ic_mean, m.ic_std, m.ir, m.t_stat, m.status, m.reason,
+            )
+            for m in metrics
+        ]
+        with open_meta_db(self._db) as conn:
+            conn.executemany(
+                """
+                INSERT INTO factor_metrics
+                  (factor_name, factor_version, as_of_date, window_days,
+                   ic_mean, ic_std, ir, t_stat, status, reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(factor_name, factor_version, as_of_date, window_days)
+                DO UPDATE SET
+                    ic_mean=excluded.ic_mean,
+                    ic_std=excluded.ic_std,
+                    ir=excluded.ir,
+                    t_stat=excluded.t_stat,
+                    status=excluded.status,
+                    reason=excluded.reason
+                """,
+                rows,
             )
             conn.commit()
 

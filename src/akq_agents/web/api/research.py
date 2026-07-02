@@ -364,134 +364,22 @@ async def backtest_single_factor(
     rebalance_step: int = Query(default=5, ge=1, le=20),
     top_n: int = Query(default=50, ge=5, le=200),
 ) -> dict[str, Any]:
-    """M19: 单因子组合回测 — 用该因子单独打分跑组合, 返回 NAV 曲线 vs 沪深300.
+    """M24: 单因子组合回测走 daemon 异步通道. web 端立即 202 + result_poll_url.
+
+    之前同步跑: 90 天因子 history (pandas/numpy) + backtest, 单跑 30-120s, 把 web event loop
+    打死. 现在 5s 内响应 202, 前端用 result_poll_url 轮询 /api/control/jobs/{name}/{partition}/result.
 
     设计:
-    - 每 ``rebalance_step`` 天 rebalance 一次, 取该因子 top ``top_n`` 等权 (不行业中性,
-      不 IR 加权 — 看裸信号能力)
-    - direction='short' 因子取最小值, 否则最大
-    - 复用 PortfolioBacktester.backtest_in_memory 算 NAV + cost + benchmark, 不写表
-    - 返回前端画图所需 DataFrame + summary
-
-    用户场景: 选一个 shadow 因子, 一键看"如果让它单独跑组合, 历史上能赚多少钱 vs 沪深300"。
+    - factor_name 从 path 拿 (path 必填), days/rebalance_step/top_n 走 query 透传给 picker.
+    - partition 用 manual-xxxxxx 唯一, 不与 cron 撞.
+    - 并发防护走 has_pending_or_running_for_job: 同 factor.backtest_single job 已有活儿返 409.
     """
-    svc: ServiceContainer = get_services()
-    if svc.repo is None or svc.workflow is None:
-        raise HTTPException(503, "services not ready")
-    backtester = svc.workflow.services.get("portfolio_backtester")
-    engine = svc.workflow.services.get("discovery_engine")
-    if backtester is None or engine is None:
-        raise HTTPException(503, "backtester / discovery_engine not ready")
-
-    # 拿 factor 实例 (优先 registry, 否则从 proposal_store 用 recipe make_factor)
-    factor = _resolve_factor_by_name(svc, name)
-    if factor is None:
-        raise HTTPException(404, f"factor not found or unmakeable: {name}")
-
-    # 1) 准备数据
-    from datetime import date as _d
-    from datetime import timedelta as _td
-
-    import pandas as _pd
-
-    as_of = _d.today()
-    # M19 review: 周末 / 节假日 / 盘中 (today 是交易日但还没刷数据) 都会触发 OHLCV 空。
-    # 用 get_universe 探活今日数据是否就绪, 不就绪直接回退到上一个交易日。
-    try:
-        cal = svc.repo._calendar
-        # 试拿 today universe; 抛 DataNotReady 说明今天数据还没刷 (盘中常见)
-        try:
-            svc.repo.get_universe(as_of)
-        except Exception:  # noqa: BLE001
-            as_of = cal.previous_trading_day(as_of)
-        # 即便 universe 拿到, 还要确认是 trading_day (防万一)
-        if not cal.is_trading_day(as_of):
-            as_of = cal.previous_trading_day(as_of)
-    except Exception:  # noqa: BLE001
-        pass  # calendar 不可用 / 老 db 没数据, 硬上 today
-
-    try:
-        ohlcv, _ = engine._prepare_data(as_of)  # type: ignore[attr-defined]
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(500, f"prepare_data failed: {exc}")
-    if ohlcv.empty:
-        # 再退一个交易日兜底
-        try:
-            prev = svc.repo._calendar.previous_trading_day(as_of)
-            ohlcv, _ = engine._prepare_data(prev)  # type: ignore[attr-defined]
-            as_of = prev
-        except Exception:  # noqa: BLE001
-            pass
-    if ohlcv.empty:
-        raise HTTPException(503,
-            f"no ohlcv data available (尝试日期 {as_of.isoformat()} 及之前一交易日均无数据; "
-            f"可能数据未刷新, 等盘后或手动 /ops 触发 '拉取今日数据' 后重试)")
-
-    close = ohlcv.pivot_table(
-        index="date", columns="symbol", values="close", aggfunc="last"
-    ).sort_index()
-    all_dates = list(close.index)
-    if len(all_dates) < days + 5:
-        raise HTTPException(400,
-            f"insufficient history: only {len(all_dates)} days, need {days+5}")
-
-    # 2) 算因子完整 history (一次性, 复用 discovery)
-    try:
-        factor_history = engine._compute_factor_history(factor, ohlcv, close.index)  # type: ignore[attr-defined]
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(500, f"compute_factor_history failed: {exc}")
-    if factor_history is None or factor_history.empty:
-        raise HTTPException(400, "factor_history empty (因子算不出值)")
-
-    # 3) 每 rebalance_step 天选 top N → 等权
-    direction = getattr(factor, "direction", "long")
-    ascending = (direction == "short")  # short 因子取最小
-    weights_by_date: dict[str, dict[str, float]] = {}
-    sample_dates = all_dates[-days::rebalance_step]
-    for d in sample_dates:
-        if d not in factor_history.index:
-            continue
-        row = factor_history.loc[d].dropna()
-        if len(row) < top_n:
-            continue
-        picks = row.sort_values(ascending=ascending).head(top_n).index.tolist()
-        w = 1.0 / len(picks)
-        weights_by_date[d.isoformat() if hasattr(d, "isoformat") else str(d)] = {
-            sym: w for sym in picks
-        }
-
-    if not weights_by_date:
-        raise HTTPException(400, "no valid rebalance dates (因子值缺失或股票不足)")
-
-    # 4) 跑回测
-    try:
-        result = backtester.backtest_in_memory(weights_by_date)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(500, f"backtest failed: {exc}")
-
-    if result.nav.empty:
-        return {
-            "ok": False,
-            "factor_name": name,
-            "reason": result.summary.get("reason", "empty_nav"),
-            "summary": result.summary,
-        }
-
-    # 5) 返回前端可直接画图的数据
-    nav_records = result.nav.to_dict(orient="records")
-    return {
-        "ok": True,
-        "factor_name": name,
-        "direction": direction,
-        "config": {
-            "days": days,
-            "rebalance_step": rebalance_step,
-            "top_n": top_n,
-            "n_rebalances": len(weights_by_date),
-        },
-        "summary": result.summary,
-        "nav": nav_records,  # 每行: {as_of_date, nav_net, nav_gross, daily_return_net, turnover, cost, benchmark_nav, benchmark_return}
-    }
+    # 复用 control.trigger_job: 写 pending_triggers + 立即 202.
+    from akq_agents.web.api.control import trigger_job as _trigger
+    return await _trigger(
+        name="factor.backtest_single",
+        body={"factor_name": name, "days": days, "rebalance_step": rebalance_step, "top_n": top_n},
+    )
 
 
 def _resolve_factor_by_name(svc: ServiceContainer, name: str):
@@ -553,44 +441,14 @@ async def llm_suggestions_list(limit: int = Query(default=50, ge=1, le=200)) -> 
 
 @router.post("/factors/brainstorm/run")
 async def trigger_brainstorm(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    """手动触发一次 LLM brainstorm（同步等结果）。
+    """M24: LLM brainstorm 走 daemon 异步通道. web 端立即 202 + result_poll_url.
 
-    C5: web 进程在 deps.py 装了独立 JobRunner（与 daemon 共用 sched_store +
-    meta.db UNIQUE 约束）。走 JobRunner 写 job_runs/events，与 daemon 20:00
-    cron 一致；UI ops 看板能看到操作记录。
+    之前同步跑 60-125s (90 天 backfill + LLM call), 阻塞 web. 现在 5s 内 202,
+    前端用 result_poll_url 轮询 /api/control/jobs/factor.brainstorm/{partition}/result.
     """
-    from datetime import date as _date
-
-    svc: ServiceContainer = get_services()
-    if svc.workflow is None:
-        raise HTTPException(503, detail="workflow not ready")
-    if svc.job_runner is None:
-        raise HTTPException(503, detail="job_runner not ready")
-    services = svc.workflow.services
-    brainstormer = services.get("llm_factor_brainstormer")
-    if brainstormer is None:
-        raise HTTPException(503, detail="llm_factor_brainstormer not configured (检查 LLM 是否启用)")
+    from akq_agents.web.api.control import trigger_job as _trigger
     n = int((payload or {}).get("n", 10))
-    n = max(1, min(n, 30))
-
-    from akq_agents.orchestrator.jobs.factor_brainstorm import JOB_ID
-
-    def _do_brainstorm() -> dict[str, Any]:
-        return brainstormer.run(n=n)
-
-    # M19: 手动触发用 {base}-manual-{rand} partition, 不走幂等 — 用户主动点就是要重跑。
-    # cron 路径仍用裸 day 桶, 防 misfire/重叠的语义不变。
-    from akq_agents.web.api.control import _manual_partition
-    partition = _manual_partition(_date.today().isoformat())
-    # M19 review P0-6: timeout 120→300 — 一轮 brainstorm 含 90 天 backfill 实测 60-125s,
-    # 老 timeout 容易 120s 超时但后台仍跑完, 前端 button 永转 用户看不到结果。
-    result = svc.job_runner.run(JOB_ID, partition, _do_brainstorm, timeout_s=300)
-    return {
-        "ok": result.status == "ok",
-        "status": result.status,
-        "reason_code": result.reason_code,
-        "stats": result.payload,
-    }
+    return await _trigger(name="factor.brainstorm", body={"n": n})
 
 
 @router.post("/factors/llm-suggestions/{factor_name}/{action}")

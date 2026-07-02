@@ -33,10 +33,12 @@ from akq_agents.orchestrator.jobs import (
     batch_post_close,
     data_refresh,
     factor_brainstorm,
+    factor_code_brainstorm,  # 重构: LLM 自由代码路径
     factor_discovery,
     factor_eviction,
     factor_promote_shadows,
     health_heartbeat,
+    manual_trigger_picker,
     retry_fetch_errors,
 )
 from akq_agents.orchestrator.signal_handler import (
@@ -225,7 +227,16 @@ class QuantDaemon:
         retry_fetch_errors.register(self._scheduler, self._runner, self._cfg, self._services)
         factor_discovery.register(self._scheduler, self._runner, self._cfg, self._services)
         factor_brainstorm.register(self._scheduler, self._runner, self._cfg, self._services)
+        # 重构: LLM 自由 Python 代码 brainstorm (不限定 DSL 空间, 走 sandbox 编译)
+        factor_code_brainstorm.register(
+            self._scheduler, self._runner, self._cfg, self._services,
+        )
         factor_promote_shadows.register(self._scheduler, self._runner, self._cfg, self._services)
         factor_eviction.register(self._scheduler, self._runner, self._cfg, self._services)
         alert_check.register(self._scheduler, self._runner, self._cfg, self._services)
         health_heartbeat.register(self._scheduler, self._cfg, self._daemon_state_file)
+        # M23: web → daemon 手动触发通道 picker. 必须最后注册 (max_instances=1 +
+        # interval 5s 持续跑, 早注册也无所谓, 但放最后逻辑清晰).
+        manual_trigger_picker.register(
+            self._scheduler, self._runner, self._cfg, self._services,
+        )

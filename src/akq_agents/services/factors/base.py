@@ -1,4 +1,4 @@
-"""P3 Factor 协议 + FactorRegistry。
+"""P3 Factor 协议 + FactorRegistry + CodeFactor (重构新增)。
 
 每个 factor 是一个声明性对象，实现 :meth:`compute(ohlcv) -> pd.Series`。
 ``factor_version`` 字段必须 >= 1，改算法时 +1；用于 `factor_metrics` 表的版本绑定
@@ -10,12 +10,17 @@ P3b：升级为读 ``factor_metrics`` 最近 ``status='active'`` 子集。
 注：``Factor`` 用 ``Protocol`` 做结构化类型，**没有用 ``runtime_checkable``**——
 我们依赖 duck-typing；任何实现了 ``name`` / ``factor_version`` / ``lookback_days`` /
 ``direction`` / ``inputs`` / ``compute`` 的对象都可视为 Factor。
+
+重构新增：``CodeFactor`` 是一个持有 source code 的因子实例，compute 行为
+由 sandbox 编译过的 callable 提供。FactorRegistry.register 也接受它。
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 import pandas as pd
 
@@ -101,3 +106,61 @@ class FactorRegistry:
     def factor_directions(self) -> dict[str, str]:
         """快速查每个因子的 direction（用于 Preprocessor 反号）。"""
         return {f.name: f.direction for f in self._factors.values()}
+
+
+# ----------------------------------------------------------------------------
+# 重构: CodeFactor — LLM 自由 Python 代码作为 compute 行为
+# ----------------------------------------------------------------------------
+
+
+@dataclass
+class CodeFactor:
+    """LLM 输出的 Python 因子（不限定 base/op/window 笛卡尔积）。
+
+    特点:
+    - ``source_code`` 是 LLM 写的 Python 源码, 约定定义 ``def compute(ohlcv) -> pd.Series``
+    - ``_fn`` 是 sandbox 编译后的可调用对象, 真正执行 compute
+    - duck-typed Factor: registry.register 只看 name/version/lookback_days/direction/inputs
+    - 默认 ``lookback_days=60`` (LLM 不指定时给个保守值, evaluation 时再调)
+
+    安全: source_code 必须先过 :mod:`sandbox` 的 AST 静态检查才能编译.
+    """
+
+    name: str
+    source_code: str
+    fn: Callable[[pd.DataFrame], pd.Series]
+    factor_version: int = 1
+    direction: str = "long"
+    inputs: tuple[str, ...] = ("ohlcv",)
+    lookback_days: int = 60
+    # 元信息 (LLM 自填, 用于审核/可读性)
+    description: str = ""
+    code_hash: str = ""  # sha1(source_code) 跨 session 去重
+
+    def compute(self, ohlcv: pd.DataFrame) -> pd.Series:
+        # sandbox 编译出来的 fn 已经做了错误处理; 这里再包一层防御
+        if ohlcv is None or ohlcv.empty:
+            return pd.Series(dtype=float, name=self.name)
+        try:
+            out = self.fn(ohlcv)
+        except Exception:
+            # compute 失败 → 全 NaN, 不让异常污染上层 (DiscoveryEngine 会拿 IC=NaN 算 rejected)
+            return pd.Series({sym: float("nan") for sym in ohlcv["symbol"].unique()},
+                             name=self.name)
+        if not isinstance(out, pd.Series):
+            # 兜底: LLM 可能写错返回 dict / np.ndarray → 强转
+            try:
+                out = pd.Series(out)
+            except Exception:
+                return pd.Series(dtype=float, name=self.name)
+        # 强制覆盖 name → 始终用 self.name, 避免 LLM 的 compute() 拿 wide.iloc[-1] 时
+        # 把 date 当 name, 下游 factor_metrics / portfolio_attribution 用 name 做 key 会错位
+        out = out.rename(self.name)
+        return out.replace([float("inf"), float("-inf")], float("nan"))
+
+
+# runtime_checkable 让 isinstance 风格的 code_factor 检查能 work (debug/日志用)
+@runtime_checkable
+class _HasCode(Protocol):
+    source_code: str
+    fn: Callable[[pd.DataFrame], pd.Series]

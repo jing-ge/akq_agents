@@ -1,62 +1,210 @@
-"""Web /api/control/jobs/*/trigger 手动触发路径回归测试。
+"""Web /api/control/jobs/*/trigger 手动触发路径回归测试 (M23 重写).
 
-历史 bug: batch.post_close 手动触发时 ws_services 是 workflow.services 的 copy，
-但 batch_post_close._do 需要 services["workflow"]（daemon 路径在 bootstrap.py:303
-额外注入了这个）。web 路径漏掉这行注入，手动 trigger 立即 KeyError('workflow')。
+历史 bug (2026-07-01): 之前 force_full=True 走 web 进程 ``svc.job_runner.submit()``
+把 batch.deep_research 8 worker 池放进 web 进程. 双 manual 并发直接把 web 进程 CPU
+吃到 800%+, data-freshness 端点 5s+ 不返回, 整站不可达.
+
+M23 重写后: web 端点**永远不跑业务**, 只写 pending_triggers + job_runs.status='pending'
+立即返回 202. daemon 周期任务 manual_trigger_picker 5s 扫一次 claim 起来在 daemon 进程
+跑. web 进程零 CPU 消耗, 整站免疫 web 卡死.
+
+测试覆盖:
+- 写入 pending_triggers 表 (有 trigger_id, status=pending, job_id/partition/payload 正确)
+- 写入 job_runs.status='pending' (partition 匹配, payload 包含 trigger_id)
+- 返回 202 + poll_url (前端轮询目标)
+- 并发防护: 同 job_id 已有 pending/running 任务时 409 拒绝
+- fast 模式 (force_full=false) 也走异步 (之前 sync 阻塞 web event loop 也是隐患)
 """
-from unittest.mock import MagicMock
+
+from __future__ import annotations
+
+from typing import Any
 
 import pytest
 
 
 @pytest.fixture
-def container_with_trigger(assets):
-    """扩展 conftest 的 container：加 workflow + job_runner 让 trigger endpoint 能跑通。"""
-    container = assets["container"]
-
-    # 模拟 daemon 侧的 workflow.run_once 返回值（agent -> 输出 dict）
-    fake_workflow = MagicMock()
-    fake_workflow.run_once.return_value = {
-        "portfolio-agent": {"portfolio_size": 50, "status": "ok"},
-        "analyst-agent": {"rendered": "some markdown"},
-    }
-    fake_workflow.services = {}  # 空 dict, 让手动路径 dict(...) 后必须显式注入 workflow
-
-    fake_runner = MagicMock()
-
-    def _run(job_id, partition, fn, *, timeout_s):
-        """真调 fn(): 让 batch_post_close._do 真执行, 才能捕获 KeyError。"""
-        result = MagicMock()
-        result.reason_code = None
-        try:
-            result.payload = fn()
-            result.status = "ok"
-        except KeyError as exc:
-            result.status = "failed"
-            result.reason_code = "UNKNOWN"
-            result.payload = {"error": repr(exc)}
-        except Exception as exc:  # noqa: BLE001
-            result.status = "failed"
-            result.reason_code = "UNKNOWN"
-            result.payload = {"error": str(exc)}
-        return result
-
-    fake_runner.run.side_effect = _run
-    container.workflow = fake_workflow
-    container.job_runner = fake_runner
-    return {"container": container, "workflow": fake_workflow, "runner": fake_runner}
+def container_with_sched(assets):
+    """基础 conftest 已创建 sched_store (含 pending_triggers 表). 触发器无需更多 mock.
+    唯一额外要求: workflow + discovery_engine 在 batch.post_close / factor.discovery 路径
+    会被 readiness check, 触发时如果缺则 503. 测试主要跑 batch.deep_research (它有
+    fallback 不强依赖 workflow)."""
+    return assets["container"]
 
 
-def test_batch_post_close_manual_trigger_injects_workflow_into_services(
-    client, container_with_trigger,
+def _read_pending_triggers(db_path) -> list[dict[str, Any]]:
+    import sqlite3
+    con = sqlite3.connect(db_path)
+    rows = con.execute(
+        "SELECT id, job_id, partition, payload_json, status, requested_at "
+        "FROM pending_triggers ORDER BY id"
+    ).fetchall()
+    con.close()
+    return [
+        {
+            "id": r[0], "job_id": r[1], "partition": r[2],
+            "payload_json": r[3], "status": r[4], "requested_at": r[5],
+        }
+        for r in rows
+    ]
+
+
+def _read_job_runs(db_path, job_id: str) -> list[tuple]:
+    import sqlite3
+    con = sqlite3.connect(db_path)
+    rows = con.execute(
+        "SELECT job_id, partition, status, payload_json "
+        "FROM job_runs WHERE job_id=? ORDER BY id",
+        (job_id,),
+    ).fetchall()
+    con.close()
+    return rows
+
+
+def test_batch_deep_research_trigger_queues_pending_not_runs(
+    client, assets, container_with_sched,
 ) -> None:
-    """回归 bug: web 手动 trigger batch.post_close 必须在 ws_services 里注入 workflow 对象,
-    否则 _do() 里 services['workflow'] 会 KeyError。"""
-    r = client.post("/api/control/jobs/batch.post_close/trigger")
-    assert r.status_code == 200
+    """回归: web 触发 batch.deep_research 必须走 pending_triggers 异步通道, 不在 web 跑业务.
+
+    验证:
+    1. 立即返回 202 (status=accepted, reason_code=ASYNC_QUEUED)
+    2. 写一行 pending_triggers (job_id=batch.deep_research, payload.mode='fast')
+    3. 写一行 job_runs (status='pending', partition 匹配)
+    4. 端到端耗时 < 200ms (CPU 零消耗)
+    """
+    import time
+    db = assets["db"]
+
+    t0 = time.monotonic()
+    r = client.post("/api/control/jobs/batch.deep_research/trigger?force_full=false")
+    elapsed_ms = (time.monotonic() - t0) * 1000
+
+    assert r.status_code == 200, r.text
     body = r.json()
-    assert body["status"] == "ok", (
-        f"手动 trigger 应成功执行, 但返回 {body}。历史 bug: ws_services 忘记注入 workflow。"
+    assert body["status"] == "accepted"
+    assert body["reason_code"] == "ASYNC_QUEUED"
+    assert body["payload"]["job_id"] == "batch.deep_research"
+    assert "poll_url" in body["payload"]
+    assert "manual-" in body["payload"]["partition"]
+    assert elapsed_ms < 200, f"web 端点应 < 200ms, 实际 {elapsed_ms:.0f}ms"
+
+    # pending_triggers 表里有 1 行
+    rows = _read_pending_triggers(db)
+    assert len(rows) == 1
+    assert rows[0]["job_id"] == "batch.deep_research"
+    assert rows[0]["status"] == "pending"
+    import json
+    payload = json.loads(rows[0]["payload_json"])
+    assert payload == {"mode": "fast"}
+
+    # job_runs 表里有 1 行 status='pending'
+    runs = _read_job_runs(db, "batch.deep_research")
+    assert len(runs) == 1
+    assert runs[0][1] == rows[0]["partition"]
+    assert runs[0][2] == "pending"
+
+
+def test_batch_deep_research_force_full_passes_full_mode(
+    client, assets, container_with_sched,
+) -> None:
+    """force_full=true 必须透传到 pending_triggers.payload.mode='full'."""
+    db = assets["db"]
+    r = client.post("/api/control/jobs/batch.deep_research/trigger?force_full=true")
+    assert r.status_code == 200
+    rows = _read_pending_triggers(db)
+    import json
+    assert len(rows) == 1
+    assert json.loads(rows[0]["payload_json"])["mode"] == "full"
+
+
+def test_factor_discovery_trigger_passes_n_candidates(
+    client, assets, container_with_sched,
+) -> None:
+    """factor.discovery trigger 透传 n_candidates 到 pending_triggers.payload."""
+    db = assets["db"]
+    r = client.post("/api/control/jobs/factor.discovery/trigger?n_candidates=15")
+    assert r.status_code == 200
+    rows = _read_pending_triggers(db)
+    import json
+    assert len(rows) == 1
+    assert rows[0]["job_id"] == "factor.discovery"
+    assert json.loads(rows[0]["payload_json"]) == {"n_candidates": 15}
+
+
+def test_factor_eviction_trigger_passes_dry_run(
+    client, assets, container_with_sched,
+) -> None:
+    """factor.eviction trigger 透传 dry_run 到 pending_triggers.payload.
+
+    dry_run=true 和 dry_run=false 是不同语义 (前者只列名单, 后者真删), 互斥: 不能让
+    一个在跑时再触发. 测试用两个不同 job_id (batch.deep_research + factor.eviction)
+    模拟两个独立 dry_run 参数, 都该 200.
+    """
+    db = assets["db"]
+    r1 = client.post("/api/control/jobs/factor.eviction/trigger?dry_run=true")
+    r2 = client.post("/api/control/jobs/batch.deep_research/trigger?force_full=true")
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    rows = _read_pending_triggers(db)
+    import json
+    assert len(rows) == 2
+    # factor.eviction 是第一个 trigger
+    assert rows[0]["job_id"] == "factor.eviction"
+    assert json.loads(rows[0]["payload_json"]) == {"dry_run": True}
+    # batch.deep_research 是第二个, payload 是 mode=full (跟 dry_run 无关)
+    assert rows[1]["job_id"] == "batch.deep_research"
+    assert json.loads(rows[1]["payload_json"]) == {"mode": "full"}
+
+
+def test_concurrent_trigger_same_job_409(
+    client, assets, container_with_sched,
+) -> None:
+    """回归: 同一 job 已有 pending/running 任务时, 二次 trigger 必须 409 拒绝, 防止用户
+    连点导致 N 行排队, picker 单线程串行执行浪费 daemon 时间."""
+    db = assets["db"]
+    r1 = client.post("/api/control/jobs/batch.deep_research/trigger?force_full=true")
+    assert r1.status_code == 200
+    rows = _read_pending_triggers(db)
+    # 模拟 picker 已 claim 第一行 (status=claimed) — 此时第二次 trigger 必须拒
+    import sqlite3
+    con = sqlite3.connect(db)
+    con.execute(
+        "UPDATE pending_triggers SET status='claimed', claimed_at='2026-07-01T18:00:00', claimed_by='manual.trigger_picker' WHERE id=?",
+        (rows[0]["id"],),
     )
-    # 确认 workflow.run_once 真被调用了 (说明 _do 里 services['workflow'] 拿到了)
-    container_with_trigger["workflow"].run_once.assert_called_once()
+    con.commit()
+    con.close()
+
+    r2 = client.post("/api/control/jobs/batch.deep_research/trigger?force_full=true")
+    assert r2.status_code == 409, f"同 job 已有 claimed 行, 二次 trigger 应 409; 实际 {r2.status_code}: {r2.text}"
+    # pending_triggers 应仍只有 1 行 (第二条没插入)
+    rows_after = _read_pending_triggers(db)
+    assert len(rows_after) == 1
+
+
+def test_concurrent_trigger_running_in_job_runs_409(
+    client, assets, container_with_sched,
+) -> None:
+    """即使 pending_triggers 全是 ok/failed, 只要 job_runs 有 status='running' 同行
+    (例如 cron 正在跑), 也得 409 拒绝 — 防用户手动 trigger 跟 cron 撞, 抢同一 partition
+    写入 (虽然 manual-xxxxxx partition 不会撞, 但 8 worker 池 + cron 8 worker 池
+    同时跑 = 16 worker 抢 daemon CPU, 也得防)."""
+    db = assets["db"]
+    # 模拟 cron 跑中的 batch.deep_research 行 (status='running', partition='2026-07-01')
+    import sqlite3
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO job_runs (job_id, partition, status, started_at) VALUES (?, ?, 'running', '2026-07-01T17:00:00')",
+        ("batch.deep_research", "2026-07-01"),
+    )
+    con.commit()
+    con.close()
+
+    r = client.post("/api/control/jobs/batch.deep_research/trigger?force_full=true")
+    assert r.status_code == 409, f"cron 正在跑应 409; 实际 {r.status_code}: {r.text}"
+
+
+def test_unknown_job_404(client, container_with_sched) -> None:
+    """未支持的 job 仍然 404."""
+    r = client.post("/api/control/jobs/nonexistent/trigger")
+    assert r.status_code == 404

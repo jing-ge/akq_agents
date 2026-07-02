@@ -48,7 +48,11 @@ def container_with_brainstorm(assets):
         "llm_factor_brainstormer": fake_brainstormer,
         "factor_proposal_store": store,
     }
-    return {"container": container, "store": store, "brainstormer": fake_brainstormer, "runner": fake_runner}
+    # M24: 端点走 trigger_job → 写 pending_triggers, 需 sched_store.
+    from akq_agents.orchestrator.state_store import SchedulerStateStore
+    sched_store = SchedulerStateStore(db)
+    container.sched_store = sched_store
+    return {"container": container, "store": store, "brainstormer": fake_brainstormer, "runner": fake_runner, "sched_store": sched_store}
 
 
 
@@ -87,11 +91,29 @@ def test_list_llm_suggestions_returns_recent(client, container_with_brainstorm) 
 
 
 def test_brainstorm_run_invokes_brainstormer(client, container_with_brainstorm) -> None:
+    """M24: brainstorm 走 picker 异步通道 — web 端立即 202, 不再同步等 LLM.
+
+    老行为 (M24 前): web 进程同步调 brainstormer.run(n=5), 阻塞 60-125s.
+    新行为: web 端写 pending_triggers + job_runs.status=pending 立即 202.
+    brainstormer 真正的 .run() 由 daemon picker 在 claim 后调. 测试 mock 一个
+    sched_store + proposal_store, 验证 trigger 行落地 + 202 响应.
+    """
+    container = container_with_brainstorm["container"]
+    store = container_with_brainstorm["store"]
+    # 配 sched_store (M24 通道依赖)
+    from akq_agents.web.deps import get_services
+    container.sched_store = container_with_brainstorm["sched_store"]
+
     r = client.post("/api/research/factors/brainstorm/run", json={"n": 5})
     assert r.status_code == 200
     body = r.json()
-    assert body["ok"] is True
-    container_with_brainstorm["brainstormer"].run.assert_called_once_with(n=5)
+    # 新行为: accepted + result_poll_url
+    assert body["status"] == "accepted"
+    assert body["reason_code"] == "ASYNC_QUEUED"
+    assert body["payload"]["job_id"] == "factor.brainstorm"
+    assert body["payload"]["result_poll_url"] is not None
+    # brainstormer.run 不会被同步调用 — 是 daemon picker 之后调的事
+    container_with_brainstorm["brainstormer"].run.assert_not_called()
 
 
 

@@ -162,15 +162,28 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             max_iterations=llm_cfg.chat.max_iterations,
         )
 
-        # M14: LLM 因子构建方向 brainstormer
-        from akq_agents.services.factors.llm_brainstorm import LLMFactorBrainstormer
-        services["llm_factor_brainstormer"] = LLMFactorBrainstormer(
+        # M14: LLM 因子构建方向 brainstormer (DSL 受限, base×op×window×direction 笛卡尔积)
+        from akq_agents.services.factors.llm_brainstorm import LLMDSLFactorBrainstormer
+        services["llm_factor_brainstormer"] = LLMDSLFactorBrainstormer(
             llm_client=services["llm_client"],
             proposal_store=services["factor_proposal_store"],
             registry=services["factor_registry"],
             evaluator=services["factor_evaluator"],
             repo=services["data_repository"],  # M19: 让 brainstorm 入库时跑 90 天 IC backfill
             model=llm_cfg.brainstorm.model,
+            max_tokens=llm_cfg.brainstorm.max_tokens,
+            temperature=llm_cfg.brainstorm.temperature,
+        )
+
+        # 重构: LLM 自由 Python 代码 brainstormer (不限定 DSL 空间, 走 sandbox 编译)
+        from akq_agents.services.factors.llm_code_brainstorm import LLMCodeFactorBrainstormer
+        services["llm_code_factor_brainstormer"] = LLMCodeFactorBrainstormer(
+            llm_client=services["llm_client"],
+            proposal_store=services["factor_proposal_store"],
+            registry=services["factor_registry"],
+            evaluator=services["factor_evaluator"],
+            repo=services["data_repository"],  # M19: 入库时跑 90 天 IC backfill
+            model=llm_cfg.brainstorm.model,  # 复用同一模型
             max_tokens=llm_cfg.brainstorm.max_tokens,
             temperature=llm_cfg.brainstorm.temperature,
         )

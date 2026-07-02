@@ -19,15 +19,22 @@ router = APIRouter()
 async def list_proposals(
     limit: int = Query(default=50, ge=1, le=500),
     status: str | None = Query(default=None),
+    recipe_kind: str | None = Query(
+        default=None,
+        description="重构: 过滤 recipe_kind (dsl | code). None=全部",
+    ),
 ) -> dict[str, Any]:
     """列出因子提案流水（最近 N 条 + 计数）。"""
     svc: ServiceContainer = get_services()
     if svc.proposal_store is None:
         return {"counts": {}, "rows": []}
-    rows = svc.proposal_store.list_recent(limit=limit, status=status)
+    rows = svc.proposal_store.list_recent(limit=limit, status=status, recipe_kind=recipe_kind)
     out = [
         {
             "factor_name": r.factor_name,
+            # 重构: 透出 recipe_kind + code_hash 给前端, 区分 dsl/code 来源
+            "recipe_kind": r.recipe_kind,
+            "code_hash": r.code_hash,
             "status": r.status,
             "ir": r.ir,
             "ic_mean": r.ic_mean,
@@ -70,17 +77,9 @@ async def proposal_trace(factor_name: str) -> dict[str, Any]:
         return {"error": "not_found", "factor_name": factor_name}
 
     recipe = json.loads(target.recipe_json)
-    # 用易懂语言重写 recipe
-    op_cn = {
-        "pct_change": "百分比变化", "rolling_mean": "滚动均值",
-        "rolling_std": "滚动标准差", "zscore": "Z 分数",
-        "rsi": "RSI 指标", "rolling_skew": "滚动偏度",
-        "ts_max_norm": "归一化最大值", "ts_min_norm": "归一化最小值",
-    }
-    base_cn = {"close": "收盘价", "volume": "成交量", "amount": "成交额",
-               "high_low_range": "最高-最低价差", "vwap": "成交均价"}
-    dir_cn = {"long": "做多（值大持有）", "short": "做空（值小持有）"}
-    plain = f"对 {base_cn.get(recipe['base'], recipe['base'])} 做 {op_cn.get(recipe['op'], recipe['op'])}，窗口 {recipe['window']} 天，方向 {dir_cn.get(recipe['direction'], recipe['direction'])}"
+    # 重构: 区分 dsl (4-tuple) vs code (Python source) 两种 recipe 的 plain_description
+    plain = _describe_recipe(target.recipe_kind, recipe)
+    code_source = target.recipe_code or ""  # 重构: code 路径把 source 透出, 方便审核
 
     # 决策路径解读
     decisions = []
@@ -135,7 +134,10 @@ async def proposal_trace(factor_name: str) -> dict[str, Any]:
         "factor_name": factor_name,
         "status": target.status,
         "recipe": recipe,
+        "recipe_kind": target.recipe_kind,  # 重构: 透出 dsl / code
         "plain_description": plain,
+        "code_source": code_source,  # 重构: code 路径有 source, dsl 路径为空
+        "code_hash": target.code_hash,
         "decisions": decisions,
         "metrics": {
             "ic_mean": target.ic_mean,
@@ -153,6 +155,35 @@ async def proposal_trace(factor_name: str) -> dict[str, Any]:
         "metrics_history": metrics_history,
         "n_history": len(metrics_history),
     }
+
+
+def _describe_recipe(recipe_kind: str, recipe: dict) -> str:
+    """重构: 把 factor_proposals.recipe_json 翻译成人话.
+
+    dsl: 4-tuple {base, op, window, direction} 笛卡尔积
+    code: LLM 自由 Python source, recipe_json 里只存摘要 (description + direction)
+    """
+    if recipe_kind == "code":
+        desc = recipe.get("description", "").strip() or "(无描述)"
+        direction = recipe.get("direction", "long")
+        dir_cn = {"long": "做多", "short": "做短"}
+        # 摘要前 100 字符避免渲染过大
+        return f"[自由代码因子] {desc[:200]}\n方向: {dir_cn.get(direction, direction)}"
+    # 默认 DSL 路径
+    op_cn = {
+        "pct_change": "百分比变化", "rolling_mean": "滚动均值",
+        "rolling_std": "滚动标准差", "zscore": "Z 分数",
+        "rsi": "RSI 指标", "rolling_skew": "滚动偏度",
+        "ts_max_norm": "归一化最大值", "ts_min_norm": "归一化最小值",
+    }
+    base_cn = {"close": "收盘价", "volume": "成交量", "amount": "成交额",
+               "high_low_range": "最高-最低价差", "vwap": "成交均价"}
+    dir_cn = {"long": "做多（值大持有）", "short": "做空（值小持有）"}
+    return (
+        f"对 {base_cn.get(recipe['base'], recipe['base'])} 做 "
+        f"{op_cn.get(recipe['op'], recipe['op'])}，窗口 {recipe['window']} 天，"
+        f"方向 {dir_cn.get(recipe['direction'], recipe['direction'])}"
+    )
 
 
 @router.get("/nav")
@@ -229,14 +260,13 @@ def _resolve_paper_start_date(svc) -> str | None:
 
 @router.post("/nav/rebuild")
 async def rebuild_nav() -> dict[str, Any]:
-    """手动触发 NAV 重新计算。"""
-    svc: ServiceContainer = get_services()
-    workflow = svc.workflow
-    backtester = workflow.services.get("portfolio_backtester") if workflow else None
-    if backtester is None:
-        return {"status": "no_backtester"}
-    result = backtester.rebuild_full_history()
-    return {"status": "ok", "summary": result.summary, "n_days": len(result.nav)}
+    """M24: NAV 全历史重建走 daemon 异步通道. 立即 202 + result_poll_url.
+
+    之前同步跑: 全历史 portfolio backtest, 数分钟, 把 web event loop 彻底打死.
+    现在 web 立即 202, 前端用 result_poll_url 轮询 /jobs/portfolio.nav_rebuild/{partition}/result.
+    """
+    from akq_agents.web.api.control import trigger_job as _trigger
+    return await _trigger(name="portfolio.nav_rebuild", body={})
 
 
 # ============================================================

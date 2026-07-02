@@ -199,20 +199,68 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             return (factor.name, False, 0, 0, 0, [], f"exception: {exc}")
 
-    # 4 worker — pandas/numpy 大量 C 层释放 GIL, ThreadPool 有效。SQLite WAL 写并发
-    # 由 evaluator._upsert 各自 open_meta_db 处理 (短事务, 写互斥但读不阻塞)。
+    # worker 4 平衡: macOS 物理核 ~8-10, 4 worker 保证 web 进程在 force_full 路径下
+    # 仍有 ~4-6 核空闲给 event loop / SQLite reader. 之前 M22 提到 8 worker 在 daemon
+    # 进程跑 cron 任务没问题 (905s/15min) — 但当 force_full 走 web 进程 (1 worker outer
+    # pool) 时, 8 worker inner 把 web 进程 CPU 吃到 800%+, 5s data-freshness 端点超时
+    # → 整站不可用. 改回 4 worker 是 web/daemon 双进程兼容方案.
+    # 性能: 4 worker 比 8 worker 慢 ~30%, 但仍比 M22 前的 90 次单事务 commit 路径快得多
+    # (evaluator._upsert_many 一次事务写 90 天, commit 从 18,000 -> 200 锁争用降 ~90x).
     total_written = 0
     total_skipped = 0
     total_failed_dates = 0  # P0-3: 累加因 SQLite BUSY / compute 异常等真失败的行数
     factors_with_failures: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="deep-research") as ex:
-        futures = [ex.submit(_process_one, f) for f in evaluation_targets]
+
+    # M22: 进度上报 - 每 STEP_BATCH 个因子完成就写一行 job_steps, UI 轮询可见.
+    # 小批量任务 (n_targets < STEP_BATCH) 会在 done_count == n_targets 时写最后一行, 这是兜底,
+    # 保证用户最少看到 1 行 "完成" 进度.
+    import time as _time
+    from akq_agents.orchestrator.step_recorder import StepRecorder
+    STEP_BATCH = 10  # M22: 20 -> 10, 让 n_candidates 10-20 的小批量也看到中间进度
+    repo_path = services.get("data_repository")
+    recorder: StepRecorder | None = None
+    if repo_path is not None and hasattr(repo_path, "_base_dir"):
+        try:
+            recorder = StepRecorder(
+                repo_path._base_dir / "meta.db",
+                parent_job_id="batch.deep_research",
+                parent_partition=str(date.today().isoformat()),
+            )
+        except Exception:  # noqa: BLE001
+            recorder = None
+    n_targets = len(evaluation_targets)
+    t_start = _time.monotonic()
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="deep-research") as ex:
+        futures = {ex.submit(_process_one, f): f for f in evaluation_targets}
         for fut in as_completed(futures):
             try:
                 name, ok, n_w, n_s, n_f, failed_dates, reason = fut.result()
                 total_written += n_w
                 total_skipped += n_s
                 total_failed_dates += n_f
+                done_count += 1
+                if recorder is not None and (
+                    done_count % STEP_BATCH == 0 or done_count == n_targets
+                ):
+                    elapsed = _time.monotonic() - t_start
+                    rate = done_count / elapsed if elapsed > 0 else 0
+                    eta_s = (n_targets - done_count) / rate if rate > 0 else None
+                    try:
+                        with recorder.step(
+                            f"batch{done_count // STEP_BATCH}",
+                            payload_in={
+                                "done": done_count,
+                                "total": n_targets,
+                                "rate_per_s": round(rate, 3),
+                                "elapsed_s": round(elapsed, 1),
+                                "eta_s": round(eta_s, 1) if eta_s else None,
+                                "rows_written_so_far": total_written,
+                            },
+                        ):
+                            pass
+                    except Exception:  # noqa: BLE001
+                        logger.exception("batch.deep_research: recorder.step failed at done_count=%d", done_count)
                 if n_f > 0:
                     factors_with_failures.append({
                         "factor": name,
