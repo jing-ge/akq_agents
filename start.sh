@@ -201,13 +201,17 @@ case "$action" in
         echo
         cmd_status
         echo
-        echo "提示：./start.sh logs 看日志  |  ./start.sh stop 停止"
+        echo "🌐  控制台: http://${WEB_HOST}:${WEB_PORT}/  (研究面板 /research)"
+        echo "💡  提示: ./start.sh open 打开浏览器  |  logs 看日志  |  restart 重启  |  stop 停止"
         ;;
     web)
         cmd_web
         ;;
     daemon)
         cmd_daemon_start
+        ;;
+    restart)
+        cmd_restart
         ;;
     stop)
         cmd_stop
@@ -218,14 +222,32 @@ case "$action" in
     logs)
         cmd_logs
         ;;
+    open)
+        cmd_open
+        ;;
+    -h|--help|help)
+        echo "AKQ Agents 启动脚本"
+        echo ""
+        echo "用法: ./start.sh [up|web|daemon|restart|stop|status|logs|open|help]"
+        echo ""
+        echo "  up       启动 web + daemon（默认，等价于 ./start.sh）"
+        echo "  web      只启动 web"
+        echo "  daemon   只启动 daemon"
+        echo "  restart  重启 web + daemon（配置改动后使用）"
+        echo "  stop     停止 daemon + web"
+        echo "  status   查看运行状态 + 关键健康指标"
+        echo "  logs     tail web + daemon 日志（Ctrl+C 退出）"
+        echo "  open     用默认浏览器打开 web 控制台"
+        echo "  help     显示本帮助"
+        echo ""
+        echo "环境变量:"
+        echo "  WEB_HOST  监听地址（默认 127.0.0.1）"
+        echo "  WEB_PORT  监听端口（默认 8765）"
+        ;;
     *)
-        echo "用法: ./start.sh [up|web|daemon|stop|status|logs]"
-        echo "  up      启动 web + daemon（默认）"
-        echo "  web     只启动 web"
-        echo "  daemon  只启动 daemon"
-        echo "  stop    停止 daemon + web"
-        echo "  status  查看运行状态"
-        echo "  logs    tail web + daemon 日志"
+        echo "未知命令: $action"
+        echo "用法: ./start.sh [up|web|daemon|restart|stop|status|logs|open|help]"
+        echo "  运行 ./start.sh help 查看完整说明"
         exit 1
         ;;
 esac
