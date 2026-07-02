@@ -38,6 +38,15 @@
   </button>
 </div>
 
+<!-- 「今日待办」智能结论条 — 把散落在 13 张卡片里的核心信号汇成一句话结论。
+     数据复用 loadKpiOverview 已拉取的 today-list / shadow-stats, 不额外发请求。
+     点击直达对应卡片, 解决"每天打开不知先看哪"的核心痛点。 -->
+<div class="today-summary is-loading" id="today-summary" aria-live="polite">
+  <span class="ts-icon" id="ts-icon">⏳</span>
+  <span class="ts-text" id="ts-text">正在汇总今日结论…</span>
+  <span class="ts-actions" id="ts-actions"></span>
+</div>
+
 <!-- Tab 分组（4 组）— 用户切换时切换 body[data-active-tab] -->
 <nav class="research-tabs" id="research-tabs" role="tablist" aria-label="研究面板分类">
   <button class="rtab is-active" role="tab" data-tab="trade" aria-selected="true"
@@ -135,7 +144,7 @@
     </label>
     <button onclick="loadPortfolio()" class="primary">查询</button>
     <button onclick="recomputeTodayPortfolio(this)" class="warn"
-            title="跑完整盘后流程 (数据刷新+因子评估+组合优化+归因), 1-5 分钟。基于最新因子表现 (含 shadow / 新 backfill) 重算今日组合"
+            title="跑完整盘后流程 (数据刷新+因子评估+组合优化+归因), 1-5 分钟。基于最新因子表现 (含 shadow / 新 backfill) 重算今日组合。⚙️ 与「运维 Ops」页的「立即跑一次完整流程」是同一操作，点哪个都一样。"
             id="btn-recompute-portfolio">🔄 跑完整盘后流程</button>
     <span class="sep"></span>
     <span id="portfolio-summary" class="small" style="margin-left:0"></span>
@@ -386,7 +395,7 @@ window.addEventListener('load', () => {
     </label>
     <button class="primary" onclick="loadProposals()">刷新列表</button>
     <button class="warn" id="btn-discovery" onclick="runDiscovery()"
-            title="让 AI 临时生成 20 个新因子配方并回测（约 30~120 秒）">立即跑一轮发现（20 个候选）</button>
+            title="让 AI 临时生成 20 个新因子配方并回测（约 30~120 秒）。⚙️ 与「运维 Ops」页的「跑一轮因子发现」是同一操作，点哪个都一样。">立即跑一轮发现（20 个候选）</button>
     <span id="discovery-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
   </div>
   <div id="proposals-table" class="small"></div>
@@ -1432,6 +1441,9 @@ async function loadKpiOverview() {
   ];
   const [navD, listD, shadowD] = await Promise.all(tasks);
 
+  // 「今日待办」汇总信号 — 各分支填充, 函数末尾统一渲染结论条
+  const todo = { hasList: false, isStale: false, pendingBuy: 0, pendingSell: 0, shouldDemote: 0, navMissing: false };
+
   const setVal = (id, val, sub, cls) => {
     const v = document.getElementById(id);
     if (!v) return;
@@ -1485,6 +1497,7 @@ async function loadKpiOverview() {
       : '尚无 NAV 数据';
     setVal('kpi-nav-val', '暂无', reason, 'metric-dim');
     setVal('kpi-excess-val', '暂无', reason, 'metric-dim');
+    todo.navMissing = true;
   }
 
   // Trade list: 显示真正待执行的 BUY/SELL（排除 executed），并标注 stale 状态
@@ -1492,6 +1505,10 @@ async function loadKpiOverview() {
     const pendingBuy = listD.items.filter(i => i.action === 'BUY' && !i.executed).length;
     const pendingSell = listD.items.filter(i => i.action === 'SELL' && !i.executed).length;
     const isStale = listD.is_today === false;
+    todo.hasList = true;
+    todo.pendingBuy = pendingBuy;
+    todo.pendingSell = pendingSell;
+    todo.isStale = isStale;
     const buyStaleCls = isStale ? 'metric-dim' : '';
     const sellStaleCls = isStale ? 'metric-dim' : '';
     const staleSub = isStale ? `${listD.execution_date || listD.cohort_date} 旧清单` : undefined;
@@ -1520,7 +1537,11 @@ async function loadKpiOverview() {
   if (shadowD && shadowD.shadows) {
     const n = shadowD.shadows.filter(s => s.verdict === 'should_demote').length;
     setVal('kpi-shadow-val', n, undefined, n > 0 ? 'metric-bad' : 'metric-dim');
+    todo.shouldDemote = n;
   }
+
+  // 汇总渲染「今日待办」结论条
+  renderTodoSummary(todo);
 
   // 给所有 tile 一次 flash 动画暗示数据已更新
   document.querySelectorAll('.kpi-overview .kpi-tile').forEach(t => {
@@ -1528,6 +1549,80 @@ async function loadKpiOverview() {
     void t.offsetWidth;
     t.classList.add('is-flash');
   });
+}
+
+// 「今日待办」结论条: 把 KPI 汇总信号翻译成一句"我现在该做什么"。
+// 优先级(从高到低): 数据过期/缺失 > 需调仓 > 待处理 shadow > 一切正常。
+// 点击直达对应卡片, 并自动切到该卡片所在 tab。
+function renderTodoSummary(todo) {
+  const bar = document.getElementById('today-summary');
+  const iconEl = document.getElementById('ts-icon');
+  const textEl = document.getElementById('ts-text');
+  const actEl = document.getElementById('ts-actions');
+  if (!bar || !iconEl || !textEl || !actEl) return;
+
+  const setBar = (level, icon, text, actions) => {
+    bar.classList.remove('is-loading', 'ts-ok', 'ts-action', 'ts-warn', 'ts-danger');
+    bar.classList.add('ts-' + level);
+    iconEl.textContent = icon;
+    textEl.innerHTML = text;
+    actEl.innerHTML = (actions || []).map(a =>
+      `<button type="button" class="ts-btn" onclick="jumpToCard('${a.target}')">${escapeHtml(a.label)} →</button>`
+    ).join('');
+  };
+
+  // 1) 数据过期 / 缺失 — 最高优先级, 结果可能不可信
+  if (todo.navMissing && !todo.hasList) {
+    setBar('warn', '🔧', '系统还没有产出今日结果，可能是首次运行或数据未拉取。先去运维页跑一轮盘后批处理。', []);
+    return;
+  }
+  if (todo.isStale) {
+    setBar('warn', '🕒',
+      '当前交易清单不是今天的（用的是历史快照）。今日盘后流程可能还没跑，结果仅供参考。',
+      [{ label: '去重算今日组合', target: 'nav-card' }]);
+    return;
+  }
+
+  // 2) 需要调仓 — 有待执行 BUY/SELL
+  const totalTrades = (todo.pendingBuy || 0) + (todo.pendingSell || 0);
+  if (totalTrades > 0) {
+    setBar('action', '⚠️',
+      `今日需要调仓：<b>${todo.pendingBuy} 买 / ${todo.pendingSell} 卖</b>，共 ${totalTrades} 笔待执行。`,
+      [{ label: '查看交易清单', target: 'trade-list-card' }]);
+    return;
+  }
+
+  // 3) 无需调仓, 但有 shadow 因子待处理(次要提醒)
+  if (todo.shouldDemote > 0) {
+    setBar('ok', '✅',
+      `今日无需调仓。另有 <b>${todo.shouldDemote} 个观察因子</b> OOS 表现不佳、建议淘汰。`,
+      [{ label: '查看 Shadow 池', target: 'shadow-card' }]);
+    return;
+  }
+
+  // 4) 一切正常
+  if (todo.hasList) {
+    setBar('ok', '✅', '今日无需调仓，组合与因子池均正常。', []);
+  } else {
+    setBar('ok', '—', '暂无今日交易清单。', []);
+  }
+}
+
+// 点结论条按钮: 切到目标卡片所在 tab 并平滑滚动高亮
+function jumpToCard(cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const tabKey = card.getAttribute('data-tab');
+  if (tabKey) {
+    const tabBtn = document.querySelector(`.rtab[data-tab="${tabKey}"]`);
+    if (tabBtn) tabBtn.click();
+  }
+  setTimeout(() => {
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.remove('card-flash');
+    void card.offsetWidth;
+    card.classList.add('card-flash');
+  }, 60);
 }
 
 // ===== P0-1 Trade List + Holdings =============================
@@ -2215,9 +2310,14 @@ async function runDiscovery() {
         const accepted = p.accepted != null ? p.accepted : 0;
         const dup = p.duplicates_skipped != null ? p.duplicates_skipped : 0;
         const left = p.unexplored_remaining;
-        let msg = `✅ 本轮尝试 ${proposed} 个新配方，通过门槛 ${accepted} 个`;
-        if (dup > 0) msg += `（另跳过 ${dup} 个已探索）`;
-        if (left != null) msg += `，DSL 空间还剩 ${left} 个未探索`;
+        let msg;
+        if (accepted > 0) {
+          msg = `✅ 本轮新增 <b>${accepted} 个观察因子</b>（试了 ${proposed} 个配方）。它们进入 SHADOW 池做 OOS 验证，若约 20 天后表现稳定将自动进入组合。`;
+        } else {
+          msg = `✅ 本轮试了 ${proposed} 个新配方，<b>没有通过门槛的</b>（预测力/稳定性/相关性未达标，属正常）。组合不变。`;
+        }
+        if (dup > 0) msg += ` 另跳过 ${dup} 个已探索配方。`;
+        if (left != null) msg += ` 搜索空间还剩 ${left} 个未探索。`;
         el.classList.remove('status-error'); el.classList.add('status-ok');
         el.innerHTML = msg;
       }
