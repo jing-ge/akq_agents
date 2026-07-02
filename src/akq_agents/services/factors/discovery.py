@@ -505,11 +505,36 @@ class FactorSpace:
     def size(self) -> int:
         return len(self.bases) * len(self.ops) * len(self.windows) * len(self.directions)
 
-    def sample(self, n: int, rng: random.Random | None = None) -> list[dict]:
+    def sample(
+        self,
+        n: int,
+        rng: random.Random | None = None,
+        exclude: set[str] | None = None,
+    ) -> list[dict]:
+        """从 DSL 空间抽 n 个**未探索**的候选 recipe。
+
+        exclude: 已探索过的 recipe key 集合 (recipe_to_json 格式)。空间已达 4 万+,
+        纯随机会越来越频繁撞已跑过的组合 (run_batch 里 duplicates_skipped 白跑)。
+        传入 exclude 后, 抽样只在未探索空间里取, 保证每轮发现都是真正的新组合。
+
+        策略:
+        - 未探索组合数 > n: 随机拒绝采样直接抽 (期望命中率高, 循环上限保护).
+        - 未探索组合数很少 (接近耗尽): 退化为全枚举未探索集合再随机取, 避免拒绝采样死循环.
+        """
         rng = rng or random.Random()
+        exclude = exclude or set()
+        remaining = self.size() - len(exclude)
+        if remaining <= 0:
+            return []  # 空间已探索完
+        want = min(n, remaining)
+
         seen: set[str] = set()
         out: list[dict] = []
-        while len(out) < n and len(seen) < self.size():
+        # 拒绝采样上限: want 命中所需期望次数的富余量, 防极端情况死循环.
+        max_tries = max(want * 40, 2000)
+        tries = 0
+        while len(out) < want and tries < max_tries:
+            tries += 1
             r = _recipe_dict(
                 base=rng.choice(self.bases),
                 op=rng.choice(self.ops),
@@ -517,10 +542,24 @@ class FactorSpace:
                 direction=rng.choice(self.directions),
             )
             key = recipe_to_json(r)
-            if key in seen:
+            if key in exclude or key in seen:
                 continue
             seen.add(key)
             out.append(r)
+
+        # 兜底: 拒绝采样没凑够 (空间快耗尽, 未探索组合稀疏) → 全枚举未探索集合再随机取.
+        if len(out) < want:
+            unexplored: list[dict] = []
+            for base in self.bases:
+                for op in self.ops:
+                    for window in self.windows:
+                        for direction in self.directions:
+                            r = _recipe_dict(base=base, op=op, window=window, direction=direction)
+                            key = recipe_to_json(r)
+                            if key not in exclude and key not in seen:
+                                unexplored.append(r)
+            rng.shuffle(unexplored)
+            out.extend(unexplored[: want - len(out)])
         return out
 
 
@@ -558,6 +597,8 @@ class DiscoveryStats:
     rejected_compute_error: int = 0
     rejected_insufficient_data: int = 0
     duplicates_skipped: int = 0
+    # 空间探索感知: 本轮抽样后, DSL 空间还剩多少未探索组合 (供 UI 提示"空间快跑完了").
+    unexplored_remaining: int = 0
     accepted_names: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -572,6 +613,7 @@ class DiscoveryStats:
             "rejected_compute_error": self.rejected_compute_error,
             "rejected_insufficient_data": self.rejected_insufficient_data,
             "duplicates_skipped": self.duplicates_skipped,
+            "unexplored_remaining": self.unexplored_remaining,
             "accepted_names": self.accepted_names,
         }
 
@@ -648,9 +690,24 @@ class DiscoveryEngine:
         # 2) 已 active 因子的完整历史矩阵（用于时间序列相关性筛选）
         active_factor_history = self._compute_active_factor_history(ohlcv, close.index)
 
-        # 4) 抽样候选
-        candidates = self.space.sample(n_candidates, rng=self._rng)
+        # 4) 抽样候选 —— 只在**未探索空间**里抽, 避免随空间增大后随机撞历史重复.
+        #    从库里取全部已探索 recipe (DSL 四元组 key), 作为 exclude 传给 sample.
+        #    space.size() 是空间上限, 取这么多足以覆盖已探索全集 (去重后不会更多).
+        try:
+            explored = set(self.proposal_store.list_existing_recipes(limit=self.space.size()))
+        except Exception as exc:  # noqa: BLE001 — 取不到就退回旧行为 (仍会靠 exists() 兜底跳重复)
+            logger.warning("discovery: list_existing_recipes failed, fall back to random: %s", exc)
+            explored = set()
+        candidates = self.space.sample(n_candidates, rng=self._rng, exclude=explored)
         stats.proposed = len(candidates)
+        stats.unexplored_remaining = max(0, self.space.size() - len(explored))
+        if not candidates:
+            logger.info("discovery: DSL space exhausted (explored=%d / %d), nothing new to try",
+                        len(explored), self.space.size())
+            self._write_event_safe(
+                "factor.discovery.space_exhausted",
+                f"explored={len(explored)}/{self.space.size()}",
+            )
         evaluated_at = now_iso()
 
         for recipe in candidates:

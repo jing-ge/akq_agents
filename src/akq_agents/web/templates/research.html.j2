@@ -2204,9 +2204,22 @@ async function runDiscovery() {
     pollTimeout: 180000,
     pollIsDone: (d) => d && (d.status === 'ok' || d.status === 'failed' || d.status === 'error'),
     onSuccess: (d) => {
+      const el = document.getElementById('discovery-status');
       if (d && (d.status === 'failed' || d.status === 'error')) {
-        const el = document.getElementById('discovery-status');
         if (el) { el.classList.remove('status-ok'); el.classList.add('status-error'); el.innerHTML = '❌ 发现任务失败，请查看运维页 job-runs'; }
+      } else if (el && d && d.payload) {
+        // 从 job-runs detail 的 payload 读本轮 stats, 明确告诉用户"这一轮"到底产出了什么,
+        // 而不是让用户在 50 条历史里猜哪几条是刚跑的.
+        const p = d.payload;
+        const proposed = p.proposed != null ? p.proposed : '?';
+        const accepted = p.accepted != null ? p.accepted : 0;
+        const dup = p.duplicates_skipped != null ? p.duplicates_skipped : 0;
+        const left = p.unexplored_remaining;
+        let msg = `✅ 本轮尝试 ${proposed} 个新配方，通过门槛 ${accepted} 个`;
+        if (dup > 0) msg += `（另跳过 ${dup} 个已探索）`;
+        if (left != null) msg += `，DSL 空间还剩 ${left} 个未探索`;
+        el.classList.remove('status-error'); el.classList.add('status-ok');
+        el.innerHTML = msg;
       }
       loadProposals();
     },

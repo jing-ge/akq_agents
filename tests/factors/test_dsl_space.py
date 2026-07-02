@@ -225,3 +225,53 @@ def test_make_factor_with_new_recipe() -> None:
     assert s is not None
     assert isinstance(s, pd.Series)
     assert len(s) == 2  # 2 symbols
+
+
+# ---------- sample 的 exclude (未探索空间探索) ----------
+
+def test_sample_excludes_explored_recipes() -> None:
+    """传入 exclude 后, sample 抽出的 recipe 不会命中任何已探索组合."""
+    from akq_agents.services.factors.proposal_store import recipe_to_json
+
+    space = FactorSpace()
+    # 先抽一批当作"已探索", 再把它们作为 exclude 传入第二次抽样.
+    explored_recipes = space.sample(200)
+    explored_keys = {recipe_to_json(r) for r in explored_recipes}
+
+    fresh = space.sample(100, exclude=explored_keys)
+    assert len(fresh) == 100
+    fresh_keys = {recipe_to_json(r) for r in fresh}
+    # 新抽的 100 个与已探索的 200 个零交集
+    assert fresh_keys.isdisjoint(explored_keys)
+    # 且自身不重复
+    assert len(fresh_keys) == 100
+
+
+def test_sample_returns_empty_when_space_exhausted() -> None:
+    """exclude 覆盖整个空间时, sample 返回空列表 (不死循环)."""
+    from akq_agents.services.factors.proposal_store import recipe_to_json
+
+    space = FactorSpace()
+    all_recipes = space.sample(space.size())  # 全空间
+    all_keys = {recipe_to_json(r) for r in all_recipes}
+    assert len(all_keys) == space.size()
+
+    out = space.sample(20, exclude=all_keys)
+    assert out == []
+
+
+def test_sample_caps_at_unexplored_remaining() -> None:
+    """未探索组合不足 n 时, sample 只返回剩余的未探索组合数."""
+    from akq_agents.services.factors.proposal_store import recipe_to_json
+
+    space = FactorSpace()
+    all_recipes = space.sample(space.size())
+    all_keys = {recipe_to_json(r) for r in all_recipes}
+    # 只留 5 个未探索
+    keep_unexplored = set(list(all_keys)[:5])
+    exclude = all_keys - keep_unexplored
+
+    out = space.sample(20, exclude=exclude)
+    assert len(out) == 5
+    out_keys = {recipe_to_json(r) for r in out}
+    assert out_keys == keep_unexplored
