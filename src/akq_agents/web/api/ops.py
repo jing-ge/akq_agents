@@ -323,11 +323,18 @@ async def get_logs(
     if grep:
         all_lines = [ln for ln in all_lines if grep.lower() in ln.lower()]
     tail = all_lines[-lines:]
+
+    # 解析成结构化字段: {ts, level, logger, msg}, 供前端按列渲染。
+    # traceback 续行 / 第三方裸输出解析不出级别时, level="" 归到上一条消息体。
+    from akq_agents.logging_setup import parse_log_line
+
+    entries = [parse_log_line(ln) for ln in tail]
     return {
         "source": source,
         "path": str(log_path),
         "file_size": file_size,
         "total_lines_returned": len(tail),
         "lines": tail,
+        "entries": entries,
         "exists": True,
     }

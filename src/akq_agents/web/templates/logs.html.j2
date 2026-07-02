@@ -56,8 +56,18 @@ let _lastSig = '';        // 最近一次响应签名，用于 diff 出新增行
 let _lastLineCount = 0;
 let _logAutoStick = true; // 用户滚到底部时自动跟随
 
+function levelClass(level) {
+  // 后端已解析出的规范级别(INFO/WARN/WARNING/ERROR/...),优先用它
+  const lv = (level || '').toUpperCase();
+  if (/^(ERROR|CRITICAL|FATAL)/.test(lv)) return 'lv-error';
+  if (/^(WARN)/.test(lv)) return 'lv-warn';
+  if (/^(INFO)/.test(lv)) return 'lv-info';
+  if (/^(DEBUG|TRACE)/.test(lv)) return 'lv-debug';
+  return '';
+}
+
 function classifyLogLine(line) {
-  // 在前 ~120 个字符里识别等级关键词
+  // 兜底:没有结构化字段(旧格式续行)时,靠正则从整行猜等级
   const head = line.slice(0, 160).toUpperCase();
   if (/\b(ERROR|CRITICAL|FATAL|TRACEBACK|EXCEPTION)\b/.test(head)) return 'lv-error';
   if (/\b(WARN|WARNING)\b/.test(head)) return 'lv-warn';
@@ -66,15 +76,40 @@ function classifyLogLine(line) {
   return '';
 }
 
-function buildLogHtml(lines, startNo, freshFromIdx) {
-  if (!lines.length) {
+// 只取 logger 名末段(akq_agents.orchestrator.scheduler → scheduler),减少视觉噪音
+function shortLogger(name) {
+  if (!name) return '';
+  const parts = name.split('.');
+  return parts[parts.length - 1] || name;
+}
+
+function buildLogHtml(entries, startNo, freshFromIdx) {
+  if (!entries.length) {
     return '<div class="logs-empty">（日志文件为空 / grep 没有匹配）</div>';
   }
-  return lines.map((line, i) => {
-    const cls = classifyLogLine(line);
+  return entries.map((e, i) => {
+    const hasFields = !!(e.level || e.ts);
+    const cls = hasFields ? levelClass(e.level) : classifyLogLine(e.msg || '');
     const fresh = (freshFromIdx != null && i >= freshFromIdx) ? ' is-fresh' : '';
     const no = (startNo + i).toString().padStart(4, ' ');
-    return `<div class="log-line ${cls}${fresh}"><span class="lno">${no}</span><span class="msg">${escapeHtml(line)}</span></div>`;
+    // 时间只显示 HH:MM:SS(去掉日期,靠日期分组不必要;完整时间在 title)
+    const tsFull = e.ts || '';
+    const tsShort = tsFull.length >= 19 ? tsFull.slice(11, 19) : tsFull;
+    const lvText = (e.level || '').toUpperCase();
+    const lvBadge = lvText
+      ? `<span class="log-lv" title="${escapeHtml(lvText)}">${escapeHtml(lvText)}</span>`
+      : '<span class="log-lv log-lv-none"></span>';
+    const loggerCell = e.logger
+      ? `<span class="log-src" title="${escapeHtml(e.logger)}">${escapeHtml(shortLogger(e.logger))}</span>`
+      : '<span class="log-src"></span>';
+    const tsCell = tsShort
+      ? `<span class="log-ts" title="${escapeHtml(tsFull)}">${escapeHtml(tsShort)}</span>`
+      : '<span class="log-ts"></span>';
+    return `<div class="log-line ${cls}${fresh}">`
+      + `<span class="lno">${no}</span>`
+      + tsCell + lvBadge + loggerCell
+      + `<span class="msg">${escapeHtml(e.msg != null ? e.msg : '')}</span>`
+      + `</div>`;
   }).join('');
 }
 
@@ -100,6 +135,8 @@ async function refreshLogs(force) {
       return;
     }
     const arr = d.lines || [];
+    // 结构化条目;后端没给 entries 时,退回用原始行包成 {msg} 结构
+    const entries = d.entries || arr.map(ln => ({ ts: '', level: '', logger: '', msg: ln }));
     // 用最后一行 + 行数当签名，简单 diff 新增
     const sig = arr.length + '|' + (arr.length ? arr[arr.length - 1].slice(0, 200) : '');
     if (!force && sig === _lastSig) {
@@ -117,7 +154,7 @@ async function refreshLogs(force) {
     _lastSig = sig;
     _lastLineCount = arr.length;
     const fileSizeKb = d.file_size ? (d.file_size / 1024).toFixed(1) + ' KB' : '—';
-    viewer.innerHTML = buildLogHtml(arr, 1, freshFromIdx);
+    viewer.innerHTML = buildLogHtml(entries, 1, freshFromIdx);
     if (wasAtBottom || _logAutoStick || force) {
       viewer.scrollTop = viewer.scrollHeight;
     }

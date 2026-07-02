@@ -24,5 +24,8 @@ def start(host: str = "127.0.0.1", port: int = 8765) -> None:
         host=host,
         port=port,
         workers=1,  # 硬编码，与 lru_cache 单例假设一致
-        log_level="info",
+        # log_config=None: 不让 uvicorn 用自己的 logging 配置覆盖我们在 cmd_web_start
+        # 里 setup_logging 装好的统一格式(带时间戳/级别/模块)。uvicorn 的 logger 会
+        # 沿用 root handler, 从而落到同一个 web.log 且格式一致。
+        log_config=None,
     )

@@ -21,6 +21,11 @@ WEB_LOG="$PROJECT_ROOT/data/web.log"
 WEB_PID="$PROJECT_ROOT/data/web.pid"
 DAEMON_LOG="$PROJECT_ROOT/data/daemon.log"
 DAEMON_PID="$PROJECT_ROOT/data/daemon.pid"
+# 主日志(web.log / daemon.log)由 Python 的 setup_logging(RotatingFileHandler)
+# 自己写, 带统一时间戳/级别/模块格式。shell 只把进程 setup_logging 之前的裸
+# stdout / 崩溃栈兜底到 .boot.log, 不再 > 主日志(避免两方写同一文件把格式搅乱)。
+WEB_BOOT_LOG="$PROJECT_ROOT/data/web.boot.log"
+DAEMON_BOOT_LOG="$PROJECT_ROOT/data/daemon.boot.log"
 
 cd "$PROJECT_ROOT"
 mkdir -p data
@@ -66,12 +71,12 @@ cmd_web() {
         echo "[web] 已经在跑，pid=$(cat "$WEB_PID")"
         return 0
     fi
-    rotate_log_if_big "$WEB_LOG"
-    rotate_log_if_big "$DAEMON_LOG"
+    rotate_log_if_big "$WEB_BOOT_LOG"
+    rotate_log_if_big "$DAEMON_BOOT_LOG"
     echo "[web] 启动中... (http://${WEB_HOST}:${WEB_PORT})"
     nohup "$PYTHON" -m akq_agents.cli.app web start \
         --host "$WEB_HOST" --port "$WEB_PORT" \
-        > "$WEB_LOG" 2>&1 &
+        > "$WEB_BOOT_LOG" 2>&1 &
     echo $! > "$WEB_PID"
     if wait_web_ready; then
         echo "[web] 就绪：http://${WEB_HOST}:${WEB_PORT}/ops"
@@ -89,10 +94,10 @@ cmd_daemon_start() {
         echo "[daemon] 已经在跑，pid=$(cat "$DAEMON_PID")"
         return 0
     fi
-    rotate_log_if_big "$DAEMON_LOG"
+    rotate_log_if_big "$DAEMON_BOOT_LOG"
     echo "[daemon] 启动中..."
     nohup "$PYTHON" -m akq_agents.cli.app daemon start \
-        > "$DAEMON_LOG" 2>&1 &
+        > "$DAEMON_BOOT_LOG" 2>&1 &
     echo $! > "$DAEMON_PID"
     sleep 2
     if is_alive "$DAEMON_PID"; then

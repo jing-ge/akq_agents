@@ -103,6 +103,9 @@ def _daemon_paths() -> tuple[DaemonStateFile, SchedulerStateStore]:
 
 def cmd_daemon_start(_: argparse.Namespace) -> None:
     """前台启动 daemon；Ctrl+C 触发优雅停机。"""
+    from akq_agents.logging_setup import setup_logging
+
+    setup_logging(BASE_DIR / "data" / "daemon.log")
     daemon = build_daemon(install_signals=True)
     print("daemon starting (Ctrl+C to stop) ...")
     daemon.start(block=True)
@@ -423,8 +426,10 @@ def cmd_llm_sessions(args: argparse.Namespace) -> None:
 def cmd_web_start(args: argparse.Namespace) -> None:
     """启动 Web 控制台（前台阻塞，Ctrl+C 退出）。"""
     from akq_agents.bootstrap import load_web_config
+    from akq_agents.logging_setup import setup_logging
     from akq_agents.web.server import start as web_start
 
+    setup_logging(BASE_DIR / "data" / "web.log")
     web_cfg = load_web_config()
     host = args.host or web_cfg.bind_host
     port = args.port or web_cfg.bind_port
