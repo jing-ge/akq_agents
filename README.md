@@ -2,6 +2,53 @@
 
 一个由 LLM 辅助、daemon 自动调度的 A 股因子挖掘与组合研究系统。**advisory only，不下单实盘**。
 
+主要工作面在 Web 控制台（`http://127.0.0.1:8765/`）：每天打开一次，用 5 分钟看首屏结论条决定"是否要动仓 / 有没有需要审核的 AI 因子提议"即可。
+
+## 3 分钟上手
+
+```bash
+# 1. 启动 web + daemon (默认命令)
+./start.sh                     # 或 ./start.sh up
+
+# 2. 首次使用需回填历史行情 (约 1-2 小时, 一次性)
+PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app \
+    data bootstrap --lookback 250
+
+# 3. 打开浏览器
+./start.sh open                # 自动用默认浏览器打开控制台
+```
+
+启动后浏览器访问 `http://127.0.0.1:8765/` 会跳到 `/research` 研究面板。**如果系统检测到还没数据，页面顶部会自动显示引导横幅告诉你下一步做什么**——不用担心看到空页迷茫。
+
+## 每天怎么用（Web 端 5 分钟流程）
+
+打开 `/research`，从上到下扫一眼：
+
+1. **顶部数据新鲜度条** —— 一秒确认今日行情/组合/清单是不是最新。
+2. **KPI 总览** —— 6 张卡片：今日 BUY / 今日 SELL / 当日 NAV / 累计超额 / 持仓数 / Shadow 待 demote。
+3. **"今日待办"结论条** —— 系统把所有信号翻译成**一句话结论 + 直接跳转按钮**：
+   - `⚠️ 今日需要调仓：3 买 / 2 卖，共 5 笔待执行` → 点"查看交易清单"
+   - `☕ 今日无需调仓 — 组合稳定，可休息` → 点"净值曲线"或"Paper Trading"查看表现
+   - `🔧 系统还没有产出今日结果` → 点跳转去 `/ops` 手动触发
+4. **Tab 分组**（4 组）：交易 / 组合 / 因子 / LLM Lab —— 按需要展开对应卡片。
+5. **右下角 ⌨ 快捷键浮标** —— 点开查看所有快捷键（`g+r/o/d/c/l` 跳转 / `r` 刷新本页 / `/` 聚焦搜索）。
+
+日常两个高频动作：
+- **调仓**：点 KPI 的"今日 BUY / SELL"跳到交易清单，逐条 ✓ 或"📦 全部执行"一键同步 holdings。
+- **审核 AI 因子建议**：/research 页 → LLM Lab tab → "LLM 因子构建建议"卡片，✓ 接受 / ✗ 拒绝。
+
+## 启动脚本速查
+
+```bash
+./start.sh          # 启动 web + daemon（默认，等价于 ./start.sh up）
+./start.sh restart  # 重启 (改配置后使用)
+./start.sh stop     # 停止
+./start.sh status   # 看进程 + 关键健康指标
+./start.sh logs     # tail web.log + daemon.log
+./start.sh open     # 用默认浏览器打开 web 控制台
+./start.sh help     # 完整帮助
+```
+
 ## 系统架构
 
 ```
@@ -22,7 +69,7 @@
                           └──────────────────────────┘
 ```
 
-- **web 进程** — FastAPI + Jinja，5 个页面（Ops / Research / Data / Chat / Logs）+ 各种 trigger endpoint
+- **web 进程** — FastAPI + Jinja，5 个页面（Research / Ops / Data / Chat / Logs）+ 各种 trigger endpoint
 - **daemon 进程** — APScheduler 跑定时任务（数据刷新 / 盘后批处理 / 因子发现 / LLM brainstorm 等）
 - **共享存储** — SQLite WAL 模式 + Parquet（按日分区）
 
@@ -90,25 +137,7 @@ python:    3.10.20
 依赖:      akshare 1.18.x, akquant 0.2.x, fastapi, apscheduler, pyarrow
 ```
 
-### 启动 / 停止 / 状态
-
-```bash
-./start.sh up        # 启动 web + daemon (默认)
-./start.sh stop      # 停止
-./start.sh status    # 看进程 + 健康卡片
-./start.sh logs      # tail web.log + daemon.log
-```
-
-启动后浏览器访问 `http://127.0.0.1:8765/`（默认跳到 `/research`）。
-
-### 首次部署：数据回填
-
-```bash
-PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app \
-    data bootstrap --lookback 250
-```
-
-约 1-2 小时完成 250 个交易日 × ~5500 股票的 OHLCV 历史回填。
+详细启动 / 停止 / 状态命令见上方"启动脚本速查"。首次部署的数据回填命令见"3 分钟上手"。
 
 ## 核心能力
 
@@ -177,15 +206,27 @@ daemon 每 30 分钟巡检 3 条规则，触发时写 `events.alert.*` + 调 `os
 
 ### Web 控制台
 
-5 个页面（`localhost:8765`）：
+5 个页面（`localhost:8765`，导航顺序按使用频率）：
 
 | 路径 | 内容 |
 |---|---|
-| `/ops` | 健康卡片、job_runs 历史、events 流、手动 trigger 按钮 |
-| `/research` | 今日交易清单 + 真实持仓 + 今日组合 + **因子相关性热力图** + **今日异动诊断** + 因子表现 + 净值回测 + Paper Trading + 因子归因 + 自动发现流水 + **Shadow 战况看板** + LLM 因子建议审核 |
+| `/research` | **主工作面**：今日交易清单 + 真实持仓 + 今日组合 + **因子相关性热力图** + **今日异动诊断** + 因子表现 + 净值回测 + Paper Trading + 因子归因 + 自动发现流水 + **Shadow 战况看板** + LLM 因子建议审核。顶部有 KPI 总览 + "今日待办"结论条，4-tab 分组（交易 / 组合 / 因子 / LLM Lab） |
+| `/ops` | 系统健康度、job_runs 历史、events 流、手动 trigger 按钮 |
 | `/data` | AKShare 数据浏览器（17 个接口） |
 | `/chat` | LLM 对话 + tool use（实时 SSE） |
 | `/logs` | daemon / web 日志 tail |
+
+**全局 UX 特性**：
+
+- **顶部数据新鲜度条** — 每 30 秒轮询 `/api/ops/data-freshness`，一眼看今日行情 / 组合 / 清单 / 因子的最新数据日期
+- **首次使用引导横幅** — 检测 OHLCV 数据缺失或组合未生成时自动显示指引，可 dismiss
+- **导航健康红点** — 导航栏 "运维 Ops" 右侧的红/黄小圆点，daemon 挂了 / 今日批处理失败 / 数据异常时任意页面都能看见
+- **右下角 ⌨ 快捷键浮标** — 常驻按钮，点击弹出快捷键面板
+- **快捷键**（也可按 `?` 或点浮标查看）：
+  - `g+r/o/d/c/l` — 跳转 研究 / 运维 / 数据 / 对话 / 日志
+  - `r` — 刷新本页数据
+  - `/` — 聚焦搜索框
+  - `Esc` — 关闭弹窗
 
 ## 当前限制
 
@@ -281,6 +322,7 @@ $PY -m ruff check src/ tests/                        # lint
 | m15 | 架构清理（删 7 个装饰品 agent + 老库 + NAV 真实性修复） |
 | m16 | LLM 闭环（shadow 战况 + 归因诊断 + factor_postmortem + trade_list 闭环） |
 | m17 | alerter 巡检（NAV 异动 / 数据失败 / 因子衰减 → macOS 系统通知） |
+| m18 UX | 用户视角一致性打磨：顶栏品牌 / 主导航按频率排序 / ⌨ 快捷键浮标 / 首次使用引导横幅 / 结论条零操作日友好文案 / start.sh restart+open+help |
 
 详细设计文档（部分已是历史档案，以代码为准）：`docs/superpowers/specs/`、`docs/superpowers/plans/`。
 </content>
