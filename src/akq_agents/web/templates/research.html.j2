@@ -697,7 +697,14 @@ async function runBrainstorm() {
     statusEl: document.getElementById('brainstorm-status'),
     runningMessage: '调用 LLM 中',
     successMessage: '完成，正在刷新列表',
+    // factor.brainstorm 是异步 daemon job(60-125s): trigger 立即 202, 不能入队即当完成.
+    // 用 result_poll_url 轮询, daemon 写完 result(status=ok)再刷新列表, 否则看到旧建议.
+    pollUrlFromResponse: (d) => (d && d.payload && d.payload.result_poll_url) || null,
+    pollInterval: 3000,
+    pollTimeout: 150000,
+    pollIsDone: (d) => d && (d.status === 'ok' || d.status === 'not_found'),
     onSuccess: () => loadLLMSuggestions(),
+    onError: () => loadLLMSuggestions(),
   });
 }
 
@@ -917,12 +924,27 @@ async function recomputeTodayPortfolio(btn) {
     statusEl: document.getElementById('recompute-status'),
     runningMessage: '跑完整盘后流程 (1-5 分钟)',
     successMessage: '完成, 已用最新因子表现重算今日组合',
-    onSuccess: () => {
+    // batch.post_close 是异步 daemon job(1-5 分钟): trigger 立即 202, 不能入队即当完成.
+    // 用 job-runs detail 轮询, 等 daemon 真跑完(status=ok/failed)再刷新依赖组合快照的卡片,
+    // 否则会在盘后流程还没算完时刷新, 看到的是旧快照。
+    pollUrlFromResponse: (d) => (d && d.payload && d.payload.poll_url) || null,
+    pollInterval: 3000,
+    pollTimeout: 360000,
+    pollIsDone: (d) => d && (d.status === 'ok' || d.status === 'failed' || d.status === 'error'),
+    onSuccess: (d) => {
+      if (d && (d.status === 'failed' || d.status === 'error')) {
+        const el = document.getElementById('recompute-status');
+        if (el) { el.classList.remove('status-ok'); el.classList.add('status-error'); el.innerHTML = '❌ 盘后流程失败，请查看运维页 job-runs'; }
+      }
       // 刷新所有依赖 portfolio_snapshots 的卡片
       try { loadPortfolio(); } catch (e) {}
       try { loadKpiOverview(); } catch (e) {}
       try { loadTradeList(); } catch (e) {}
       try { loadDailyAttribution(); } catch (e) {}
+    },
+    onError: () => {
+      try { loadPortfolio(); } catch (e) {}
+      try { loadKpiOverview(); } catch (e) {}
     },
   });
 }
@@ -1145,18 +1167,42 @@ async function backtestSingleFactor() {
   if (!name) return;
   const sumEl = document.getElementById('single-factor-nav-summary');
   const chartEl = document.getElementById('single-factor-nav-chart');
-  sumEl.textContent = `正在回测 ${name} (top 50 等权, 每 5 天 rebalance, 90 天历史)…`;
+  sumEl.textContent = `正在回测 ${name} (top 50 等权, 每 5 天 rebalance, 90 天历史)…已入队，后台计算中…`;
   chartEl.style.display = 'none';
   try {
-    const r = await fetch(`/api/research/factors/${encodeURIComponent(name)}/backtest-single?days=90&rebalance_step=5&top_n=50`, {method: 'POST'});
-    if (!r.ok) {
-      const detail = await r.text();
-      sumEl.innerHTML = `<span style="color:#fb7185">回测失败 (HTTP ${r.status}): ${detail.slice(0, 200)}</span>`;
+    // factor.backtest_single 是异步 daemon job: 90 天因子 history + backtest 重 CPU, web 只入队立即 202.
+    // 之前前端仍按老的同步返回结构解析(d.ok/d.summary/d.nav), 但异步端点返回的是
+    // {status:accepted, payload:{result_poll_url}}, 导致 d.ok=undefined → 永远显示"无结果", 功能失效.
+    // 现在: 入队 → 轮询 result_poll_url → 拿到 result(daemon 写完)再渲染.
+    const tr = await fetch(`/api/research/factors/${encodeURIComponent(name)}/backtest-single?days=90&rebalance_step=5&top_n=50`, {method: 'POST'});
+    const td = await tr.json();
+    if (!tr.ok) {
+      sumEl.innerHTML = `<span style="color:#fb7185">回测触发失败 (HTTP ${tr.status}): ${formatErrorDetail(td)}</span>`;
       return;
     }
-    const d = await r.json();
+    const pollUrl = td.payload && td.payload.result_poll_url;
+    if (!pollUrl) {
+      sumEl.innerHTML = `<span style="color:#fbbf24">回测未返回轮询地址，无法获取结果</span>`;
+      return;
+    }
+    // 轮询 result: 最多 ~180 秒 (每 3s 一次)。status=running 继续, ok 结束(再看 result.ok), not_found 报错。
+    const started = Date.now();
+    const maxMs = 180000;
+    let d = null;
+    while (Date.now() - started < maxMs) {
+      await new Promise(res => setTimeout(res, 3000));
+      let pd;
+      try {
+        const pr = await fetch(pollUrl);
+        pd = await pr.json();
+      } catch (e) { continue; }  // 网络抖动, 下一轮再试
+      if (pd.status === 'running') { const sec = Math.floor((Date.now()-started)/1000); sumEl.textContent = `后台回测 ${name} 中… ${sec}s`; continue; }
+      if (pd.status === 'not_found') { sumEl.innerHTML = `<span style="color:#fb7185">回测任务丢失，请重试</span>`; return; }
+      if (pd.status === 'ok') { d = pd.result || {}; break; }
+    }
+    if (d === null) { sumEl.innerHTML = `<span style="color:#fbbf24">回测超时，请稍后在因子详情重试</span>`; return; }
     if (!d.ok) {
-      sumEl.innerHTML = `<span style="color:#fbbf24">回测无结果: ${d.reason || 'unknown'}</span>`;
+      sumEl.innerHTML = `<span style="color:#fbbf24">回测无结果: ${d.reason || d.error || 'unknown'}</span>`;
       return;
     }
     // 1) summary 卡片
@@ -2065,7 +2111,14 @@ async function rebuildNav(btn) {
     statusEl: document.getElementById('nav-summary'),
     runningMessage: '重新计算净值',
     successMessage: '已重新计算，正在重载曲线',
+    // portfolio.nav_rebuild 是异步 daemon job: trigger 立即 202, 不能入队即当完成.
+    // 用 result_poll_url 轮询, daemon 写完 result(status=ok)再重载曲线, 否则看到旧净值。
+    pollUrlFromResponse: (d) => (d && d.payload && d.payload.result_poll_url) || null,
+    pollInterval: 2500,
+    pollTimeout: 180000,
+    pollIsDone: (d) => d && (d.status === 'ok' || d.status === 'not_found'),
     onSuccess: () => { loadNav(); loadKpiOverview(); },
+    onError: () => { loadNav(); loadKpiOverview(); },
   });
 }
 
