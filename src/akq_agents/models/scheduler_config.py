@@ -63,31 +63,16 @@ class DataRefreshConfig(BaseModel):
     timeout_s: int = 600       # 单次拉取超时 10 分钟（批量接口正常 ~15 秒，留 cushion）
 
 
-class FactorBrainstormConfig(BaseModel):
-    """LLM 因子构建方向建议 job（每日 cron 20:00, DSL 受限路径）。
-
-    走 trading_day 白名单。每次产出 n_suggestions 条 status='llm_suggested' 记录，
-    等待人工 /research 页审核。
-    """
-
-    enabled: bool = True
-    hour: int = 20
-    minute: int = 0
-    timeout_s: int = 120
-    n_suggestions: int = 20
-
-
 class FactorCodeBrainstormConfig(BaseModel):
-    """重构: LLM 自由 Python 代码因子构建 job (每日 cron 21:00, 不限制空间路径).
+    """LLM 自由 Python 代码因子构建 job (每日 cron 21:00, 不限制空间路径).
 
-    与 FactorBrainstormConfig 的区别:
-    - LLM 输出 Python ``def compute(ohlcv) -> pd.Series`` 源码, 走 sandbox 编译
+    LLM 输出 Python ``def compute(ohlcv) -> pd.Series`` 源码, 走 sandbox 编译:
     - 不限定 base × op × window × direction 笛卡尔积, 探索空间无限
     - 跨 session 同源代码 sha1 自动去重
-    - 同样走 trading_day 白名单 + 人工审核 + OOS 评估
+    - 走 trading_day 白名单 + 人工审核 + OOS 评估
 
-    错开调度: factor.brainstorm 20:00 跑, factor.code_brainstorm 21:00 跑,
-    避免 LLM gateway 限速 / 单轮 50s backfill 撞车.
+    历史 DSL 受限的 FactorBrainstormConfig 已下线 (LLM 撞库 100%),
+    factor.brainstorm 保留作为向后兼容别名 → 现在实际跑 code brainstorm.
     """
 
     enabled: bool = True
@@ -95,6 +80,11 @@ class FactorCodeBrainstormConfig(BaseModel):
     minute: int = 0
     timeout_s: int = 180   # sandbox 编译 + LLM 90s + 90 天 IC backfill 20 因子 ~50s
     n_suggestions: int = 10  # code 路径更慢, 默认少一些
+
+
+# 向后兼容别名: 老代码 / 老配置里的 factor_brainstorm 现在跑 code brainstorm.
+# (统一走"自由代码"路径, 不再走 DSL 受限的笛卡尔积空间)
+FactorBrainstormConfig = FactorCodeBrainstormConfig
 
 
 class FactorPromoteShadowsConfig(BaseModel):

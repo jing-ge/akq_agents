@@ -33,18 +33,19 @@ router = APIRouter()
 
 _SUPPORTED_JOBS = {
     "batch.post_close", "batch.deep_research", "factor.discovery", "factor.eviction",
-    # M24: 4 个 user-facing 业务, picker 跑完写 job_results, 前端 GET /result 端点轮询.
-    "factor.backtest_single", "factor.brainstorm",
+    # M24: user-facing 业务, picker 跑完写 job_results, 前端 GET /result 端点轮询.
+    # (DSL 受限的 factor.brainstorm 已下线, 统一走 factor.code_brainstorm 的自由代码路径)
+    "factor.backtest_single", "factor.code_brainstorm",
     "portfolio.trade_list_recompute", "portfolio.nav_rebuild",
     # LLM 因子接受 (改 status + 90 天回填) 下沉 daemon, 不阻塞 web.
     "factor.llm_accept",
 }
 
-# M24: 这 4 个 job_id 走 picker 时 payload 字段映射, control.trigger 透传给 daemon.
-# 其他 8 个 (batch.* / factor.discovery / factor.eviction) 沿用原 payload schema.
+# M24: 这些 job_id 走 picker 时 payload 字段映射, control.trigger 透传给 daemon.
+# 其他 (batch.* / factor.discovery / factor.eviction) 沿用原 payload schema.
 _USER_FACING_PAYLOAD_KEYS: dict[str, list[str]] = {
     "factor.backtest_single": ["factor_name", "days", "rebalance_step", "top_n"],
-    "factor.brainstorm": ["n"],
+    "factor.code_brainstorm": ["n"],
     "factor.llm_accept": ["factor_name"],
     "portfolio.trade_list_recompute": [],
     "portfolio.nav_rebuild": [],

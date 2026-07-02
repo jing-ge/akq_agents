@@ -29,13 +29,15 @@ scheduler:
       enabled: true
       interval_minutes: 5
       timeout_s: 5
-    # factor.brainstorm: LLM 看现状提因子方向，每天 20:00（交易日）
+    # factor.brainstorm: DSL 受限路径已下线 (LLM 撞库 100%),
+    # FactorBrainstormConfig 现在是 FactorCodeBrainstormConfig 的别名. 保留 yaml 节
+    # 是为了老配置向后兼容;真正生效的是下面的 factor_code_brainstorm 节 (21:00 cron).
     factor_brainstorm:
-      enabled: true
+      enabled: false        # DSL 路径不再单独跑, 由 factor_code_brainstorm 接管
       hour: 20
       minute: 0
       timeout_s: 120
-      n_suggestions: 20
+      n_suggestions: 10
     # M19: shadow 因子 OOS 评估 / promote / demote 独立 daily job
     # 之前耦合在 factor.discovery 主流程, ohlcv empty 时无法推进 OOS 计数
     factor_promote_shadows:

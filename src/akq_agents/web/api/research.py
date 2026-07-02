@@ -441,14 +441,15 @@ async def llm_suggestions_list(limit: int = Query(default=50, ge=1, le=200)) -> 
 
 @router.post("/factors/brainstorm/run")
 async def trigger_brainstorm(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    """M24: LLM brainstorm 走 daemon 异步通道. web 端立即 202 + result_poll_url.
+    """LLM brainstorm 入口. 保持前端按钮 URL 不变.
 
-    之前同步跑 60-125s (90 天 backfill + LLM call), 阻塞 web. 现在 5s 内 202,
-    前端用 result_poll_url 轮询 /api/control/jobs/factor.brainstorm/{partition}/result.
+    历史: 原本走 DSL 受限的 factor.brainstorm (base×op×window×direction 笛卡尔积),
+    LLM 撞库 100%. 已改走 factor.code_brainstorm (LLM 自由 Python 代码 sandbox),
+    探索空间无限. 前端调用点 (/research 页 "让 LLM 提 10 个方向" 按钮) 无需改动.
     """
     from akq_agents.web.api.control import trigger_job as _trigger
     n = int((payload or {}).get("n", 10))
-    return await _trigger(name="factor.brainstorm", body={"n": n})
+    return await _trigger(name="factor.code_brainstorm", body={"n": n})
 
 
 @router.post("/factors/llm-suggestions/{factor_name}/{action}")

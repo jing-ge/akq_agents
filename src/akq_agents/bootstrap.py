@@ -162,22 +162,12 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             max_iterations=llm_cfg.chat.max_iterations,
         )
 
-        # M14: LLM 因子构建方向 brainstormer (DSL 受限, base×op×window×direction 笛卡尔积)
-        from akq_agents.services.factors.llm_brainstorm import LLMDSLFactorBrainstormer
-        services["llm_factor_brainstormer"] = LLMDSLFactorBrainstormer(
-            llm_client=services["llm_client"],
-            proposal_store=services["factor_proposal_store"],
-            registry=services["factor_registry"],
-            evaluator=services["factor_evaluator"],
-            repo=services["data_repository"],  # M19: 让 brainstorm 入库时跑 90 天 IC backfill
-            model=llm_cfg.brainstorm.model,
-            max_tokens=llm_cfg.brainstorm.max_tokens,
-            temperature=llm_cfg.brainstorm.temperature,
-        )
-
-        # 重构: LLM 自由 Python 代码 brainstormer (不限定 DSL 空间, 走 sandbox 编译)
+        # 重构: LLM 自由 Python 代码 brainstormer (不限定 DSL 空间, 走 sandbox 编译).
+        # 原 DSL 受限 brainstormer (LLMDSLFactorBrainstormer) 已下线 —— DSL 空间几乎
+        # 被 auto discovery 穷举完了, LLM 每次抽 10 个几乎必然全撞库. 保留 code 路径
+        # 让 LLM 真正自由探索超出 DSL 的表达式.
         from akq_agents.services.factors.llm_code_brainstorm import LLMCodeFactorBrainstormer
-        services["llm_code_factor_brainstormer"] = LLMCodeFactorBrainstormer(
+        _code_brainstormer = LLMCodeFactorBrainstormer(
             llm_client=services["llm_client"],
             proposal_store=services["factor_proposal_store"],
             registry=services["factor_registry"],
@@ -187,6 +177,10 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             max_tokens=llm_cfg.brainstorm.max_tokens,
             temperature=llm_cfg.brainstorm.temperature,
         )
+        services["llm_code_factor_brainstormer"] = _code_brainstormer
+        # 向后兼容: 老代码 (jobs/factor_brainstorm.py, web brainstorm 按钮) 仍拿这个 key,
+        # 但底层实例已经是自由代码路径, 不再走 DSL 笛卡尔积.
+        services["llm_factor_brainstormer"] = _code_brainstormer
 
         # M17: Alerter（每 30 分钟巡检 NAV / data refresh / 因子衰减，触发 macOS 通知）
         from akq_agents.models.scheduler_config import SchedulerConfig as _SchedCfg

@@ -116,7 +116,6 @@ def cmd_daemon_start(_: argparse.Namespace) -> None:
             "akq_agents.orchestrator.jobs.factor_discovery",
             "akq_agents.orchestrator.jobs.factor_eviction",
             "akq_agents.orchestrator.jobs.factor_promote_shadows",
-            "akq_agents.orchestrator.jobs.factor_brainstorm",
             "akq_agents.orchestrator.jobs.factor_code_brainstorm",
             # ---- services/factors 层 (逐因子算 IC / IR / rolling / eviction 打分) ----
             "akq_agents.services.factors.history_backfill",
@@ -124,7 +123,6 @@ def cmd_daemon_start(_: argparse.Namespace) -> None:
             "akq_agents.services.factors.sandbox",
             "akq_agents.services.factors.eviction",
             "akq_agents.services.factors.proposal_store",
-            "akq_agents.services.factors.llm_brainstorm",
             "akq_agents.services.factors.llm_code_brainstorm",
         ],
         log_file=BASE_DIR / "data" / "backtest.log",

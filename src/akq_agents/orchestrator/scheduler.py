@@ -32,8 +32,7 @@ from akq_agents.orchestrator.jobs import (
     batch_deep_research,
     batch_post_close,
     data_refresh,
-    factor_brainstorm,
-    factor_code_brainstorm,  # 重构: LLM 自由代码路径
+    factor_code_brainstorm,  # 重构: LLM 自由代码路径 (DSL 受限的 factor_brainstorm 已下线)
     factor_discovery,
     factor_eviction,
     factor_promote_shadows,
@@ -226,7 +225,7 @@ class QuantDaemon:
         batch_deep_research.register(self._scheduler, self._runner, self._cfg, self._services)
         retry_fetch_errors.register(self._scheduler, self._runner, self._cfg, self._services)
         factor_discovery.register(self._scheduler, self._runner, self._cfg, self._services)
-        factor_brainstorm.register(self._scheduler, self._runner, self._cfg, self._services)
+        # DSL 受限的 factor_brainstorm 已下线 (LLM 撞库 100%, 靠 code_brainstorm 补位)
         # 重构: LLM 自由 Python 代码 brainstorm (不限定 DSL 空间, 走 sandbox 编译)
         factor_code_brainstorm.register(
             self._scheduler, self._runner, self._cfg, self._services,

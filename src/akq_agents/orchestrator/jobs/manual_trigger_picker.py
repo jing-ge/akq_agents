@@ -29,7 +29,7 @@ dispatch 表 (job_id → 业务函数 + timeout):
 
 M24 user-facing job 表 (job_id → 业务函数, **结果写到 job_results**):
 - factor.backtest_single: 单因子 90 天组合回测, payload={factor_name, days, rebalance_step, top_n}
-- factor.brainstorm: LLM brainstorm, payload={n}
+- factor.backtest_single: 单因子回测, payload={factor_name, days, rebalance_step, top_n}
 - portfolio.trade_list_recompute: 重算今日 trade_list, payload={}
 - portfolio.nav_rebuild: 全历史 NAV 回填, payload={}
 这 4 个业务跑完把 result dict 写到 job_results 表, 前端 GET /jobs/{name}/{partition}/result
@@ -161,11 +161,12 @@ def _dispatch(
         )
 
 
-# M24: 4 个 user-facing job — 业务跑完结果要直接给前端用 (backtest NAV / brainstorm
-# 建议 / trade_list items / nav full history), 不写 job_results 前端就拿不到数据.
+# M24: user-facing job — 业务跑完结果要直接给前端用 (backtest NAV / brainstorm 建议 /
+# trade_list items / nav full history), 不写 job_results 前端就拿不到数据.
+# (DSL 受限的 factor.brainstorm 已下线, 用 factor.code_brainstorm 走自由代码路径)
 _USER_FACING_JOBS: frozenset[str] = frozenset({
     "factor.backtest_single",
-    "factor.brainstorm",
+    "factor.code_brainstorm",
     "factor.llm_accept",
     "portfolio.trade_list_recompute",
     "portfolio.nav_rebuild",
@@ -196,8 +197,8 @@ def _run_user_facing_job(
         try:
             if job_id == "factor.backtest_single":
                 result = _do_factor_backtest_single(services, payload)
-            elif job_id == "factor.brainstorm":
-                result = _do_factor_brainstorm(services, payload)
+            elif job_id == "factor.code_brainstorm":
+                result = _do_factor_code_brainstorm(services, payload)
             elif job_id == "factor.llm_accept":
                 result = _do_factor_llm_accept(services, payload)
             elif job_id == "portfolio.trade_list_recompute":
@@ -392,22 +393,26 @@ def _do_factor_backtest_single(services: dict[str, Any], payload: dict[str, Any]
     }
 
 
-def _do_factor_brainstorm(services: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    """LLM factor brainstorm (从 research.py:trigger_brainstorm 搬过来, 不再同步等 60-125s).
+def _do_factor_code_brainstorm(services: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """LLM 自由代码 brainstorm (走 sandbox 编译, 不限 DSL 空间). 手动触发入口.
 
-    payload: {n: int}  默认 10
+    payload: {n: int}  默认 10, clamp 到 [1, 30]
+    (原 DSL 受限的 _do_factor_brainstorm 已下线, 底层 brainstormer 也统一走 code 路径)
     """
-    brainstormer = services.get("llm_factor_brainstormer")
+    brainstormer = services.get("llm_code_factor_brainstormer")
     if brainstormer is None:
-        return {"ok": False, "error": "llm_factor_brainstormer not configured (检查 LLM 是否启用)", "error_code": "BRAINSTORMER_MISSING"}
+        return {"ok": False,
+                "error": "llm_code_factor_brainstormer not configured (检查 LLM 是否启用)",
+                "error_code": "BRAINSTORMER_MISSING"}
     n = int(payload.get("n", 10))
     n = max(1, min(n, 30))
     try:
         stats = brainstormer.run(n=n)
         return {"ok": True, "status": "ok", "stats": stats}
     except Exception as exc:  # noqa: BLE001
-        logger.exception("factor.brainstorm failed")
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "error_code": "BRAINSTORM_FAILED"}
+        logger.exception("factor.code_brainstorm failed")
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "error_code": "BRAINSTORM_FAILED"}
 
 
 def _do_factor_llm_accept(services: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
