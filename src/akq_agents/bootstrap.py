@@ -28,6 +28,7 @@ from akq_agents.services.data.calendar import TradingCalendar
 from akq_agents.services.data.quality import QualityGate
 from akq_agents.services.data.repository import DataRepository
 from akq_agents.services.data.retry_worker import RetryWorker
+from akq_agents.services.data.stock_names import StockNameStore
 from akq_agents.services.data.universe import UniverseManager
 from akq_agents.services.factors import FactorEngine, build_default_registry
 from akq_agents.services.factors.discovery import DiscoveryEngine, restore_accepted_factors
@@ -51,10 +52,9 @@ from akq_agents.services.portfolio import (
 )
 from akq_agents.services.portfolio.backtester import BacktestConfig, PortfolioBacktester
 from akq_agents.services.portfolio.industry_map import IndustryMapStore
-from akq_agents.services.data.stock_names import StockNameStore
 from akq_agents.services.portfolio.paper_trading import PaperTradingConfig, PaperTradingStore
 from akq_agents.services.portfolio.risk_filter import RiskFilter, RiskFilterConfig
-from akq_agents.services.portfolio.trade_list import HoldingsStore, TradeListStore, TradeListConfig
+from akq_agents.services.portfolio.trade_list import HoldingsStore, TradeListConfig, TradeListStore
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = BASE_DIR / "config" / "system.yaml"
@@ -87,7 +87,9 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
             weighting="ir", evaluator=evaluator, min_abs_ir=0.10,
         )
         services["portfolio_optimizer"] = PortfolioOptimizer(
-            OptimizerConfig(top_n=50, max_single_weight=0.05, turnover_aversion=0.7, max_industry_weight=0.30)
+            # M25 参数配置化: 从 config/system.yaml `portfolio:` 段读, 用户可
+            # 直接改 yaml 调换手 / 集中度, 不用改代码. 默认值见 models/config.PortfolioConfig.
+            OptimizerConfig(**config.portfolio.model_dump())
         )
         services["attributor"] = Attributor()
         services["portfolio_snapshot_store"] = PortfolioSnapshotStore(meta_db_path)
@@ -103,7 +105,10 @@ def build_services(config: AppConfig, data_config: DataConfig | None = None) -> 
         # P0-1: Holdings + Trade List（把权重翻译成具体下单清单）
         services["holdings_store"] = HoldingsStore(meta_db_path)
         services["trade_list_store"] = TradeListStore(meta_db_path)
-        services["trade_list_config"] = TradeListConfig(assumed_capital=100_000.0)
+        # M25: TradeList 参数配置化, 从 config/system.yaml `trade_list:` 段读.
+        # 散户可根据本金 / 执行力调 min_trade_amount + min_weight_change 控制
+        # 每日可执行 BUY/SELL 条数. 默认值见 models/config.TradeListSectionConfig.
+        services["trade_list_config"] = TradeListConfig(**config.trade_list.model_dump())
         # M7-B: 硬风控过滤
         services["risk_filter"] = RiskFilter(RiskFilterConfig(
             min_listing_days=60,

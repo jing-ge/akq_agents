@@ -43,6 +43,35 @@ class RiskConfig(BaseModel):
     min_liquidity_score: float = 1.0
 
 
+class PortfolioConfig(BaseModel):
+    """PortfolioOptimizer 参数. 对应 config/system.yaml `portfolio:` 段.
+
+    调这些值可直接影响每日组合的换手 / 集中度, 不用改代码.
+    """
+    top_n: int = 50
+    max_single_weight: float = 0.05
+    max_industry_weight: float = 0.30
+    # M25: 0.7→0.4 让权重更黏 prev, 单日换手从 ~20% 降到 ~10% 内.
+    # 1.0 = 完全采纳新权重 (原始 inverse-vol); 0.0 = 完全不动 prev.
+    turnover_aversion: float = 0.4
+
+
+class TradeListSectionConfig(BaseModel):
+    """TradeList 生成参数. 对应 config/system.yaml `trade_list:` 段.
+
+    散户可根据实际本金 / 执行力调 min_trade_amount 和 min_weight_change,
+    控制每日可执行 BUY/SELL 条数.
+    """
+    assumed_capital: float = 100_000.0
+    lot_size: int = 100
+    # M25: 200→2000, 假定 10 万本金 + 单票 1-5% 权重, 相当于
+    # "调仓金额 ≥ 单票平均权重 × 4" 才动手, 砍掉每天 50%+ 碎单.
+    min_trade_amount: float = 2000.0
+    # M25: 权重变化 < 0.5% (500 元 / 10 万本金) 且非建仓/清仓 → 强制 HOLD,
+    # 避免每日堆一堆微调噪音单.
+    min_weight_change: float = 0.005
+
+
 class BacktestConfig(BaseModel):
     engine: str = "mock"
     commission: float = 0.0003
@@ -63,6 +92,8 @@ class AppConfig(BaseModel):
     universe: UniverseConfig
     research: ResearchConfig
     risk: RiskConfig
+    portfolio: PortfolioConfig = PortfolioConfig()
+    trade_list: TradeListSectionConfig = TradeListSectionConfig()
     backtest: BacktestConfig
     services: ServicesConfig
 

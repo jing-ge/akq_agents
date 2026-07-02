@@ -24,7 +24,6 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 
 from akq_agents.services.data.repository import open_meta_db
 
@@ -67,10 +66,15 @@ _INDEX_TL = "CREATE INDEX IF NOT EXISTS idx_trade_list_cohort_date ON trade_list
 
 @dataclass
 class TradeListConfig:
-    """假定本金 + 整手设置。"""
+    """假定本金 + 整手设置 + 散户执行力过滤."""
     assumed_capital: float = 100_000.0
     lot_size: int = 100               # A 股一手 = 100 股
     min_trade_amount: float = 200.0   # 小于这个金额的"边角料"不下单
+    # M25: 散户可执行力过滤 — 权重变化小于此阈值 (且已持有) 一律 HOLD,
+    # 避免每天出一堆 "2.0%→2.3% 微调" 的碎单. 只有真正的建仓 / 清仓 / 大幅调仓
+    # 才会进 BUY/SELL. 默认 0.005 = 0.5pct 权重变化, 相当于 500 元 / 10 万本金.
+    # 新进 (yest_w == 0) 和清仓 (target_w == 0) 不受此阈值约束, 该动还得动.
+    min_weight_change: float = 0.005
 
 
 @dataclass
@@ -389,6 +393,23 @@ def generate_trade_list(
         delta_shares = target_shares - current_shares
         delta_amount = delta_shares * price
 
+        # M25: 权重变化阈值过滤 — 建仓 / 清仓不受约束 (总要下单), 但对已持有的调仓,
+        # 若 |target_w - yest_w| < min_weight_change 视为噪音信号, 强制 HOLD.
+        # 避免每天堆一堆 "2.0% → 2.3%" 的碎单让散户手工执行.
+        yest_w = float(yesterday_weights.get(sym, 0.0))
+        is_new_position = current_shares == 0 and target_w > 0
+        is_full_exit = target_shares == 0 and current_shares > 0
+        weight_change_small = abs(target_w - yest_w) < cfg.min_weight_change
+        if (
+            weight_change_small
+            and not is_new_position
+            and not is_full_exit
+            and current_shares > 0
+        ):
+            target_shares = current_shares
+            delta_shares = 0
+            delta_amount = 0
+
         # 太小的交易跳过（手续费都不够）
         if 0 < abs(delta_amount) < cfg.min_trade_amount:
             target_shares = current_shares
@@ -396,7 +417,6 @@ def generate_trade_list(
             delta_amount = 0
 
         # 决策 + 文字理由
-        yest_w = float(yesterday_weights.get(sym, 0.0))
         if delta_shares > 0:
             action = "BUY"
             if current_shares == 0:
