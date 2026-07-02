@@ -144,4 +144,4 @@ class CompositeScorer:
         import math
         weights = [math.pow(0.5, i / 30.0) for i in range(len(irs))]
         wsum = sum(weights)
-        return sum(w * v for w, v in zip(weights, irs)) / wsum if wsum > 0 else None
+        return sum(w * v for w, v in zip(weights, irs, strict=False)) / wsum if wsum > 0 else None

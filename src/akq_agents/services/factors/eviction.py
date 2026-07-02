@@ -92,7 +92,7 @@ def _ewma_abs_ir(metrics_ir_series: list[float | None], half_life: int = 30) -> 
     wsum = sum(weights)
     if wsum <= 0:
         return 0.0
-    return sum(w * v for w, v in zip(weights, vals)) / wsum
+    return sum(w * v for w, v in zip(weights, vals, strict=False)) / wsum
 
 
 def _read_recent_top_factors(conn) -> set[str]:
@@ -142,7 +142,7 @@ def compute_factor_scores(
             """
         ).fetchall()
 
-        for name, status, ir, t_stat, created_at in rows:
+        for name, status, _ir, t_stat, created_at in rows:
             # 拉最近 ewma_window_days × 2 期的 IR 历史 (给 EWMA 留余量)
             limit_n = cfg.ewma_window_days * 2
             ir_rows = conn.execute(

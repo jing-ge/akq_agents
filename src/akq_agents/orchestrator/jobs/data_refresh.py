@@ -65,7 +65,7 @@ def register(
 
     # 把所有触发时间合并成一个 cron 表达式（hour=16,16,17... minute=0,30,0...）
     # APScheduler CronTrigger 不支持 minute 列表跨 hour，所以为每个 (h,m) 单独注册一个 job
-    for i, (h, m) in enumerate(trigger_times):
+    for _i, (h, m) in enumerate(trigger_times):
         scheduler.add_job(
             _run,
             CronTrigger(hour=h, minute=m),

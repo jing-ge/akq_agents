@@ -978,7 +978,7 @@ class DiscoveryEngine:
         if len(factor_history) < 5:
             return None
         max_corr = 0.0
-        for name, hist in others.items():
+        for _name, hist in others.items():
             if hist.empty:
                 continue
             # 对齐日期

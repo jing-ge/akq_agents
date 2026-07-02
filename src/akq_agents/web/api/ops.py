@@ -167,7 +167,6 @@ async def data_freshness() -> dict[str, Any]:
     svc: ServiceContainer = get_services()
     if svc.repo is None or svc.workflow is None:
         return {"error": "not_ready"}
-    services = svc.workflow.services
 
     def _max(table: str, col: str) -> str | None:
         try:

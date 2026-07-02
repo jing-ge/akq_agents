@@ -216,7 +216,7 @@ async def data_refresh_trigger(target_date: str | None = None) -> dict[str, Any]
         try:
             tdate = date.fromisoformat(target_date)
         except ValueError:
-            raise HTTPException(400, f"invalid target_date: {target_date!r}, expect YYYY-MM-DD")
+            raise HTTPException(400, f"invalid target_date: {target_date!r}, expect YYYY-MM-DD") from None
     else:
         tdate = date.today()
 

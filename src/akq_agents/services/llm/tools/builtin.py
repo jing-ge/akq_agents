@@ -470,7 +470,6 @@ def build_factor_decay_check(services: dict[str, Any]) -> ToolSpec:
             }
 
         irs = [float(m.ir) for m in recent if m.ir is not None]
-        ics = [float(m.ic_mean) for m in recent if m.ic_mean is not None]
         if not irs:
             return {"error": "NO_IR", "factor_name": name}
 
