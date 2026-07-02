@@ -291,6 +291,25 @@ async function sendMessage() {
   const input = document.getElementById('chat-input');
   const content = input.value.trim();
   if (!content) return;
+
+  // P2: AI 写操作前置确认 —— 检测到让 AI 触发会改数据/跑任务的意图时先确认。
+  // chat 走流式, 工具由后端 AI 自主执行, 前端无法在执行中途拦截;
+  // 因此在发送前根据意图关键词做一次轻量确认, 防止误触发耗时/写操作。
+  const WRITE_INTENT = [
+    { re: /(淘汰|删除|清除|清空|移除).*(因子|会话|数据)/, label: '删除 / 淘汰类操作' },
+    { re: /(全量|full).*(重算|重跑|回测)/, label: '全量重算(可能 10 分钟以上)' },
+    { re: /(跑一?轮|触发|执行|运行|重跑|重算|刷新).*(因子发现|发现|盘后|批处理|流程|回测|数据|组合)/, label: '触发后台任务' },
+    { re: /(帮我|去|现在)?(跑|触发|执行|运行).*(一遍|一次|一轮)/, label: '触发后台任务' },
+  ];
+  const _hit = WRITE_INTENT.find(w => w.re.test(content));
+  if (_hit) {
+    const ok = await confirmDialog(
+      '你这句话可能会让 AI 触发「' + _hit.label + '」, 这类操作会改动数据或耗时较久。确认发送吗?',
+      { title: '确认触发操作', confirmLabel: '确认发送', cancelLabel: '再想想' }
+    );
+    if (!ok) return;
+  }
+
   _sending = true;
   // 移除空状态占位（如果还在）
   const empty = document.getElementById('chat-empty');

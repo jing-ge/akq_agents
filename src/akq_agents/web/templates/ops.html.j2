@@ -11,6 +11,13 @@
   <b>3)</b> 下方卡片实时展示 <b>数据健康度</b>、<b>最近任务</b>、<b>事件流</b>。
 </p>
 
+<!-- P0: 一句话系统状态结论条（复用 /api/ops/health，与健康卡片同源） -->
+<div id="ops-summary" class="ops-summary is-loading">
+  <span id="os-icon" class="os-icon">⏳</span>
+  <span id="os-text" class="os-text">正在读取系统状态…</span>
+  <span id="os-actions" class="os-actions"></span>
+</div>
+
 <!-- 控制面板 -->
 <div class="card control-card">
   <div class="control-head">
@@ -786,10 +793,69 @@ htmx.on('#health-cards', 'htmx:afterRequest', e => {
   try {
     const data = JSON.parse(e.detail.xhr.responseText);
     e.target.innerHTML = renderHealth(data);
+    try { renderOpsSummary(data); } catch (_) {}
   } catch (err) {
     e.target.innerHTML = '<p>解析失败</p>';
   }
 });
+// P0: 一句话系统状态结论条 — 复用 /api/ops/health 数据，零额外请求。
+// 优先级：daemon 停 > 数据异常/批处理失败 > 待刷新/24h 有错误 > 全绿。
+function renderOpsSummary(d) {
+  const bar = document.getElementById('ops-summary');
+  if (!bar) return;
+  const dh = d.data_health || {};
+  const dm = d.daemon || {};
+  const tb = d.today_batch;
+  const evt = d.scheduler_events_24h_by_level || {};
+  const healthRaw = (dh.health || 'UNKNOWN').toUpperCase();
+  const errCount = Number(evt.error || 0);
+  const tbStatus = tb ? String(tb.status || '').toLowerCase() : '';
+  const tbFailed = ['error', 'failed', 'crashed', 'interrupted', 'timeout'].includes(tbStatus);
+
+  const setBar = (level, icon, text, actions) => {
+    bar.className = 'ops-summary ' + level;
+    document.getElementById('os-icon').textContent = icon;
+    document.getElementById('os-text').innerHTML = text;
+    const actEl = document.getElementById('os-actions');
+    actEl.innerHTML = (actions || []).map(a =>
+      `<button class="os-btn" onclick="${a.onclick}">${escapeHtml(a.label)}</button>`
+    ).join('');
+  };
+  const jumpHealth = "document.querySelector('#health-cards').scrollIntoView({behavior:'smooth',block:'center'})";
+  const jumpJobs = "document.querySelector('#jobs-table').scrollIntoView({behavior:'smooth',block:'center'})";
+
+  // 1) daemon 未运行 —— 系统停摆，最优先
+  if (dm.is_alive === false) {
+    setBar('os-danger', '🔴',
+      '<b>后台守护进程未运行</b>，定时任务已停摆。请在终端执行 <code>./start.sh up</code> 启动，或点右侧手动跑一次。',
+      [{ label: '看健康详情', onclick: jumpHealth }]);
+    return;
+  }
+  // 2) 数据异常 / 今日批处理失败
+  if (healthRaw === 'FAILED' || healthRaw === 'DEGRADED' || tbFailed) {
+    const reason = tbFailed ? '今日盘后批处理执行失败' : ('数据健康度为「' + tCn(HEALTH_CN, healthRaw, healthRaw) + '」');
+    setBar('os-danger', '🔴',
+      `<b>需要处理：</b>${reason}${errCount ? `，近 24h 有 <b>${errCount}</b> 个错误事件` : ''}。建议查看最近任务定位原因。`,
+      [{ label: '看最近任务', onclick: jumpJobs }, { label: '看健康详情', onclick: jumpHealth }]);
+    return;
+  }
+  // 3) 数据待刷新 / 有错误事件
+  if (healthRaw === 'PENDING_TODAY' || errCount > 0) {
+    const parts = [];
+    if (healthRaw === 'PENDING_TODAY') parts.push('今日数据尚未刷新完成');
+    if (errCount > 0) parts.push(`近 24h 有 <b>${errCount}</b> 个错误事件`);
+    setBar('os-warn', '🟡',
+      `<b>需留意：</b>${parts.join('，')}。多为正常等待，若长时间不消可手动跑一次完整流程。`,
+      [{ label: '看健康详情', onclick: jumpHealth }]);
+    return;
+  }
+  // 4) 全绿
+  const tbTxt = tb ? '今日盘后批处理已完成' : '今日盘后批处理尚未运行（收盘后自动触发）';
+  setBar('os-ok', '🟢',
+    `<b>系统正常：</b>后台运行中，数据健康度正常，${tbTxt}，近 24h 无错误事件。`,
+    []);
+}
+
 function renderHealth(d) {
   const dh = d.data_health || {};
   const dm = d.daemon || {};

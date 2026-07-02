@@ -187,6 +187,26 @@ nav a.active::after {
   border-radius: 2px 2px 0 0;
   box-shadow: 0 0 10px var(--accent-glow);
 }
+.nav-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  margin-left: 5px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.nav-dot-danger {
+  background: #f87171;
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.9);
+  animation: nav-dot-pulse 1.6s ease-in-out infinite;
+}
+.nav-dot-warn {
+  background: #fbbf24;
+  box-shadow: 0 0 5px rgba(251, 191, 36, 0.8);
+}
+@keyframes nav-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
 nav .spacer { flex: 1; }
 nav .disclaimer {
   font-size: 11px;
@@ -2431,3 +2451,46 @@ tbody tr:hover td { background: var(--accent-soft); transition: background 120ms
   100% { box-shadow: 0 0 0 6px transparent; }
 }
 .card-flash { animation: card-flash-kf 1s ease-out; }
+
+/* ===== Ops 页一句话系统状态结论条 ================================ */
+.ops-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 16px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.ops-summary .os-icon { font-size: 18px; flex: 0 0 auto; }
+.ops-summary .os-text { flex: 1 1 auto; color: var(--fg); }
+.ops-summary .os-text b { color: var(--fg); font-weight: 700; }
+.ops-summary .os-text code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.ops-summary .os-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.ops-summary .os-btn {
+  background: transparent;
+  border: 1px solid currentColor;
+  color: inherit;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms;
+}
+.ops-summary .os-btn:hover { background: rgba(255, 255, 255, 0.06); }
+.ops-summary.is-loading { color: var(--fg-dim); border-style: dashed; }
+.ops-summary.os-ok { border-color: rgba(52, 211, 153, 0.4); background: var(--ok-soft); }
+.ops-summary.os-ok .os-actions { color: var(--ok); }
+.ops-summary.os-warn { border-color: rgba(96, 165, 250, 0.4); background: var(--info-soft); }
+.ops-summary.os-warn .os-actions { color: var(--info); }
+.ops-summary.os-danger { border-color: rgba(248, 113, 113, 0.5); background: var(--err-soft); }
+.ops-summary.os-danger .os-actions { color: var(--err); }

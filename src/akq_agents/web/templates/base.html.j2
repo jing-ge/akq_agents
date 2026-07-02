@@ -14,7 +14,7 @@
 <body>
   <nav>
     <span class="title">{{ ctx.title }}</span>
-    <a href="/ops" class="{% if page == 'ops' %}active{% endif %}" title="系统运行状态、后台启停、手动触发任务">运维 Ops</a>
+    <a href="/ops" class="{% if page == 'ops' %}active{% endif %}" title="系统运行状态、后台启停、手动触发任务">运维 Ops<span id="nav-ops-dot" class="nav-dot" style="display:none"></span></a>
     <a href="/research" class="{% if page == 'research' %}active{% endif %}" title="每日组合、因子表现、自动发现的新因子">研究 Research</a>
     <a href="/data" class="{% if page == 'data' %}active{% endif %}" title="查询 AKShare 基础数据：行情、指数、板块、宏观、新闻">数据 Data</a>
     <a href="/logs" class="{% if page == 'logs' %}active{% endif %}" title="实时滚动查看 daemon / web / 回测引擎物理日志">日志 Logs</a>
@@ -479,6 +479,50 @@
   }
   window.addEventListener('load', loadDataFreshness);
   setInterval(loadDataFreshness, 30000);
+
+  // ============================================================
+  // 导航「运维 Ops」健康红点 — 30s 轮询 /api/ops/health
+  // 让 daemon 挂掉 / 任务失败 / 数据异常 在任意页面都能被感知，异常追着人跑。
+  // ============================================================
+  async function loadOpsHealthDot() {
+    const dot = document.getElementById('nav-ops-dot');
+    if (!dot) return;
+    try {
+      const r = await fetch('/api/ops/health');
+      if (!r.ok) return;
+      const d = await r.json();
+      const dh = d.data_health || {};
+      const dm = d.daemon || {};
+      const tb = d.today_batch;
+      const evt = d.scheduler_events_24h_by_level || {};
+      const healthRaw = (dh.health || 'UNKNOWN').toUpperCase();
+      const errCount = Number(evt.error || 0);
+      const tbStatus = tb ? String(tb.status || '').toLowerCase() : '';
+      const tbFailed = ['error', 'failed', 'crashed', 'interrupted', 'timeout'].includes(tbStatus);
+
+      let level = null; // 'danger' | 'warn' | null
+      let reason = '';
+      if (dm.is_alive === false) { level = 'danger'; reason = '后台守护进程未运行'; }
+      else if (healthRaw === 'FAILED' || healthRaw === 'DEGRADED' || tbFailed) {
+        level = 'danger';
+        reason = tbFailed ? '今日盘后批处理失败' : ('数据健康度异常（' + healthRaw + '）');
+      } else if (healthRaw === 'PENDING_TODAY' || errCount > 0) {
+        level = 'warn';
+        reason = errCount > 0 ? ('近 24h 有 ' + errCount + ' 个错误事件') : '今日数据待刷新';
+      }
+
+      if (!level) {
+        dot.style.display = 'none';
+        dot.title = '';
+      } else {
+        dot.style.display = 'inline-block';
+        dot.className = 'nav-dot nav-dot-' + level;
+        dot.title = '运维需关注：' + reason + '（点进去看详情）';
+      }
+    } catch {}
+  }
+  window.addEventListener('load', loadOpsHealthDot);
+  setInterval(loadOpsHealthDot, 30000);
   </script>
 </body>
 </html>
