@@ -881,6 +881,17 @@ function activateResearchTab(tabKey, opts) {
       history.replaceState(null, '', '#' + tabKey);
     }
   }
+  // 用户点击切 tab 后回滚: 若已滚过 tab 栏, 把 tab 栏顶到 nav 下方,
+  // 避免停在上一个 tab 底部的空白处 (初始化/后退前进不回滚, 保留浏览位置)
+  if (opts && opts.scrollToTop) {
+    const tabsEl = document.getElementById('research-tabs');
+    if (tabsEl) {
+      const navH = parseInt(getComputedStyle(document.documentElement)
+        .getPropertyValue('--nav-h')) || 56;
+      const top = tabsEl.getBoundingClientRect().top + window.scrollY - navH;
+      if (window.scrollY > top) window.scrollTo({ top, behavior: 'smooth' });
+    }
+  }
   // 切 tab 后让 ECharts 实例 resize（切回隐藏 → 显示时容器宽度刚刚才有）
   setTimeout(() => {
     if (typeof echarts === 'undefined') return;
@@ -893,7 +904,7 @@ function activateResearchTab(tabKey, opts) {
 
 function setupResearchTabs() {
   document.querySelectorAll('#research-tabs .rtab').forEach(btn => {
-    btn.addEventListener('click', () => activateResearchTab(btn.dataset.tab));
+    btn.addEventListener('click', () => activateResearchTab(btn.dataset.tab, { scrollToTop: true }));
   });
   // 初次从 URL hash 读
   const initial = (location.hash || '').slice(1);
@@ -1606,8 +1617,8 @@ function jumpToCard(cardId) {
   if (!card) return;
   const tabKey = card.getAttribute('data-tab');
   if (tabKey) {
-    const tabBtn = document.querySelector(`.rtab[data-tab="${tabKey}"]`);
-    if (tabBtn) tabBtn.click();
+    // 直接切 tab (不走 .click, 避免触发切 tab 回滚, 由下方 scrollIntoView 精确定位到卡片)
+    activateResearchTab(tabKey);
   }
   setTimeout(() => {
     card.scrollIntoView({ behavior: 'smooth', block: 'center' });

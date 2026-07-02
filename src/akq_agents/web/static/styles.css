@@ -2193,15 +2193,19 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
    /research — Tabs (4 组)
    ============================================================ */
 .research-tabs {
+  position: sticky;
+  top: var(--nav-h, 56px);
+  z-index: 48;               /* 略低于 KPI 条(49): KPI 滚走后 tab 顶到 nav 下常驻 */
   display: flex;
   align-items: stretch;
   gap: 2px;
   margin: 0 0 18px;
   padding: 4px;
-  background: linear-gradient(180deg, rgba(17, 20, 27, 0.92), rgba(11, 13, 18, 0.92));
+  background: linear-gradient(180deg, rgba(17, 20, 27, 0.96), rgba(11, 13, 18, 0.96));
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  backdrop-filter: saturate(140%) blur(8px);
 }
 .research-tabs .rtab {
   flex: 1 1 0;

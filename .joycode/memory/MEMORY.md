@@ -1,0 +1,1 @@
+- [Web 控制台只做桌面端](feedback_desktop_only.md) — AKQ Agents web 控制台的 UX 优化只针对桌面端,不做移动端/窄屏适配
