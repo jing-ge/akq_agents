@@ -455,12 +455,15 @@ def _do_factor_llm_accept(services: dict[str, Any], payload: dict[str, Any]) -> 
     try:
         with open_meta_db(db_path) as conn:
             row = conn.execute(
-                "SELECT status, recipe_json FROM factor_proposals WHERE factor_name = ?",
+                "SELECT status, recipe_json, recipe_kind, recipe_code, code_hash, direction "
+                "FROM factor_proposals WHERE factor_name = ?",
                 (name,),
             ).fetchone()
             if row is None:
                 return {"ok": False, "factor_name": name, "error": f"factor not found: {name}", "error_code": "NOT_FOUND"}
-            cur_status, recipe_json = row[0], row[1]
+            cur_status, recipe_json, recipe_kind, recipe_code, code_hash, direction = (
+                row[0], row[1], row[2], row[3], row[4], row[5],
+            )
             # 已被本 job 或其他路径推进过 → 不重复报错, 幂等放行 (仍继续补回填)
             if cur_status == "llm_suggested":
                 conn.execute(
@@ -483,12 +486,39 @@ def _do_factor_llm_accept(services: dict[str, Any], payload: dict[str, Any]) -> 
     # 2) 90 天 IS IC/IR 回填 (重 CPU, 这才是下沉 daemon 的主因). 失败不回滚 status —
     #    第二天 batch.deep_research 会补上 metrics, 接受本身已经生效.
     try:
-        recipe = recipe_from_json(recipe_json)
-        factor = make_factor(recipe)
-        try:
-            factor.name = name  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
+        # 重构: 按 recipe_kind 分支重建 factor.
+        # - code 因子: recipe_json 只有 {description, direction}, 真 source 在 recipe_code.
+        #   走 compile_code_factor + CodeFactor, 跟 llm_code_brainstorm._backfill_history_for_new_factors 保持一致.
+        # - dsl 因子: 老路径, 走 make_factor(recipe).
+        if (recipe_kind or "dsl") == "code":
+            if not recipe_code or not code_hash:
+                return {
+                    "ok": True,
+                    "factor_name": name,
+                    "status": "shadow",
+                    "is_ic": {"ok": False, "reason": "code_factor missing recipe_code/code_hash"},
+                }
+            from akq_agents.services.factors.base import CodeFactor
+            from akq_agents.services.factors.sandbox import compile_code_factor
+            recipe_meta = recipe_from_json(recipe_json) if recipe_json else {}
+            description = recipe_meta.get("description", "")
+            fn, ch = compile_code_factor(recipe_code, timeout_s=10.0)
+            factor = CodeFactor(
+                name=name,
+                source_code=recipe_code,
+                fn=fn,
+                factor_version=1,
+                direction=direction or recipe_meta.get("direction", "long"),
+                code_hash=ch,
+                description=description,
+            )
+        else:
+            recipe = recipe_from_json(recipe_json)
+            factor = make_factor(recipe)
+            try:
+                factor.name = name  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
         ctx = HistoryBackfillContext.build(repo=repo, evaluator=evaluator, days=90, step=1)
         if ctx is None:
             return {

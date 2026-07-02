@@ -737,7 +737,18 @@ function renderLLMSuggestions(rows) {
     + '<th>因子名</th><th>recipe</th><th>方向</th><th>LLM 理由</th><th>创建时间</th><th>操作</th>'
     + '</tr></thead><tbody>';
   for (const r of rows) {
-    const recipe = r.recipe ? `${r.recipe.base}/${r.recipe.op}/w${r.recipe.window}` : '—';
+    // recipe 兼容两种格式:
+    // 1) DSL 因子 (旧): {base, op, window, direction} → "close/zscore/w20"
+    // 2) code 因子 (自由代码): {description, direction} → "code" 徽章
+    // 3) 缺字段 → "—"
+    let recipe;
+    if (r.recipe && r.recipe.base && r.recipe.op && r.recipe.window != null) {
+      recipe = `${r.recipe.base}/${r.recipe.op}/w${r.recipe.window}`;
+    } else if (r.recipe && (r.recipe.description || r.factor_name.startsWith('code_'))) {
+      recipe = '<span class="pill" style="background:var(--brand-mute,#334);color:var(--fg-mute)">code</span>';
+    } else {
+      recipe = '—';
+    }
     const reason = (r.reason || '').replace(/^LLM suggested:\s*/, '');
     const created = (r.created_at || '').slice(0, 16).replace('T', ' ');
     html += `<tr>
@@ -2245,13 +2256,10 @@ async function loadProposals() {
       <th><abbr title="t 统计量，衡量 IC 的显著性，绝对值 >2 一般算显著">t 统计量</abbr></th>
       <th><abbr title="该因子与现有因子的最大相关系数绝对值；越低代表越有新意">最大相关性</abbr></th>
       <th>评估结论</th>
-      <th><abbr title="recipe：因子配方 = 算子(基础数据, 窗口, 方向)">配方</abbr></th>
+      <th><abbr title="recipe：因子配方 — DSL 因子=算子(基础数据, 窗口, 方向); code 因子=LLM 自由 Python + 描述">配方</abbr></th>
       <th>评估时间</th>
     </tr></thead><tbody>${d.rows.map(r => {
       const recipe = r.recipe || {};
-      const opCn  = cnOf(OP_CN,  recipe.op);
-      const baseCn = cnOf(BASE_CN, recipe.base);
-      const dirCn = cnOf(DIR_CN, recipe.direction);
       const statusText = cnMap[r.status] || r.status;
       const rowClass = r.status === 'accepted' ? 'row-accepted' :
                        (r.status === 'shadow' ? 'row-pending' :
@@ -2268,6 +2276,27 @@ async function loadProposals() {
           <span class="lbl">${r.oos_observations}/${OOS_TARGET}d</span>
         </span>`;
       }
+      // 配方渲染: DSL 因子有 base/op/window/direction; code 因子只有 description + direction.
+      // 用 recipe_kind (后端已透出) 判定; 兜底再看字段是否齐全, 避免出现 "undefined/undefined/wundefined".
+      const dirCn = cnOf(DIR_CN, recipe.direction);
+      let recipeCell;
+      const isCode = r.recipe_kind === 'code'
+        || (r.factor_name && r.factor_name.startsWith('code_'))
+        || recipe.description != null
+        || !(recipe.base && recipe.op && recipe.window != null);
+      if (isCode) {
+        const desc = (recipe.description || '').trim() || '(无描述)';
+        const short = desc.length > 60 ? desc.slice(0, 60) + '…' : desc;
+        recipeCell = `<td class="small" title="${escapeHtml(desc)}">
+          <span class="pill" style="background:var(--brand-mute,#334);color:var(--fg-mute);margin-right:6px">code</span>${escapeHtml(short)}（${dirCn}）
+        </td>`;
+      } else {
+        const opCn  = cnOf(OP_CN,  recipe.op);
+        const baseCn = cnOf(BASE_CN, recipe.base);
+        recipeCell = `<td class="small" title="原始 recipe: ${recipe.op}(${recipe.base}, w=${recipe.window}, ${recipe.direction})">
+          ${opCn}（${baseCn}，窗口 ${recipe.window} 天，${dirCn}）
+        </td>`;
+      }
       return `<tr class="${rowClass} is-clickable" onclick="openProposalModal('${r.factor_name}')" title="点击查看推理详情（IS / 相关性 / OOS 决策路径）">
       <td><code>${r.factor_name}</code></td>
       <td><span class="status-${statusColor}">${statusText}</span>${oosText}</td>
@@ -2276,9 +2305,7 @@ async function loadProposals() {
       <td>${r.t_stat != null ? r.t_stat.toFixed(2) : '—'}</td>
       <td>${r.max_abs_corr != null ? r.max_abs_corr.toFixed(2) : '—'}</td>
       <td>${r.reason || '—'}</td>
-      <td class="small" title="原始 recipe: ${recipe.op}(${recipe.base}, w=${recipe.window}, ${recipe.direction})">
-        ${opCn}（${baseCn}，窗口 ${recipe.window} 天，${dirCn}）
-      </td>
+      ${recipeCell}
       <td class="small">${r.evaluated_at || r.created_at}</td>
     </tr>`;}).join('')}</tbody></table>`;
     makeSortable(tableEl.querySelector('table'));
