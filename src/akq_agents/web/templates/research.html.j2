@@ -1609,16 +1609,25 @@ function renderTodoSummary(todo) {
   // 3) 无需调仓, 但有 shadow 因子待处理(次要提醒)
   if (todo.shouldDemote > 0) {
     setBar('ok', '✅',
-      `今日无需调仓。另有 <b>${todo.shouldDemote} 个观察因子</b> OOS 表现不佳、建议淘汰。`,
+      `今日无需调仓 — <b>组合稳定，可休息</b>。另有 <b>${todo.shouldDemote} 个观察因子</b> OOS 表现不佳、建议淘汰。`,
       [{ label: '查看 Shadow 池', target: 'shadow-card' }]);
     return;
   }
 
-  // 4) 一切正常
+  // 4) 一切正常 — 零操作日, 给明确的正面反馈 + 引导用户看组合表现
   if (todo.hasList) {
-    setBar('ok', '✅', '今日无需调仓，组合与因子池均正常。', []);
+    // 有清单 = 已跑过今日盘后, 但都是 HOLD (无 BUY/SELL)
+    setBar('ok', '☕',
+      '今日无需调仓 — <b>组合稳定，可休息</b>。要看组合近期表现或因子健康？',
+      [
+        { label: '净值曲线', target: 'nav-card' },
+        { label: 'Paper Trading', target: 'paper-trading-card' },
+      ]);
   } else {
-    setBar('ok', '—', '暂无今日交易清单。', []);
+    // 无清单 = 今天还没跑盘后 (或 daemon 挂了)
+    setBar('warn', '⏳',
+      '今日盘后流程还没跑，暂无交易清单。收盘后 16:30 自动触发，也可手动。',
+      [{ label: '去手动触发', target: 'portfolio-card' }]);
   }
 }
 
