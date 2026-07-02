@@ -74,16 +74,18 @@ def test_validate_recipe_accepts_valid() -> None:
 
 
 def test_validate_recipe_rejects_unknown_op() -> None:
+    # ema 已经是合法 op (扩 DSL 空间时新增), 这里用一个真的非法的 op 测试
     err = _validate_recipe({
-        "base": "close", "op": "ema",
+        "base": "close", "op": "definitely_not_an_op",
         "window": 5, "direction": "long",
     })
     assert err is not None and "op" in err
 
 
 def test_validate_recipe_rejects_unknown_window() -> None:
+    # 11 是新 _WINDOWS (2,3,5,7,10,14,20,30,60,90,120,250) 里没有的, 仍应被拒
     err = _validate_recipe({
-        "base": "close", "op": "pct_change", "window": 7,
+        "base": "close", "op": "pct_change", "window": 11,
         "direction": "long",
     })
     assert err is not None and "window" in err
@@ -96,6 +98,10 @@ def test_recipe_to_name_is_deterministic() -> None:
 
 
 def test_brainstormer_writes_valid_suggestions_to_store(tmp_path: Path) -> None:
+    """两个合法 op (zscore + ema) 都应入 review. 验证 DSL 扩空间后 LLM 提议不会被误判 invalid.
+
+    旧版只有 zscore 一个合法 (ema 是扩 _OPS 时新加的), 当时测试期望 1 accepted + 1 invalid.
+    """
     llm_client = MagicMock()
     llm_resp = MagicMock()
     llm_resp.text = '''
@@ -103,7 +109,7 @@ def test_brainstormer_writes_valid_suggestions_to_store(tmp_path: Path) -> None:
         {"recipe": {"base":"close","op":"zscore","window":30,"direction":"long"},
          "rationale": "中期 zscore 动量"},
         {"recipe": {"base":"close","op":"ema","window":10,"direction":"long"},
-         "rationale": "新算子（不合法）"}
+         "rationale": "EMA 平滑动量 (扩空间后合法)"}
     ]}
     '''
     llm_resp.prompt_tokens = 100
@@ -127,13 +133,13 @@ def test_brainstormer_writes_valid_suggestions_to_store(tmp_path: Path) -> None:
     stats = brainstormer.run(n=2)
 
     assert stats["requested"] == 2
-    assert stats["accepted_into_review"] == 1
-    assert stats["invalid"] == 1
+    assert stats["accepted_into_review"] == 2
+    assert stats["invalid"] == 0
 
     rows = store.list_recent(status="llm_suggested")
-    assert len(rows) == 1
+    assert len(rows) == 2
     assert "zscore" in rows[0].recipe_json
-    assert "中期 zscore 动量" in (rows[0].reason or "")
+    assert "EMA 平滑动量" in (rows[0].reason or "") or "EMA 平滑动量" in (rows[1].reason or "")
 
 
 def test_brainstormer_skips_duplicate_recipe(tmp_path: Path) -> None:

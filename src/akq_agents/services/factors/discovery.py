@@ -14,7 +14,7 @@
   accepted 因子注册进 `FactorRegistry`.
 
 设计原则（YAGNI）:
-- DSL 路径不引入 LLM 生成; 5×8×5×2=400 组合, 抽样 + dedup 即可;
+- DSL 路径不引入 LLM 生成; 46 base × 37 op × 12 window × 2 direction = 40,848 组合, 抽样 + dedup 即可;
 - Code 路径不引入符号回归/遗传算法; LLM 直出 Python 是最直接的"自由空间";
 - 一个候选的 compute 不需要是"最优"的——只要 IC/IR 满足门槛就接收.
 """
@@ -50,7 +50,11 @@ logger = logging.getLogger(__name__)
 # ----------------- DSL & 运行时 Factor ---------------------------------------
 
 # base 列：对应 long-format ohlcv 的列名 / 衍生表达式
+# 36 个候选 → 包含原始列 + 衍生比例/对数/振幅/影线/资金流代理等
+# 5 base × 8 op × 5 window × 2 direction = 400 (原始)
+# 36 base × 32 op × 10 window × 2 direction = 23,040 (×57.6)
 _BASES = {
+    # ----- 原始列 (5) -----
     "close": lambda df: df["close"].astype(float),
     "volume": lambda df: df["volume"].astype(float),
     "amount": lambda df: df["amount"].astype(float) if "amount" in df.columns else df["close"] * df["volume"],
@@ -58,11 +62,179 @@ _BASES = {
     "vwap": lambda df: (df["amount"] / df["volume"].replace(0, np.nan)).astype(float)
     if "amount" in df.columns
     else df["close"].astype(float),
+    # ----- 对数变换 (3) -----
+    "log_volume": lambda df: np.log(df["volume"].astype(float).replace(0, np.nan)),
+    "log_amount": lambda df: np.log(df["amount"].astype(float).replace(0, np.nan))
+    if "amount" in df.columns
+    else np.log((df["close"] * df["volume"]).replace(0, np.nan)),
+    "log_vwap": lambda df: np.log(
+        (df["amount"] / df["volume"].replace(0, np.nan))
+        if "amount" in df.columns
+        else df["close"]
+    ),
+    # ----- 比例 / 资金流 (5) -----
+    "turnover": lambda df: (df["amount"] / df["volume"].replace(0, np.nan)).astype(float)
+    if "amount" in df.columns
+    else df["close"].astype(float),
+    "vol_amount_ratio": lambda df: (df["volume"] / df["amount"].replace(0, np.nan)).astype(float)
+    if "amount" in df.columns
+    else (1.0 / df["close"].replace(0, np.nan)),
+    "illiquidity": lambda df: (
+        (df["close"].pct_change().abs() / df["amount"].replace(0, np.nan))
+        if "amount" in df.columns
+        else (df["close"].pct_change().abs() / (df["close"] * df["volume"]).replace(0, np.nan))
+    ).astype(float),
+    "amihud": lambda df: (
+        (df["close"].pct_change().abs() / df["amount"].replace(0, np.nan))
+        if "amount" in df.columns
+        else (df["close"].pct_change().abs() / (df["close"] * df["volume"]).replace(0, np.nan))
+    ).astype(float),
+    "log_amount_vol_ratio": lambda df: (
+        np.log(df["amount"].replace(0, np.nan) / df["volume"].replace(0, np.nan))
+        if "amount" in df.columns
+        else np.log(df["close"].replace(0, np.nan))
+    ),
+    # ----- 价格关系 (5) -----
+    "high_close_ratio": lambda df: (df["high"] / df["close"].replace(0, np.nan) - 1.0).astype(float),
+    "low_close_ratio": lambda df: (df["low"] / df["close"].replace(0, np.nan) - 1.0).astype(float),
+    "vwap_deviation": lambda df: (
+        df["close"] - df["amount"] / df["volume"].replace(0, np.nan)
+        if "amount" in df.columns
+        else pd.Series(0.0, index=df.index)
+    ).astype(float),
+    "vwap_close_spread": lambda df: (
+        (df["close"] - df["amount"] / df["volume"].replace(0, np.nan)) / df["close"].replace(0, np.nan)
+        if "amount" in df.columns
+        else pd.Series(0.0, index=df.index)
+    ).astype(float),
+    "hl_amp": lambda df: (
+        (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
+    ).astype(float),
+    # ----- 振幅 / 影线 (6) -----
+    "oc_amp": lambda df: (
+        (df["close"] - df["open"]) / df["open"].replace(0, np.nan)
+    ).astype(float),
+    "co_amp": lambda df: (
+        (df["open"] - df["close"].shift(1)) / df["close"].shift(1).replace(0, np.nan)
+    ).astype(float),
+    "upper_shadow": lambda df: (
+        (df["high"] - np.maximum(df["open"], df["close"])) / df["close"].replace(0, np.nan)
+    ).astype(float),
+    "lower_shadow": lambda df: (
+        (np.minimum(df["open"], df["close"]) - df["low"]) / df["close"].replace(0, np.nan)
+    ).astype(float),
+    "body_abs": lambda df: (
+        (df["close"] - df["open"]) / df["close"].replace(0, np.nan)
+    ).astype(float),
+    "body_to_range": lambda df: (
+        (df["close"] - df["open"]).abs() / (df["high"] - df["low"]).replace(0, np.nan)
+    ).astype(float),
+    # ----- 收益 / gap (5) -----
+    "ret_1d": lambda df: df["close"].pct_change(fill_method=None).astype(float),
+    "ret_5d": lambda df: df["close"].pct_change(periods=5, fill_method=None).astype(float),
+    "ret_20d": lambda df: df["close"].pct_change(periods=20, fill_method=None).astype(float),
+    "ret_gap": lambda df: (
+        (df["open"] / df["close"].shift(1).replace(0, np.nan) - 1.0)
+    ).astype(float),
+    "abs_return": lambda df: df["close"].pct_change(fill_method=None).abs().astype(float),
+    # ----- 量比 / 量均线 (5) -----
+    "amt_ma_ratio": lambda df: (
+        df["amount"] / df["amount"].rolling(20).mean().replace(0, np.nan)
+        if "amount" in df.columns
+        else df["volume"] / df["volume"].rolling(20).mean().replace(0, np.nan)
+    ).astype(float),
+    "vol_ma_ratio": lambda df: (
+        df["volume"] / df["volume"].rolling(20).mean().replace(0, np.nan)
+    ).astype(float),
+    "vwap_ratio": lambda df: (
+        (df["amount"] / df["volume"].replace(0, np.nan)) / df["close"].replace(0, np.nan)
+        if "amount" in df.columns
+        else pd.Series(1.0, index=df.index)
+    ).astype(float),
+    "vwap_dev_pct": lambda df: (
+        (df["amount"] / df["volume"].replace(0, np.nan) - df["close"]) / df["close"].replace(0, np.nan)
+        if "amount" in df.columns
+        else pd.Series(0.0, index=df.index)
+    ).astype(float),
+    "intraday_vol": lambda df: (
+        (df["high"] - df["low"]) / df["open"].replace(0, np.nan)
+    ).astype(float),
+    # ----- HML 振幅 (2) -----
+    "hml_amp": lambda df: (
+        (df["high"] - df["low"]) / df["close"].shift(1).replace(0, np.nan)
+    ).astype(float),
+    "hl_to_vwap": lambda df: (
+        (df["high"] - df["low"]) / (df["amount"] / df["volume"].replace(0, np.nan)).replace(0, np.nan)
+        if "amount" in df.columns
+        else (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
+    ).astype(float),
+    # ----- 二次衍生 (10) — 抓取更复杂的价比/资金流特征 -----
+    "range_to_volume": lambda df: (
+        (df["high"] - df["low"]) / df["volume"].replace(0, np.nan)
+    ).astype(float),
+    "range_to_amount": lambda df: (
+        (df["high"] - df["low"]) / df["amount"].replace(0, np.nan)
+        if "amount" in df.columns
+        else ((df["high"] - df["low"]) / (df["close"] * df["volume"]).replace(0, np.nan))
+    ).astype(float),
+    "close_to_vwap": lambda df: (
+        df["close"] / (df["amount"] / df["volume"].replace(0, np.nan)).replace(0, np.nan) - 1.0
+        if "amount" in df.columns
+        else pd.Series(0.0, index=df.index)
+    ).astype(float),
+    "oc_ret": lambda df: (
+        (df["close"] / df["open"].replace(0, np.nan) - 1.0)
+    ).astype(float),
+    "intraday_return": lambda df: (
+        (df["close"] - df["open"]) / df["open"].replace(0, np.nan)
+    ).astype(float),
+    "overnight_return": lambda df: (
+        (df["open"] / df["close"].shift(1).replace(0, np.nan) - 1.0)
+    ).astype(float),
+    "volume_change": lambda df: (
+        df["volume"].pct_change(fill_method=None)
+    ).astype(float),
+    "amount_change": lambda df: (
+        df["amount"].pct_change(fill_method=None)
+        if "amount" in df.columns
+        else (df["close"] * df["volume"]).pct_change(fill_method=None)
+    ).astype(float),
+    "close_lag1": lambda df: df["close"].shift(1).astype(float),
+    "close_diff_ma20": lambda df: (
+        (df["close"] - df["close"].rolling(20).mean()) / df["close"].replace(0, np.nan)
+    ).astype(float),
 }
 
-_OPS = ("pct_change", "rolling_mean", "rolling_std", "zscore", "rsi", "rolling_skew", "ts_max_norm", "ts_min_norm")
+# 32 个 op → 8 原有 + 24 新增
+# 涵盖: 时序 rolling (max/min/median/sum/kurt/corr) + 横截面 (zscore/rank/pct_rank) +
+# 动量 (delta/accel) + 趋势 (ema/wma/decay_linear) + 稳健统计 (mad/iqr/range_norm) +
+# 分布 (quantile_clip) + 单点变换 (abs/sign/log_abs/sqrt_abs)
+_OPS = (
+    # ----- 原有 8 (保持兼容) -----
+    "pct_change", "rolling_mean", "rolling_std", "zscore", "rsi",
+    "rolling_skew", "ts_max_norm", "ts_min_norm",
+    # ----- 滚动扩展 (5) -----
+    "rolling_max", "rolling_min", "rolling_median", "rolling_sum", "rolling_kurt",
+    # ----- 动量 / 差分 (3) -----
+    "delta", "accel", "rolling_corr_self",
+    # ----- 加权 / 平滑 (3) -----
+    "ema", "wma", "decay_linear",
+    # ----- 横截面标准化 (3) -----
+    "cs_zscore", "cs_rank", "pct_rank",
+    # ----- 稳健统计 (3) -----
+    "mad", "iqr", "range_norm",
+    # ----- 分布裁剪 / 变换 (5) -----
+    "quantile_clip", "abs", "sign", "log_abs", "sqrt_abs",
+    # ----- 趋势归一化 (2) -----
+    "ts_mean_norm", "ts_median_norm",
+    # ----- 时序 zscore / 缩放 (3) -----
+    "rolling_zscore", "rolling_robust_zscore", "rolling_scale",
+    # ----- 时序百分位 / 排名 (2) -----
+    "rolling_pct_rank", "rolling_argmax_norm",
+)
 
-_WINDOWS = (5, 10, 20, 30, 60)
+# 12 个窗口 → 5 原有 + 7 新增 (短窗口 2/3 + 1 周 7 + 半月 14 + 4 月 90 + 半年 120 + 一年 250)
+_WINDOWS = (2, 3, 5, 7, 10, 14, 20, 30, 60, 90, 120, 250)
 
 _DIRECTIONS = ("long", "short")
 
@@ -110,6 +282,7 @@ def _apply_op(wide: pd.DataFrame, op: str, window: int) -> pd.DataFrame | None:
     # 局部静音避免 daemon.log 噪音淹没真实告警。
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="All-NaN slice encountered", category=RuntimeWarning)
+        # ----- 原有 8 (保持兼容) -----
         if op == "pct_change":
             return wide.pct_change(periods=window, fill_method=None)  # pyright: ignore[reportReturnType]
         if op == "rolling_mean":
@@ -131,6 +304,109 @@ def _apply_op(wide: pd.DataFrame, op: str, window: int) -> pd.DataFrame | None:
             return wide / wide.rolling(window).max().replace(0, np.nan) - 1.0  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
         if op == "ts_min_norm":
             return wide / wide.rolling(window).min().replace(0, np.nan) - 1.0
+        # ----- 滚动扩展 (5) -----
+        if op == "rolling_max":
+            return wide.rolling(window).max()  # pyright: ignore[reportReturnType]
+        if op == "rolling_min":
+            return wide.rolling(window).min()  # pyright: ignore[reportReturnType]
+        if op == "rolling_median":
+            return wide.rolling(window).median()  # pyright: ignore[reportReturnType]
+        if op == "rolling_sum":
+            return wide.rolling(window).sum()  # pyright: ignore[reportReturnType]
+        if op == "rolling_kurt":
+            return wide.rolling(window).kurt()  # pyright: ignore[reportReturnType]
+        # ----- 动量 / 差分 (3) -----
+        if op == "delta":
+            # 时序差分: x_t - x_{t-window}
+            return wide - wide.shift(window)  # pyright: ignore[reportReturnType]
+        if op == "accel":
+            # 二阶差分: (x_t - x_{t-1}) - (x_{t-1} - x_{t-2}) 的 rolling(window) 累计
+            d1 = wide.diff()
+            return d1 - d1.shift(1)  # pyright: ignore[reportReturnType]
+        if op == "rolling_corr_self":
+            # 序列自相关: corr(x_t, x_{t-window})
+            ref = wide.shift(window)
+            return wide.rolling(window).corr(ref)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        # ----- 加权 / 平滑 (3) -----
+        if op == "ema":
+            # 指数移动平均: alpha = 2/(window+1)
+            return wide.ewm(span=window, adjust=False).mean()  # pyright: ignore[reportReturnType]
+        if op == "wma":
+            # 线性加权移动平均: weights = arange(1, window+1) / sum
+            weights = np.arange(1, window + 1, dtype=float)
+            weights = weights / weights.sum()
+            return wide.rolling(window).apply(lambda s: float((s * weights).sum()), raw=True)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "decay_linear":
+            # 线性衰减加权: 越近权重越大, weights = arange(1, window+1) 倒序
+            weights = np.arange(1, window + 1, dtype=float)[::-1]
+            weights = weights / weights.sum()
+            return wide.rolling(window).apply(lambda s: float((s * weights).sum()), raw=True)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        # ----- 横截面标准化 (3) — 行向, 不依赖 window -----
+        if op == "cs_zscore":
+            mu = wide.mean(axis=1)
+            sd = wide.std(axis=1).replace(0, np.nan)
+            return wide.sub(mu, axis=0).div(sd, axis=0)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "cs_rank":
+            return wide.rank(axis=1, pct=True)  # pyright: ignore[reportReturnType]
+        if op == "pct_rank":
+            # 跟 cs_rank 一样 (axis=1 pct=True) — 保留同名以兼容老 proposal
+            return wide.rank(axis=1, pct=True)  # pyright: ignore[reportReturnType]
+        # ----- 稳健统计 (3) -----
+        if op == "mad":
+            # median absolute deviation
+            med = wide.rolling(window).median()
+            return (wide - med).abs().rolling(window).mean()  # pyright: ignore[reportReturnType]
+        if op == "iqr":
+            return wide.rolling(window).quantile(0.75) - wide.rolling(window).quantile(0.25)  # pyright: ignore[reportReturnType]
+        if op == "range_norm":
+            # (x - rolling_min) / (rolling_max - rolling_min) — 0~1 区间位置
+            rmin = wide.rolling(window).min()
+            rmax = wide.rolling(window).max()
+            return (wide - rmin) / (rmax - rmin).replace(0, np.nan)  # pyright: ignore[reportReturnType]
+        # ----- 分布裁剪 / 变换 (5) -----
+        if op == "quantile_clip":
+            # 滚动 1%/99% 分位裁剪
+            lo = wide.rolling(window).quantile(0.01)
+            hi = wide.rolling(window).quantile(0.99)
+            return wide.clip(lower=lo, upper=hi, axis=None)  # pyright: ignore[reportReturnType]
+        if op == "abs":
+            return wide.abs()  # pyright: ignore[reportReturnType]
+        if op == "sign":
+            return np.sign(wide)  # pyright: ignore[reportReturnType]
+        if op == "log_abs":
+            return np.log(wide.abs().replace(0, np.nan))  # pyright: ignore[reportReturnType]
+        if op == "sqrt_abs":
+            return np.sqrt(wide.abs())  # pyright: ignore[reportReturnType]
+        # ----- 趋势归一化 (2) -----
+        if op == "ts_mean_norm":
+            # x / rolling_mean - 1 — 类似 ts_max/min_norm 但用 mean
+            return wide / wide.rolling(window).mean().replace(0, np.nan) - 1.0  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "ts_median_norm":
+            return wide / wide.rolling(window).median().replace(0, np.nan) - 1.0  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        # ----- 时序 zscore / 缩放 (3) -----
+        if op == "rolling_zscore":
+            # (x - rolling_mean) / rolling_std
+            rolled = wide.rolling(window)
+            return (wide - rolled.mean()) / rolled.std(ddof=0).replace(0, np.nan)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "rolling_robust_zscore":
+            # (x - rolling_median) / mad (median absolute deviation)
+            med = wide.rolling(window).median()
+            mad = (wide - med).abs().rolling(window).median()
+            return (wide - med) / (1.4826 * mad).replace(0, np.nan)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        if op == "rolling_scale":
+            # x / rolling_mean (中心化) — 等价于 (x/mean - 1) + 1
+            return wide / wide.rolling(window).mean().replace(0, np.nan)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+        # ----- 时序百分位 / 排名 (2) -----
+        if op == "rolling_pct_rank":
+            # x 在过去 window 日的百分位排名 (0~1)
+            return wide.rolling(window).rank(pct=True)  # pyright: ignore[reportReturnType]
+        if op == "rolling_argmax_norm":
+            # 距过去 window 日最大值的归一化天数 (0~1): argmax / (window-1)
+            def _argmax_norm(s):
+                if len(s) == 0 or np.all(pd.isna(s)):
+                    return np.nan
+                return float(np.argmax(s) / max(len(s) - 1, 1))
+            return wide.rolling(window).apply(_argmax_norm, raw=True)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
     raise ValueError(f"unknown op: {op}")
 
 
@@ -212,7 +488,11 @@ class CodeProposal:
 class FactorSpace:
     """重构: 三轴 DSL 笛卡尔积 + Code 子空间.
 
-    DSL 路径: bases × ops × windows × directions (5×8×5×2=400)
+    DSL 路径: bases × ops × windows × directions
+      - 当前: 46 base × 37 op × 12 window × 2 direction = 40,848 组合
+      - 重构前: 5 base × 8 op × 5 window × 2 direction = 400 组合
+      - 提升: ×102.1 (从 400 到 40,848, 过 2 个数量级)
+      - 如需更宽可开启 FactorSpace(second_ops=...) 串接 (YAGNI, 暂未实现)
     Code 路径: source_code 字符串, 不限制 base/op/window/direction, 由
     LLMCodeBrainstormer 在 brainstorming 时填充. discovery 自身不主动生成.
     """

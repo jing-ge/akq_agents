@@ -192,9 +192,13 @@ def test_restore_accepted_factors_skips_demoted(tmp_store):
 
 
 def test_factor_space_dsl_sample_size():
-    """DSL 路径: 5 base × 8 op × 5 window × 2 direction = 400."""
+    """DSL 路径: 46 base × 37 op × 12 window × 2 direction = 40,848 组合 (×102.1, 过 2 数量级)."""
+    from akq_agents.services.factors.discovery import _BASES, _OPS, _WINDOWS, _DIRECTIONS
+
     space = FactorSpace()
-    assert space.size() == 5 * 8 * 5 * 2
+    expected = len(_BASES) * len(_OPS) * len(_WINDOWS) * len(_DIRECTIONS)
+    assert expected >= 40_000, f"DSL 空间不足 2 个数量级: {expected} < 40000"
+    assert space.size() == expected
     samples = space.sample(10)
     assert len(samples) == 10
     for s in samples:
