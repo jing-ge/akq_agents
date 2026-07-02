@@ -41,7 +41,9 @@ class RetryWorker:
 
     def run_once(self) -> dict[str, int]:
         """跑一轮扫描+重试，返回统计信息。"""
+        import time as _time
         stats = {"scanned": 0, "resolved": 0, "still_failing": 0, "given_up": 0}
+        _t0 = _time.monotonic()
         with open_meta_db(self._repository._meta_db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = self._list_pending(conn)
@@ -61,6 +63,21 @@ class RetryWorker:
                     self._mark_failed(conn, int(row["id"]), message)
                     stats["still_failing"] += 1
             conn.commit()
+        # 有活干才 INFO, 空跑 (scanned=0) DEBUG. 有 give_up 一定 WARN.
+        if stats["given_up"] > 0:
+            logger.warning(
+                "retry_worker: scanned=%d resolved=%d still_failing=%d GIVEN_UP=%d elapsed=%.2fs",
+                stats["scanned"], stats["resolved"], stats["still_failing"], stats["given_up"],
+                _time.monotonic() - _t0,
+            )
+        elif stats["scanned"] > 0:
+            logger.info(
+                "retry_worker: scanned=%d resolved=%d still_failing=%d elapsed=%.2fs",
+                stats["scanned"], stats["resolved"], stats["still_failing"],
+                _time.monotonic() - _t0,
+            )
+        else:
+            logger.debug("retry_worker: idle (0 pending)")
         return stats
 
     def _list_pending(self, conn: sqlite3.Connection) -> list[sqlite3.Row]:

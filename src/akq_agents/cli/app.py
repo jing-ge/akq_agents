@@ -103,9 +103,33 @@ def _daemon_paths() -> tuple[DaemonStateFile, SchedulerStateStore]:
 
 def cmd_daemon_start(_: argparse.Namespace) -> None:
     """前台启动 daemon；Ctrl+C 触发优雅停机。"""
-    from akq_agents.logging_setup import setup_logging
+    from akq_agents.logging_setup import attach_named_handler, setup_logging
 
     setup_logging(BASE_DIR / "data" / "daemon.log")
+    # 回测/因子重算的日志量大且耗时长, 分流到独立文件, 前台"回测引擎"页读它。
+    # propagate=True: 同时保留在 daemon.log 里的聚合时间线, 双写不冲突(去重靠 file 路径 tag)。
+    # 覆盖范围: (1) 直接跑重算的 job 层; (2) services 层实际算因子的模块.
+    attach_named_handler(
+        logger_names=[
+            # ---- orchestrator/jobs 层 (走 batch/discovery/eviction 主流程) ----
+            "akq_agents.orchestrator.jobs.batch_deep_research",
+            "akq_agents.orchestrator.jobs.factor_discovery",
+            "akq_agents.orchestrator.jobs.factor_eviction",
+            "akq_agents.orchestrator.jobs.factor_promote_shadows",
+            "akq_agents.orchestrator.jobs.factor_brainstorm",
+            "akq_agents.orchestrator.jobs.factor_code_brainstorm",
+            # ---- services/factors 层 (逐因子算 IC / IR / rolling / eviction 打分) ----
+            "akq_agents.services.factors.history_backfill",
+            "akq_agents.services.factors.discovery",
+            "akq_agents.services.factors.sandbox",
+            "akq_agents.services.factors.eviction",
+            "akq_agents.services.factors.proposal_store",
+            "akq_agents.services.factors.llm_brainstorm",
+            "akq_agents.services.factors.llm_code_brainstorm",
+        ],
+        log_file=BASE_DIR / "data" / "backtest.log",
+        propagate=True,
+    )
     daemon = build_daemon(install_signals=True)
     print("daemon starting (Ctrl+C to stop) ...")
     daemon.start(block=True)

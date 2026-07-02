@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -14,6 +15,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from akq_agents.models.scheduler_config import SchedulerConfig
 from akq_agents.orchestrator.job_runner import JobRunner
+
+logger = logging.getLogger(__name__)
 
 JOB_ID = "retry.fetch_errors"
 
@@ -51,4 +54,14 @@ def register(
 def _do(services: dict[str, Any]) -> dict[str, Any]:
     worker = services["retry_worker"]
     stats = worker.run_once()
-    return {"resolved": stats.get("resolved", 0), "scanned": stats.get("scanned", 0)}
+    resolved = stats.get("resolved", 0)
+    scanned = stats.get("scanned", 0)
+    # scanned=0 时 (最常见的空跑) 用 DEBUG 不刷屏; 只要有活干就 INFO.
+    if scanned > 0 or resolved > 0:
+        logger.info(
+            "retry.fetch_errors: scanned=%d resolved=%d",
+            scanned, resolved,
+        )
+    else:
+        logger.debug("retry.fetch_errors: idle (scanned=0 resolved=0)")
+    return {"resolved": resolved, "scanned": scanned}

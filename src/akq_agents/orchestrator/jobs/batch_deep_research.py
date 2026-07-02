@@ -112,6 +112,11 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
     if not evaluation_targets:
         return {"factors_evaluated": 0, "reason": "no_factors"}
 
+    logger.info(
+        "batch.deep_research: START mode=%s n_targets=%d as_of=%s universe=%d",
+        mode, len(evaluation_targets), today.isoformat(), len(full_symbols),
+    )
+
     # 2) 拉一段 OHLCV 用于评估
     max_lookback = max((f.lookback_days for f in evaluation_targets), default=80)
     window = evaluator._window if hasattr(evaluator, "_window") else 60
@@ -160,6 +165,14 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
     if bf_ctx is None:
         return {"factors_evaluated": 0, "reason": "ctx_build_failed",
                 "n_targets": len(evaluation_targets)}
+
+    logger.info(
+        "batch.deep_research: ctx ready portfolio_universe=%d ohlcv_rows=%d date_range=[%s .. %s] window=%d days=90",
+        len(portfolio_universe), len(sub_ohlcv),
+        str(close.index.min())[:10] if not close.empty else "-",
+        str(close.index.max())[:10] if not close.empty else "-",
+        window,
+    )
 
     # 内部 _compute_factor_history (避免循环 import; 跟 history_backfill 默认实现一致)
     def _compute_fh(factor, ohlcv_arg, all_dates_arg):
@@ -240,27 +253,36 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
                 total_skipped += n_s
                 total_failed_dates += n_f
                 done_count += 1
-                if recorder is not None and (
-                    done_count % STEP_BATCH == 0 or done_count == n_targets
-                ):
+                # 日志: 每 STEP_BATCH 或到终点时打一行进度到 /logs "回测/因子重算" 源.
+                # 无论 recorder 是否装配都要打(recorder 只影响 job_steps 表, 日志走独立通道).
+                if done_count % STEP_BATCH == 0 or done_count == n_targets:
                     elapsed = _time.monotonic() - t_start
                     rate = done_count / elapsed if elapsed > 0 else 0
                     eta_s = (n_targets - done_count) / rate if rate > 0 else None
-                    try:
-                        with recorder.step(
-                            f"batch{done_count // STEP_BATCH}",
-                            payload_in={
-                                "done": done_count,
-                                "total": n_targets,
-                                "rate_per_s": round(rate, 3),
-                                "elapsed_s": round(elapsed, 1),
-                                "eta_s": round(eta_s, 1) if eta_s else None,
-                                "rows_written_so_far": total_written,
-                            },
-                        ):
-                            pass
-                    except Exception:  # noqa: BLE001
-                        logger.exception("batch.deep_research: recorder.step failed at done_count=%d", done_count)
+                    logger.info(
+                        "batch.deep_research: progress %d/%d (%.1f%%) rate=%.2f/s elapsed=%.0fs eta=%s rows_written=%d rows_skipped=%d rows_failed=%d",
+                        done_count, n_targets,
+                        100.0 * done_count / n_targets if n_targets else 0.0,
+                        rate, elapsed,
+                        f"{eta_s:.0f}s" if eta_s else "-",
+                        total_written, total_skipped, total_failed_dates,
+                    )
+                    if recorder is not None:
+                        try:
+                            with recorder.step(
+                                f"batch{done_count // STEP_BATCH}",
+                                payload_in={
+                                    "done": done_count,
+                                    "total": n_targets,
+                                    "rate_per_s": round(rate, 3),
+                                    "elapsed_s": round(elapsed, 1),
+                                    "eta_s": round(eta_s, 1) if eta_s else None,
+                                    "rows_written_so_far": total_written,
+                                },
+                            ):
+                                pass
+                        except Exception:  # noqa: BLE001
+                            logger.exception("batch.deep_research: recorder.step failed at done_count=%d", done_count)
                 if n_f > 0:
                     factors_with_failures.append({
                         "factor": name,
@@ -294,6 +316,13 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
                 )
             except Exception:  # noqa: BLE001
                 pass
+
+    logger.info(
+        "batch.deep_research: DONE mode=%s targets=%d evaluated=%d failed=%d rows_written=%d rows_skipped=%d rows_failed=%d elapsed=%.1fs",
+        mode, len(evaluation_targets), metrics_written, failures,
+        total_written, total_skipped, total_failed_dates,
+        _time.monotonic() - t_start,
+    )
 
     return {
         "factors_evaluated": metrics_written,

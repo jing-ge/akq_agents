@@ -668,8 +668,14 @@ class DiscoveryEngine:
 
     def run_batch(self, *, n_candidates: int, as_of_date: date | None = None) -> DiscoveryStats:
         """跑一轮发现。返回统计。"""
+        import time as _time
         as_of_date = as_of_date or date.today()
         stats = DiscoveryStats()
+        _t0 = _time.monotonic()
+        logger.info(
+            "discovery.run_batch: START n_candidates=%d as_of=%s",
+            n_candidates, as_of_date.isoformat(),
+        )
 
         # 1) 准备数据：top 500 流动性 universe + 区间 OHLCV
         try:
@@ -679,6 +685,7 @@ class DiscoveryEngine:
             self._write_event_safe("factor.discovery.prepare_data_failed", str(exc))
             return stats
         if ohlcv.empty:
+            logger.warning("discovery.run_batch: prepared ohlcv empty; abort")
             return stats
 
         # 3) close 旋转 + forward returns（用于 IC 计算）
@@ -827,6 +834,17 @@ class DiscoveryEngine:
                     "考虑扩 _OPS / _WINDOWS / _BASES",
                     dup_ratio * 100, stats.duplicates_skipped, stats.proposed,
                 )
+
+        logger.info(
+            "discovery.run_batch: DONE proposed=%d duplicates=%d accepted=%d rejected=%d shadow=%d unexplored=%d elapsed=%.1fs",
+            stats.proposed,
+            stats.duplicates_skipped,
+            getattr(stats, "accepted", 0),
+            getattr(stats, "rejected", 0),
+            getattr(stats, "shadow", 0),
+            getattr(stats, "unexplored_remaining", 0),
+            _time.monotonic() - _t0,
+        )
 
         return stats
 

@@ -56,17 +56,24 @@ def register(
 
 def _do(services: dict[str, Any]) -> dict[str, Any]:
     """跑一次 shadow OOS 评估; 返回 stats 供 events 记账."""
+    import time as _time
     from akq_agents.services.factors.discovery import DiscoveryStats
 
     engine = services["discovery_engine"]
     stats = DiscoveryStats()
     today = date.today()
+    logger.info("factor.promote_shadows: START as_of=%s", today.isoformat())
+    _t0 = _time.monotonic()
     try:
         engine._promote_shadows(stats=stats, as_of_date=today)  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001
         logger.exception("factor.promote_shadows failed: %s", exc)
         raise
 
+    logger.info(
+        "factor.promote_shadows: DONE promoted=%d demoted=%d elapsed=%.1fs",
+        stats.promoted, stats.demoted, _time.monotonic() - _t0,
+    )
     return {
         "promoted": stats.promoted,
         "demoted": stats.demoted,

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from akq_agents.models.scheduler_config import SchedulerConfig
 from akq_agents.orchestrator.job_runner import JobRunner
+
+logger = logging.getLogger(__name__)
 
 JOB_ID = "alert.check"
 
@@ -48,4 +51,14 @@ def register(
 
 def _do(services: dict[str, Any]) -> dict[str, Any]:
     alerter = services["alerter"]
-    return alerter.run_check()
+    result = alerter.run_check()
+    n_alerts = 0
+    if isinstance(result, dict):
+        alerts = result.get("alerts") or []
+        n_alerts = result.get("n_alerts", len(alerts) if isinstance(alerts, list) else 0)
+    # 无告警时 debug (每 30min 一次也不该刷 INFO); 有告警才 warning 提醒运维.
+    if n_alerts > 0:
+        logger.warning("alert.check: %d alerts fired", n_alerts)
+    else:
+        logger.debug("alert.check: idle (no alerts)")
+    return result

@@ -98,6 +98,52 @@ def setup_logging(
     )
 
 
+def attach_named_handler(
+    logger_names: list[str],
+    log_file: str | Path,
+    *,
+    level: int = logging.INFO,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 3,
+    propagate: bool = True,
+) -> None:
+    """给一组指定的 logger 追加一个独立的 RotatingFileHandler, 把它们的输出分流到自己的文件。
+
+    典型场景: 回测/因子重算耗时长、体量大, 混在 daemon.log 里被 scheduler 噪音淹没,
+    单独落一个 backtest.log 便于前台按源查看。
+
+    参数:
+        logger_names: 要分流的 logger 名列表 (例如 batch_deep_research 模块的 __name__)。
+        log_file: 独立日志文件路径。
+        propagate: 是否仍然向上冒泡到 root(daemon.log)。默认 True — 双写, 既在
+                   独立文件里能看到, 也保留 daemon.log 里的时间线聚合视图。
+    """
+    log_path = Path(log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
+    fh = RotatingFileHandler(
+        log_path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+    )
+    fh.setFormatter(formatter)
+    fh.setLevel(level)
+    fh._akq_managed = True  # type: ignore[attr-defined]
+    # 用固定 tag 标识, 幂等调用时可以识别并只留一份。
+    fh._akq_named_tag = str(log_path.resolve())  # type: ignore[attr-defined]
+
+    for name in logger_names:
+        lg = logging.getLogger(name)
+        lg.setLevel(level)
+        lg.propagate = propagate
+        # 幂等: 已经挂过同一文件的 handler 就跳过, 避免重复行。
+        already = any(
+            getattr(h, "_akq_named_tag", None) == fh._akq_named_tag  # type: ignore[attr-defined]
+            for h in lg.handlers
+        )
+        if not already:
+            lg.addHandler(fh)
+
+
 def parse_log_line(line: str) -> dict[str, str]:
     """把一行结构化日志解析成字段 dict。
 

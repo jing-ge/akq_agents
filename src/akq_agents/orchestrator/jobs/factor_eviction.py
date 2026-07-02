@@ -53,6 +53,7 @@ def register(
 
 def _do(services: dict[str, Any], cfg: SchedulerConfig, *, dry_run: bool = False) -> dict[str, Any]:
     """跑一次 eviction. dry_run=True 时只统计不删."""
+    import time as _time
     from akq_agents.services.factors.eviction import EvictionConfig, evict_factors
 
     repo = services["data_repository"]
@@ -66,4 +67,18 @@ def _do(services: dict[str, Any], cfg: SchedulerConfig, *, dry_run: bool = False
         new_factor_grace_days=job_cfg.new_factor_grace_days,
         dry_run=dry_run,
     )
-    return evict_factors(meta_db_path=meta_db, state_store=state_store, cfg=ev_cfg)
+    logger.info(
+        "factor.eviction: START dry_run=%s max_pool=%d min_score=%.3f grace_days=%d",
+        dry_run, ev_cfg.max_pool_size, ev_cfg.min_score, ev_cfg.new_factor_grace_days,
+    )
+    _t0 = _time.monotonic()
+    result = evict_factors(meta_db_path=meta_db, state_store=state_store, cfg=ev_cfg)
+    logger.info(
+        "factor.eviction: DONE dry_run=%s pool_before=%s pool_after=%s victims=%d elapsed=%.1fs",
+        dry_run,
+        result.get("pool_total_before"),
+        result.get("pool_total_after"),
+        result.get("victims_n", 0),
+        _time.monotonic() - _t0,
+    )
+    return result

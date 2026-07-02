@@ -84,16 +84,29 @@ def _do(services: dict[str, Any], *, n_candidates: int) -> dict[str, Any]:
     # 直接 silent skip — daemon cron 每 2h 触发, 跳过几次没问题, 17:30 / 22:30
     # 等盘后触发就会跑。手动触发 (web /control/jobs/factor.discovery/trigger)
     # 不走这个 _do, 直接调 engine.run_batch — 用户主动想跑就让它跑。
+    import time as _time
     now = datetime.now()
     is_weekday = now.weekday() < 5  # 周一-五 0-4
     minutes_since_midnight = now.hour * 60 + now.minute
     INTRADAY_START = 9 * 60 + 30   # 9:30
     INTRADAY_END = 15 * 60          # 15:00
     if is_weekday and INTRADAY_START <= minutes_since_midnight <= INTRADAY_END:
+        logger.info("factor.discovery: SKIP intraday (%s)", now.strftime("%H:%M"))
         return {
             "skipped": True,
             "reason": "intraday: 跳过盘中 (9:30-15:00) 的 discovery 触发, 等盘后",
         }
+    logger.info("factor.discovery: START n_candidates=%d", n_candidates)
+    _t0 = _time.monotonic()
     engine = services["discovery_engine"]
     stats = engine.run_batch(n_candidates=n_candidates)
-    return stats.as_dict()
+    out = stats.as_dict()
+    logger.info(
+        "factor.discovery: DONE candidates=%d accepted=%d rejected=%d shadow=%d elapsed=%.1fs",
+        out.get("candidates", n_candidates),
+        out.get("accepted", 0),
+        out.get("rejected", 0),
+        out.get("shadow", 0),
+        _time.monotonic() - _t0,
+    )
+    return out

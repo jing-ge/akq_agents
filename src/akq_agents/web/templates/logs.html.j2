@@ -4,7 +4,7 @@
 {% block content %}
 <h1>实时日志 <span class="small" style="font-weight:400">Logs</span></h1>
 <p class="page-intro">
-  实时滚动查看 <b>daemon（后台守护进程）</b>、<b>web（FastAPI 控制台）</b>、<b>akquant_backtest（回测引擎 bootstrap）</b>
+  实时滚动查看 <b>daemon（后台守护进程）</b>、<b>web（FastAPI 控制台）</b>、<b>akquant_backtest（回测 / 因子重算）</b>
   三类物理日志文件的尾部。
   默认每 3 秒拉一次，新增行会有一闪而过的高亮。
   支持 grep 过滤、行数选择、暂停 / 继续、一键滚到底部。
@@ -16,7 +16,7 @@
       <select id="log-source">
         <option value="daemon">daemon（后台守护进程）</option>
         <option value="web">web（控制台 FastAPI）</option>
-        <option value="akquant_backtest">akquant_backtest（回测引擎）</option>
+        <option value="akquant_backtest">akquant_backtest（回测 / 因子重算）</option>
       </select>
     </label>
     <label>grep 过滤：

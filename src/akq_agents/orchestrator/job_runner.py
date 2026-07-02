@@ -86,6 +86,7 @@ class JobRunner:
         # 1) 幂等检查
         existing = self._store.get_job_run(job_id, partition)
         if existing is not None and existing.status == "ok":
+            logger.info("job.noop job=%s partition=%s (already OK)", job_id, partition)
             return JobRunResult(job_id, partition, "noop", reason_code="ALREADY_OK")
 
         # 2) trading_day 护栏
@@ -94,15 +95,18 @@ class JobRunner:
             try:
                 if not self._is_trading_day(today):
                     self._record_skipped(job_id, partition, "NOT_TRADING_DAY")
+                    logger.info("job.skipped job=%s partition=%s reason=NOT_TRADING_DAY", job_id, partition)
                     return JobRunResult(job_id, partition, "skipped", reason_code="NOT_TRADING_DAY")
             except Exception as exc:  # noqa: BLE001
                 # 护栏自身异常 → 视为不通过；记 failed
                 self._record_failed(job_id, partition, "GUARD_ERROR", str(exc))
+                logger.error("job.failed job=%s partition=%s reason=GUARD_ERROR err=%s", job_id, partition, exc)
                 return JobRunResult(job_id, partition, "failed", reason_code="GUARD_ERROR")
 
         # 3) 记录 running
         started_at = datetime.now().isoformat()
         start_mono = time.monotonic()
+        logger.info("job.start job=%s partition=%s timeout_s=%d", job_id, partition, timeout_s)
         self._store.upsert_job_run(
             job_id=job_id,
             partition=partition,
@@ -131,6 +135,10 @@ class JobRunner:
                 source=job_id,
                 payload={"partition": partition, "timeout_s": timeout_s},
             )
+            logger.warning(
+                "job.timeout job=%s partition=%s timeout_s=%d duration_ms=%d",
+                job_id, partition, timeout_s, duration_ms,
+            )
             return JobRunResult(job_id, partition, "timeout", reason_code="TIMEOUT", duration_ms=duration_ms)
         except Exception as exc:  # noqa: BLE001 — 必须吞掉所有业务异常
             duration_ms = int((time.monotonic() - start_mono) * 1000)
@@ -157,7 +165,15 @@ class JobRunner:
                     "traceback": tb,
                 },
             )
-            logger.exception("job %s partition %s failed: %s", job_id, partition, exc)
+            # DataNotReady 类型是 skipped, 用 warning 而非 exception (避免每天 pre-hours 都刷栈)
+            if kind_suffix == "skipped":
+                logger.warning(
+                    "job.skipped job=%s partition=%s reason=%s err=%s",
+                    job_id, partition, reason_code, exc,
+                )
+            else:
+                logger.exception("job.failed job=%s partition=%s reason=%s: %s",
+                                 job_id, partition, reason_code, exc)
             return JobRunResult(
                 job_id,
                 partition,
@@ -187,6 +203,18 @@ class JobRunner:
                 **(payload if isinstance(payload, dict) else {}),
             },
         )
+        # payload 摘要 (只取前几个 key, 避免长 payload 刷屏)
+        pl_summary = ""
+        if isinstance(payload, dict):
+            parts = []
+            for k in list(payload.keys())[:6]:
+                v = repr(payload.get(k))
+                if len(v) > 60:
+                    v = v[:57] + "..."
+                parts.append(f"{k}={v}")
+            if parts:
+                pl_summary = " " + " ".join(parts)
+        logger.info("job.ok job=%s partition=%s duration_ms=%d%s", job_id, partition, duration_ms, pl_summary)
         return JobRunResult(job_id, partition, "ok", duration_ms=duration_ms, payload=payload)
 
     # ----------------- internal helpers -----------------
@@ -339,17 +367,25 @@ class JobRunner:
                 payload={"partition": partition, "duration_ms": duration_ms,
                          **(payload if isinstance(payload, dict) else {})},
             )
+            logger.info("job.ok (submit) job=%s partition=%s duration_ms=%d", job_id, partition, duration_ms)
         elif status == "timeout":
             self._store.write_event(
                 level="warning", kind=f"{job_id}.timeout", source=job_id,
                 payload={"partition": partition, "timeout_s": duration_ms // 1000},
             )
+            logger.warning("job.timeout (submit) job=%s partition=%s duration_ms=%d", job_id, partition, duration_ms)
         else:
             self._store.write_event(
                 level="error", kind=f"{job_id}.failed", source=job_id,
                 payload={"partition": partition, "reason_code": reason_code,
                          "error": str(exc) if exc else None},
             )
+            if status == "skipped":
+                logger.warning("job.skipped (submit) job=%s partition=%s reason=%s err=%s",
+                               job_id, partition, reason_code, exc)
+            else:
+                logger.exception("job.failed (submit) job=%s partition=%s reason=%s: %s",
+                                 job_id, partition, reason_code, exc)
         return JobRunResult(job_id, partition, status, reason_code=reason_code, duration_ms=duration_ms, payload=payload)
 
     def shutdown(self, *, wait: bool = False) -> None:

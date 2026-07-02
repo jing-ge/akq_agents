@@ -68,11 +68,18 @@ def run_once_now(runner: JobRunner, services: dict[str, Any], n: int = 20) -> An
 
 
 def _do(services: dict[str, Any], *, n: int) -> dict[str, Any]:
+    import time as _time
+    logger.info("factor.brainstorm: START n=%d", n)
+    _t0 = _time.monotonic()
     brainstormer = services["llm_factor_brainstormer"]
     stats = brainstormer.run(n=n)
     # 全失败时 raise 让 JobRunner 写 status='failed'，避免 /ops 看板把全失败显示成 ok
     errors = int(stats.get("errors", 0) or 0)
     accepted = int(stats.get("accepted_into_review", 0) or 0)
+    logger.info(
+        "factor.brainstorm: DONE n=%d accepted_into_review=%d errors=%d elapsed=%.1fs",
+        n, accepted, errors, _time.monotonic() - _t0,
+    )
     if errors > 0 and accepted == 0:
         raise RuntimeError(f"LLM brainstorm produced 0 proposals (errors={errors}): {stats}")
     return stats

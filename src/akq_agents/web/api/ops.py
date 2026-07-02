@@ -303,7 +303,9 @@ async def get_logs(
     log_path = {
         "daemon": project_root / "data" / "daemon.log",
         "web": project_root / "data" / "web.log",
-        "akquant_backtest": project_root / "data" / "bootstrap.log",
+        # 回测 / 因子重算的独立分流文件 (attach_named_handler 落地),
+        # 而不是 6/17 的 bootstrap.log 死文件。
+        "akquant_backtest": project_root / "data" / "backtest.log",
     }.get(source)
     if log_path is None or not log_path.exists():
         return {"source": source, "lines": [], "exists": False}

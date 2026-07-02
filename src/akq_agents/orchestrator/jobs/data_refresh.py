@@ -85,17 +85,24 @@ def register(
 
 def _do(services: dict[str, Any]) -> dict[str, Any]:
     """执行体：先检查就绪，再拉。"""
+    import time as _time
     repo = services["data_repository"]
     today = date.today()
 
     # 提前判定：今天已经成功拉过且通过质量门 → skip（避免浪费）
     cached = _check_cached(repo, today)
     if cached is not None:
+        logger.info(
+            "data.refresh_daily: SKIP already_fetched_today target=%s cached_rows=%d",
+            today.isoformat(), cached,
+        )
         return {
             "skipped": True, "reason": "already_fetched_today",
             "target_date": today.isoformat(), "cached_rows": cached,
         }
 
+    logger.info("data.refresh_daily: START target=%s", today.isoformat())
+    _t0 = _time.monotonic()
     # 真正拉取（refresh_daily_fast 内部还会再做一次 cache 检查 = 双保险）
     result = repo.refresh_daily_fast(today)
     payload = {
@@ -108,9 +115,15 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
         "quality_passed": result.quality_passed,
         "duration_s": result.duration_s,
     }
+    logger.info(
+        "data.refresh_daily: DONE target=%s fetched=%d requested=%d cached_hit=%d failed=%d quality_passed=%s duration=%.1fs elapsed=%.1fs",
+        result.target_date, result.fetched, result.requested, result.cached_hit,
+        result.failed, result.quality_passed, result.duration_s, _time.monotonic() - _t0,
+    )
     # quality_passed=False (akshare 接口异常 / 数据空 / schema drift) 必须 raise，
     # 否则 JobRunner 会把它当 'ok' 写入 → alerter 看不到 + 后续 retry cron 被幂等吞掉。
     if not result.quality_passed and not getattr(result, "skipped_non_trading_day", False):
+        logger.warning("data.refresh_daily: quality check FAILED target=%s", today.isoformat())
         raise QualityCheckFailed({"refresh_daily_fast": False})
     return payload
 

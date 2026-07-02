@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
@@ -16,6 +17,8 @@ from apscheduler.triggers.cron import CronTrigger
 
 from akq_agents.models.scheduler_config import SchedulerConfig
 from akq_agents.orchestrator.job_runner import JobRunner
+
+logger = logging.getLogger(__name__)
 
 JOB_ID = "batch.post_close"
 
@@ -50,6 +53,9 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
 
     services 至少需提供 ``workflow``：现有 QuantWorkflow 实例。
     """
+    import time as _time
+    logger.info("batch.post_close: START (workflow.run_once)")
+    _t0 = _time.monotonic()
     workflow = services["workflow"]
     # M11: 用 StepRecorder 把 agent 子步骤落到 job_steps 表
     recorder = _make_recorder(services)
@@ -62,14 +68,24 @@ def _do(services: dict[str, Any]) -> dict[str, Any]:
 
         from akq_agents.services.data.exceptions import DataNotReady
 
+        logger.warning(
+            "batch.post_close: portfolio-agent skipped reason=%s (raising DataNotReady)",
+            portfolio_out.get("reason", "unknown"),
+        )
         raise DataNotReady({f"portfolio_agent:{portfolio_out.get('reason', 'unknown')}": [_date.today()]})
     # 汇总摘要（不要塞太大对象到 events.payload）
     analyst_out = outputs.get("analyst-agent", {}) if isinstance(outputs, dict) else {}
-    return {
+    summary = {
         "agents": list(outputs.keys()) if isinstance(outputs, dict) else [],
         "analyst_chars": len(analyst_out.get("rendered", "")) if isinstance(analyst_out, dict) else 0,
         "portfolio_n": portfolio_out.get("portfolio_size", 0) if isinstance(portfolio_out, dict) else 0,
     }
+    logger.info(
+        "batch.post_close: DONE agents=%s portfolio_n=%d analyst_chars=%d elapsed=%.1fs",
+        summary["agents"], summary["portfolio_n"], summary["analyst_chars"],
+        _time.monotonic() - _t0,
+    )
+    return summary
 
 
 def _make_recorder(services: dict[str, Any]):
