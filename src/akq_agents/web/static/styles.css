@@ -2672,3 +2672,110 @@ tbody tr:hover td { background: var(--accent-soft); transition: background 120ms
 .ops-summary.os-warn .os-actions { color: var(--info); }
 .ops-summary.os-danger { border-color: rgba(248, 113, 113, 0.5); background: var(--err-soft); }
 .ops-summary.os-danger .os-actions { color: var(--err); }
+
+/* ==============================================================
+   快捷键帮助 — 右下角 fab 按钮 + 弹出面板
+   触发: 点右下角 ⌨ 按钮, 或按 ? / Shift+/
+   关闭: 点 ×, 按 Esc, 或点面板外
+============================================================== */
+.hotkey-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  border: 1px solid var(--accent-soft);
+  background: var(--bg-elev);
+  color: var(--accent);
+  font-size: 18px;
+  cursor: pointer;
+  z-index: 9990;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(94, 234, 212, 0.08);
+  transition: transform 120ms, box-shadow 120ms, background 120ms;
+}
+.hotkey-fab:hover {
+  background: var(--bg-2);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--accent-soft), 0 0 20px var(--accent-glow);
+}
+.hotkey-fab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.hotkey-help-panel {
+  position: fixed;
+  right: 20px;
+  bottom: 74px;
+  width: 320px;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--bg-elev);
+  border: 1px solid rgba(94, 234, 212, 0.18);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(94, 234, 212, 0.06);
+  z-index: 9991;
+  font-size: 13px;
+  animation: hh-slide-up 180ms cubic-bezier(0.2, 1, 0.3, 1);
+}
+@keyframes hh-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.hotkey-help-panel .hh-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--bg-2);
+}
+.hotkey-help-panel .hh-title { font-weight: 600; color: var(--fg); }
+.hotkey-help-panel .hh-close {
+  background: transparent;
+  border: 0;
+  color: var(--fg-mute);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.hotkey-help-panel .hh-close:hover { background: var(--bg-2); color: var(--fg); }
+.hotkey-help-panel .hh-body { padding: 10px 14px; }
+.hotkey-help-panel .hh-group + .hh-group { margin-top: 10px; }
+.hotkey-help-panel .hh-group-title {
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.hotkey-help-panel .hh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+.hotkey-help-panel .hh-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-mute);
+}
+.hotkey-help-panel .hh-desc { color: var(--fg); font-size: 12px; }
+.hotkey-help-panel kbd {
+  background: var(--bg-2);
+  border: 1px solid var(--bg-3);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--fg);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+.hotkey-help-panel .hh-foot {
+  padding: 8px 14px;
+  border-top: 1px solid var(--bg-2);
+  color: var(--fg-dim);
+}
