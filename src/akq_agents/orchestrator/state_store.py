@@ -285,6 +285,32 @@ class SchedulerStateStore:
             ).fetchall()
         return [JobRun(*row) for row in rows]
 
+    def reclaim_stale_pending_triggers(self, *, older_than_minutes: int = 0) -> int:
+        """启动期回收僵尸触发器: 把 status='claimed' 且未完成的记录标为 failed.
+
+        场景: picker(daemon 进程)claim 了一条 trigger 后进程崩溃/被 kill, 该记录
+        永远停在 'claimed', 于是 has_pending_or_running_for_job 一直判有活儿, 手动
+        再触发同一 job 会被 409 拒绝。daemon 重启即意味着旧 picker 已死, 因此启动时
+        把这些 claimed 记录一律回收。older_than_minutes>0 时只回收更早的记录。
+
+        返回回收条数。
+        """
+        now = datetime.now()
+        cutoff = (now - timedelta(minutes=older_than_minutes)).isoformat()
+        with open_meta_db(self._meta_db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE pending_triggers
+                SET status='failed', finished_at=?
+                WHERE status='claimed'
+                  AND finished_at IS NULL
+                  AND (claimed_at IS NULL OR claimed_at < ?)
+                """,
+                (now.isoformat(), cutoff),
+            )
+            conn.commit()
+            return cursor.rowcount
+
     def mark_crashed(self, job_run_id: int) -> None:
         with open_meta_db(self._meta_db_path) as conn:
             conn.execute(

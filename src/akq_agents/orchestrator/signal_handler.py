@@ -35,7 +35,7 @@ def self_heal_on_boot(
 
     返回统计 dict：{crashed, backfilled, ...}
     """
-    stats = {"crashed_marked": 0, "backfilled": 0}
+    stats = {"crashed_marked": 0, "backfilled": 0, "triggers_reclaimed": 0}
 
     # 1) 把 running/interrupted 老旧记录标 crashed
     candidates = store.list_runs_to_self_heal(older_than_hours=older_than_hours)
@@ -50,6 +50,23 @@ def self_heal_on_boot(
             payload={"partition": run.partition, "previous_status": run.status},
         )
         stats["crashed_marked"] += 1
+
+    # 1b) 回收僵尸 pending_triggers: 上一个 daemon 的 picker claim 后进程已死,
+    #     claimed 记录会永久占用 job 名额, 导致手动再触发被 409 拒。daemon 重启
+    #     即意味着旧 picker 不存在, 一律回收为 failed。
+    try:
+        reclaimed = store.reclaim_stale_pending_triggers()
+        if reclaimed:
+            logger.warning("self_heal: reclaimed %d stale claimed pending_triggers", reclaimed)
+            store.write_event(
+                level="warn",
+                kind="daemon.triggers_reclaimed",
+                source="self_heal",
+                payload={"count": reclaimed},
+            )
+        stats["triggers_reclaimed"] = reclaimed
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("self_heal: reclaim stale triggers failed: %s", exc)
 
     # 2) 补跑判定（仅 batch.post_close）
     today = date.today()
