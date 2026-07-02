@@ -742,6 +742,147 @@ button.is-loading::after {
   100% { transform: translateX(0)    scale(1); }
 }
 
+/* ===== 右下角浮动快捷键按钮 + 帮助面板 ======================
+   动机: 新用户不知道有 g+r/o/d/c/l 之类的快捷键. 固定一个 fab
+   按钮做常驻入口, 点击弹面板列出全部快捷键. 内敛而非骚扰. */
+.hotkey-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-elev);
+  color: var(--fg-mute);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4),
+              0 1px 0 rgba(255, 255, 255, 0.05) inset;
+  z-index: 900;
+  transition: transform 160ms var(--ease-out),
+              color 160ms,
+              border-color 160ms;
+}
+.hotkey-fab:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.hotkey-fab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.hotkey-help-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 70px;
+  width: 320px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 20px 44px -8px rgba(0, 0, 0, 0.7),
+              0 1px 0 rgba(255, 255, 255, 0.05) inset;
+  z-index: 950;
+  animation: hh-in 180ms var(--ease-out);
+  font-size: 13px;
+}
+@keyframes hh-in {
+  from { transform: translateY(8px) scale(0.98); opacity: 0; }
+  to   { transform: translateY(0)   scale(1);    opacity: 1; }
+}
+.hotkey-help-panel .hh-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.hotkey-help-panel .hh-title {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.hotkey-help-panel .hh-close {
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+}
+.hotkey-help-panel .hh-close:hover {
+  background: var(--bg-2);
+  color: var(--fg);
+}
+.hotkey-help-panel .hh-body {
+  padding: 8px 14px 4px;
+}
+.hotkey-help-panel .hh-group {
+  padding: 6px 0;
+}
+.hotkey-help-panel .hh-group + .hh-group {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 10px;
+}
+.hotkey-help-panel .hh-group-title {
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+.hotkey-help-panel .hh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+  gap: 12px;
+}
+.hotkey-help-panel .hh-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.hotkey-help-panel .hh-keys > span {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.hotkey-help-panel .hh-desc {
+  color: var(--fg-mute);
+  flex: 1;
+  text-align: right;
+}
+.hotkey-help-panel kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+.hotkey-help-panel .hh-foot {
+  padding: 8px 14px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--fg-dim);
+}
+@media (max-width: 640px) {
+  .hotkey-help-panel { width: calc(100vw - 36px); right: 18px; }
+}
+
 /* ===== confirmDialog 模态 ================================== */
 .confirm-backdrop {
   position: fixed;

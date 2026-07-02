@@ -30,6 +30,12 @@
     {% block content %}{% endblock %}
   </main>
 
+  <!-- 右下角浮动快捷键帮助按钮 — 新用户不再要去猜有没有键盘导航 -->
+  <button id="hotkey-fab" class="hotkey-fab" type="button"
+          title="快捷键 (? 或点击)"
+          aria-label="打开快捷键帮助"
+          onclick="showHotkeyHelp()">⌨</button>
+
   <script>
   // ============================================================
   // 全局 UX helpers — 各页共享（必须先于 block scripts 加载）
@@ -440,11 +446,66 @@
       // '?' 帮助
       if (k === '?' || (e.shiftKey && k === '/')) {
         e.preventDefault();
-        toast('快捷键: g+r/o/d/c/l 跳转 · r 刷新当前页 · / 聚焦搜索 · ? 查看帮助', 'ok', { duration: 4500 });
+        showHotkeyHelp();
         return;
       }
     });
   })();
+
+  // ============================================================
+  // 快捷键帮助面板 — 右下角 fab 按钮 或 ? 都会弹出
+  // ============================================================
+  function showHotkeyHelp() {
+    // 如果已开着就关掉（toggle）
+    const existing = document.getElementById('hotkey-help-panel');
+    if (existing) { existing.remove(); return; }
+    const panel = document.createElement('div');
+    panel.id = 'hotkey-help-panel';
+    panel.className = 'hotkey-help-panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', '快捷键帮助');
+    panel.innerHTML = `
+      <div class="hh-head">
+        <span class="hh-title">⌨ 快捷键</span>
+        <button class="hh-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="hh-body">
+        <div class="hh-group">
+          <div class="hh-group-title">页面导航</div>
+          <div class="hh-row"><span class="hh-keys"><kbd>g</kbd><span>→</span><kbd>r</kbd></span><span class="hh-desc">研究面板</span></div>
+          <div class="hh-row"><span class="hh-keys"><kbd>g</kbd><span>→</span><kbd>o</kbd></span><span class="hh-desc">运维 Ops</span></div>
+          <div class="hh-row"><span class="hh-keys"><kbd>g</kbd><span>→</span><kbd>d</kbd></span><span class="hh-desc">数据浏览</span></div>
+          <div class="hh-row"><span class="hh-keys"><kbd>g</kbd><span>→</span><kbd>c</kbd></span><span class="hh-desc">AI 对话</span></div>
+          <div class="hh-row"><span class="hh-keys"><kbd>g</kbd><span>→</span><kbd>l</kbd></span><span class="hh-desc">实时日志</span></div>
+        </div>
+        <div class="hh-group">
+          <div class="hh-group-title">当前页操作</div>
+          <div class="hh-row"><span class="hh-keys"><kbd>r</kbd></span><span class="hh-desc">刷新本页数据</span></div>
+          <div class="hh-row"><span class="hh-keys"><kbd>/</kbd></span><span class="hh-desc">聚焦搜索框（如果有）</span></div>
+          <div class="hh-row"><span class="hh-keys"><kbd>?</kbd></span><span class="hh-desc">打开 / 关闭本帮助</span></div>
+          <div class="hh-row"><span class="hh-keys"><kbd>Esc</kbd></span><span class="hh-desc">关闭弹窗</span></div>
+        </div>
+      </div>
+      <div class="hh-foot small">
+        输入框内按键不触发。<a href="/chat" style="color:var(--accent)">试试对话 →</a>
+      </div>
+    `;
+    document.body.appendChild(panel);
+    panel.querySelector('.hh-close').addEventListener('click', () => panel.remove());
+    // Esc / 点面板外关闭
+    const closer = (e) => {
+      if (e.key === 'Escape') { panel.remove(); document.removeEventListener('keydown', closer); }
+    };
+    document.addEventListener('keydown', closer);
+    setTimeout(() => {
+      document.addEventListener('click', function onOut(e) {
+        if (!panel.contains(e.target) && e.target.id !== 'hotkey-fab') {
+          panel.remove();
+          document.removeEventListener('click', onOut);
+        }
+      });
+    }, 10);
+  }
   </script>
 
   {% block scripts %}{% endblock %}
