@@ -26,6 +26,8 @@
     </details>
   </nav>
   <div id="data-freshness-bar" class="freshness-bar"></div>
+  <!-- 首次使用 / 无数据引导横幅 — 检测 ohlcv_latest 缺失时显式提示下一步 -->
+  <div id="onboarding-banner" class="onboarding-banner" style="display:none"></div>
   <main>
     {% block content %}{% endblock %}
   </main>
@@ -536,7 +538,61 @@
         <span>提案 <code>${d.factor_proposals_count}</code></span>
         <span>持仓 <code>${d.holdings_count}</code></span>
       `;
+      // 首次使用引导 — dismiss 后本会话不再显示
+      renderOnboardingBanner(d);
     } catch {}
+  }
+
+  // ============================================================
+  // 首次使用 / 无数据引导横幅
+  //   ohlcv 从来没数据       → 强提示: 需要回填历史数据
+  //   ohlcv 有但从未跑过组合  → 中提示: 等 16:30 or 手动 trigger
+  //   一切正常                → 隐藏
+  // ============================================================
+  function renderOnboardingBanner(d) {
+    const el = document.getElementById('onboarding-banner');
+    if (!el) return;
+    // 用户已经在本会话手动关掉过, 就不再打扰 (只本 session, 下次开浏览器还会看)
+    if (sessionStorage.getItem('onboarding-dismissed') === '1') {
+      el.style.display = 'none';
+      return;
+    }
+    const hasOhlcv = !!(d.ohlcv_latest && d.ohlcv_latest !== '-');
+    const hasPortfolio = !!(d.portfolio_snapshots_latest && d.portfolio_snapshots_latest !== '-');
+    if (!hasOhlcv) {
+      el.className = 'onboarding-banner ob-critical';
+      el.style.display = 'flex';
+      el.innerHTML = `
+        <span class="ob-icon">🚀</span>
+        <div class="ob-body">
+          <div class="ob-title">欢迎使用 AKQ Agents — 系统还没有行情数据</div>
+          <div class="ob-sub">首次使用需要回填 250 个交易日的历史 OHLCV，约 1-2 小时。请在终端执行:</div>
+          <code class="ob-cmd">PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app data bootstrap --lookback 250</code>
+          <div class="ob-sub">完成后自动可用；无需重启服务。</div>
+        </div>
+        <button class="ob-dismiss" type="button" onclick="dismissOnboarding()" aria-label="关闭">×</button>
+      `;
+      return;
+    }
+    if (!hasPortfolio) {
+      el.className = 'onboarding-banner ob-info';
+      el.style.display = 'flex';
+      el.innerHTML = `
+        <span class="ob-icon">👋</span>
+        <div class="ob-body">
+          <div class="ob-title">行情数据就位 — 还没跑过盘后组合</div>
+          <div class="ob-sub">交易日 16:30 会自动触发盘后批处理 (数据刷新 + 因子评估 + 组合优化 + 归因)，也可在 <a href="/ops" style="color:var(--accent)">运维 Ops</a> 页手动"立即跑一次完整流程"。</div>
+        </div>
+        <button class="ob-dismiss" type="button" onclick="dismissOnboarding()" aria-label="关闭">×</button>
+      `;
+      return;
+    }
+    el.style.display = 'none';
+  }
+  function dismissOnboarding() {
+    sessionStorage.setItem('onboarding-dismissed', '1');
+    const el = document.getElementById('onboarding-banner');
+    if (el) el.style.display = 'none';
   }
   window.addEventListener('load', loadDataFreshness);
   setInterval(loadDataFreshness, 30000);

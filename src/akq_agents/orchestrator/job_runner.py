@@ -16,7 +16,7 @@ import logging
 import time
 import traceback
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -272,7 +272,7 @@ class JobRunner:
         fn: Callable[[], dict[str, Any] | None],
         *,
         timeout_s: int,
-    ) -> "concurrent.futures.Future[JobRunResult]":
+    ) -> "Future[JobRunResult]":
         """M22: 提交后立即返回, 不阻塞 caller. 用于 web /api/jobs/{name}/trigger force_full
         这类用户手动触发但耗时长的场景 — web 端拿到 future 后立即返回 202 + job_id,
         用户去 /api/ops/job-runs 看进度。

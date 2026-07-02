@@ -2231,6 +2231,79 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
   font-weight: 600;
 }
 
+/* ===== 首次使用引导横幅 ===== */
+.onboarding-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 24px;
+  margin: 0;
+  border-bottom: 1px solid var(--line-strong);
+  animation: appear 320ms var(--ease-out) both;
+  font-size: 13px;
+}
+.onboarding-banner.ob-critical {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.12), rgba(251, 191, 36, 0.03));
+  border-bottom-color: rgba(251, 191, 36, 0.35);
+}
+.onboarding-banner.ob-info {
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.10), rgba(94, 234, 212, 0.05));
+  border-bottom-color: rgba(96, 165, 250, 0.28);
+}
+.onboarding-banner .ob-icon {
+  font-size: 24px;
+  line-height: 1;
+  padding-top: 2px;
+  flex: 0 0 auto;
+}
+.onboarding-banner .ob-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.onboarding-banner .ob-title {
+  font-weight: 600;
+  color: var(--fg);
+  font-size: 14px;
+}
+.onboarding-banner .ob-sub {
+  color: var(--fg-mute);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.onboarding-banner .ob-cmd {
+  display: block;
+  margin-top: 4px;
+  padding: 8px 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}
+.onboarding-banner .ob-dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  transition: color 150ms, background 150ms;
+}
+.onboarding-banner .ob-dismiss:hover {
+  color: var(--fg);
+  background: var(--bg-2);
+}
+
 /* chat quick questions */
 .quick-questions {
   display: flex; flex-direction: column; gap: 8px;
