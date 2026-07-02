@@ -152,13 +152,17 @@ python:    3.10.20
 
 **3 个来源，1 个生命周期**：
 
-| 来源 | 数量 | 命名 | 怎么来的 |
-|---|---|---|---|
-| 预置 | 7 个 | `momentum_5/20/60`, `reversal_5`, `volatility_20`, `amount_20`, `log_amount_20` | 手工实现，写在 `services/factors/*.py` |
-| DSL 自动发现 | 3 个 accepted（实时增长） | `auto_{op}_{base}_{window}_{direction}_{hash}` | daemon 每 120 分钟跑 `DiscoveryEngine`，从 `5 base × 8 op × 5 window × 2 direction` 笛卡尔积里抽样 |
-| LLM 提议 | shadow 待审核 | `llm_{op}_{base}_{window}_{direction}_{hash}` | 每天 20:00 LLM 看现状，输出新 recipe，需人工 ✓ 才进 shadow |
+| 来源 | 命名 | 怎么来的 |
+|---|---|---|
+| 预置 | `momentum_5/20/60`, `reversal_5`, `volatility_20`, `amount_20`, `log_amount_20` | 手工实现在 `services/factors/*.py`，7 个 |
+| DSL 自动发现 | `auto_{op}_{base}_{window}_{direction}_{hash}` | daemon 每 120 分钟跑 `DiscoveryEngine`，从 `46 base × 37 op × 12 window × 2 direction` 抽样评估 |
+| LLM 自由代码 | `code_{concept}_{hash6}` | 每天 20:00 `LLMCodeFactorBrainstormer` 让 LLM 直接写 Python compute 函数走 sandbox 编译，不限 DSL 空间 |
 
-**生命周期**：`pending` → `shadow`（OOS 观察）→ `accepted`（注册进 registry，进入组合）/ `demoted`（不达标，不再考虑）
+> **注**：历史 DSL 受限的 LLM 提议路径 (`factor.brainstorm`) 已下线（LLM 撞库率 100%）。现在 LLM 只走 `factor.code_brainstorm` 自由代码路径。
+
+**生命周期**：`llm_suggested` (LLM 提议待审核) → `pending`/`shadow` (人工✓ 后进 OOS 观察) → `accepted` (注册进 registry，进入组合) / `demoted` (不达标)。
+
+`/research` 页 → "LLM Lab" tab → "LLM 因子构建建议" 卡片可以逐条 ✓/✗。接受后 daemon 立刻并发跑 90 天 IS-IC backfill (最多 4 并发)，前端可实时看到 IC 曲线。
 
 ### 组合机（P3a）
 
@@ -188,7 +192,7 @@ python:    3.10.20
 |---|---|
 | AnalystAgent | 盘后跑一次 LLM，写 markdown 报告（context 已经齐备 portfolio + attribution + data_health） |
 | ChatAgent | `/chat` 页面对话，14 个只读 tool（`get_data_health` / `list_factors` / `get_portfolio_snapshot` / `get_today_trade_list` / `factor_postmortem` / `attribute_nav_drop` / ...） |
-| LLMFactorBrainstormer | 每天 20:00 看现状提新因子 recipe |
+| LLMCodeFactorBrainstormer | 每天 20:00 让 LLM 直接写 Python compute 函数（走 sandbox 编译，不限 DSL 空间） |
 
 LLM 网关：本地 Anthropic gateway `http://127.0.0.1:18931`（需另行启动）。
 
@@ -201,6 +205,7 @@ daemon 每 30 分钟巡检 3 条规则，触发时写 `events.alert.*` + 调 `os
 | NAV 单日异动 | `\|daily_return_net\| > 15%` | `alert.nav.abnormal` (level=error) |
 | 数据刷新连续失败 | `data.refresh_daily` 最近 2 次都 failed | `alert.data.refresh_failed` (error) |
 | 因子衰减 | accepted/builtin 因子近 30 天平均 `\|IR\| < 0.05` | `alert.factor.decayed` (warning) |
+| 因子指标陈旧 | factor_metrics 表 N 天无新写入 (M19) | `alert.factor.metrics_stale` (warning) |
 
 阈值在 `config/scheduler.yaml` 里 `alerter.*` 字段可调。`/ops` 页 events 流可看完整历史。
 
@@ -237,8 +242,17 @@ daemon 每 30 分钟巡检 3 条规则，触发时写 `events.alert.*` + 调 `os
 
 ## 关键配置
 
-- `config/system.yaml` — 主配置（universe / research / risk / backtest）
-- `config/scheduler.yaml` — daemon job 调度时间表
+**日常最常调**（散户根据本金 / 执行力）：
+
+- `config/system.yaml` `portfolio:` 段 — 持仓数 (`top_n`) / 单票上限 / 单行业上限 / **换手抑制** (`turnover_aversion` 越小换手越低)
+- `config/system.yaml` `trade_list:` 段 — 假定本金 / **最小可执行金额** (`min_trade_amount` 抬高砍碎单) / **最小权重变化阈值** (`min_weight_change`)
+
+> 每字段都有详细中文注释 + 建议范围，直接编辑即可，改完 `./start.sh restart` 让 daemon 重新装载。
+
+**系统级配置**（一般无需动）：
+
+- `config/system.yaml` — universe / research / risk / backtest
+- `config/scheduler.yaml` — daemon job 调度时间表 + alerter 阈值
 - `config/llm.yaml` — LLM gateway / analyst / chat 配置
 - `config/data.yaml` — akshare 限频 / 缓存策略
 - `config/web.yaml` — web 端 polling 间隔
@@ -305,7 +319,7 @@ $PY -m ruff check src/ tests/                        # lint
 
 ## 项目演进史
 
-从 P1 → m1...m16 多轮迭代，关键里程碑：
+从 P1 → m1...m25 多轮迭代，关键里程碑：
 
 | 阶段 | 内容 |
 |---|---|
@@ -323,6 +337,10 @@ $PY -m ruff check src/ tests/                        # lint
 | m16 | LLM 闭环（shadow 战况 + 归因诊断 + factor_postmortem + trade_list 闭环） |
 | m17 | alerter 巡检（NAV 异动 / 数据失败 / 因子衰减 → macOS 系统通知） |
 | m18 UX | 用户视角一致性打磨：顶栏品牌 / 主导航按频率排序 / ⌨ 快捷键浮标 / 首次使用引导横幅 / 结论条零操作日友好文案 / start.sh restart+open+help |
+| m19 | 修 H1+B2 lookahead bias（因子选股必须用 t-1 close）+ min_abs_ir 门槛统一 (builtin/auto/llm 同标准) |
+| m23 | web → daemon 手动触发通道 picker（web 进程零 CPU 消耗） |
+| m24 | user-facing job 结果流（`job_results` 表，前端异步取回） |
+| m25 | LLM 自由 Python 代码因子（下线 DSL LLM 路径）+ picker fire-and-forget（消除告警 + 4 并发）+ 组合/交易清单参数配置化（`portfolio:` / `trade_list:` 段全中文注释）+ 前端 error_code/event kind i18n + trade list 空清单友好提示 + 快捷键 CSS 收官 + ruff 全绿 |
 
 详细设计文档（部分已是历史档案，以代码为准）：`docs/superpowers/specs/`、`docs/superpowers/plans/`。
 </content>
