@@ -418,6 +418,33 @@ function _jobIdFromUrl(url) {
   return m ? decodeURIComponent(m[1]) : '';
 }
 
+// ===== 异步 job 轮询辅助 =========================================
+// M24 之后所有 /jobs/*/trigger 只入队立即返回 {status:"accepted", payload:{poll_url}},
+// daemon 5s 内 pick 起来跑 30s~15min。直接把 accepted 当成功渲染 = "入队即当完成" bug。
+// 这个 helper 从 trigger 首响应拿 poll_url, 轮询 job-runs detail 到 ok/failed/timeout,
+// 返回最终 detail(含真实 status + payload)。轮询期间可选回调 onTick 更新控制台。
+async function pollJobRunUntilDone(triggerData, { onTick, pollInterval = 3000, pollTimeout = 900000 } = {}) {
+  const pollUrl = triggerData && triggerData.payload && triggerData.payload.poll_url;
+  if (!pollUrl) return null; // 非异步端点(老同步返回), 调用方按 triggerData 自行处理
+  const start = Date.now();
+  while (true) {
+    if (Date.now() - start > pollTimeout) return { status: 'timeout', _polled: true };
+    await new Promise(res => setTimeout(res, pollInterval));
+    let pd = null;
+    try {
+      const pr = await fetch(pollUrl);
+      pd = await pr.json();
+    } catch (e) { continue; } // 网络抖动, 下一轮重试
+    const st = pd && pd.status ? String(pd.status).toLowerCase() : '';
+    if (onTick) { try { onTick(pd, Math.floor((Date.now() - start) / 1000)); } catch (e) {} }
+    // pending/running 继续等; ok/failed/skipped/timeout/error 视为终态
+    if (['ok', 'failed', 'skipped', 'timeout', 'error', 'crashed', 'interrupted'].includes(st)) {
+      pd._polled = true;
+      return pd;
+    }
+  }
+}
+
 // ===== 通用 job 触发 =============================================
 // 关键修复：HTTP 200 但 payload.status ∈ {failed, error, crashed} 时按失败渲染，
 // 不再一律显示 "✅ 执行完成"。
@@ -448,6 +475,22 @@ async function doAction(btn, url, method) {
         raw: data,
       });
       return;
+    }
+
+    // M24: 异步端点入队立即返回 status="accepted" + payload.poll_url。
+    // 不能当完成! 必须轮询 job-runs detail 等 daemon 真跑完再渲染真实结果,
+    // 否则会误报 "✅ 执行完成" 而任务其实还在排队/运行。
+    const rawStatus = (data && data.status) ? String(data.status).toLowerCase() : 'ok';
+    if (rawStatus === 'accepted' && data.payload && data.payload.poll_url) {
+      renderConsole({ kind: 'busy', title: '已入队，daemon 执行中… ' + title });
+      const finalD = await pollJobRunUntilDone(data, {
+        onTick: (pd, sec) => renderConsole({
+          kind: 'busy',
+          title: `执行中 ${title}`,
+          summaryHtml: `<span class="kv-k">状态:</span> <span class="kv-v">${escapeHtml(pd.status || 'running')}</span>  ｜  <span class="kv-k">已耗时:</span> <span class="kv-v">${sec}</span> 秒`,
+        }),
+      });
+      data = finalD || { status: 'timeout' };
     }
 
     // 业务层状态：区分 ok / skipped / failed
@@ -506,14 +549,29 @@ async function evictFactors(btn) {
   try {
     // 第 1 步: dry_run 看待淘汰名单
     const r = await fetch('/api/control/jobs/factor.eviction/trigger?dry_run=true', {method: 'POST'});
-    const d = await r.json().catch(() => ({}));
+    const accepted = await r.json().catch(() => ({}));
     if (!r.ok) {
       renderConsole({
         kind: 'failed', title,
         httpStatus: r.status,
-        message: formatErrorDetail(d || {}),
-        raw: d,
+        message: formatErrorDetail(accepted || {}),
+        raw: accepted,
       });
+      return;
+    }
+    // M24: eviction 走 daemon 异步, dry_run 的 victims 在 job-runs detail payload 里,
+    // 首响应只有 poll_url。必须轮询到 daemon 跑完(status=ok)才拿得到 victims,
+    // 否则 payload.victims 永远 undefined → 误判 "没有需要淘汰的因子"(功能失效)。
+    let d = accepted;
+    if (String(accepted.status || '').toLowerCase() === 'accepted' && accepted.payload && accepted.payload.poll_url) {
+      d = await pollJobRunUntilDone(accepted, {
+        pollTimeout: 300000,
+        onTick: (pd, sec) => renderConsole({ kind: 'busy', title: 'dry-run 计算淘汰名单', summaryHtml: `<span class="kv-k">已耗时:</span> <span class="kv-v">${sec}</span> 秒` }),
+      }) || { status: 'timeout' };
+    }
+    const dStatus = String(d.status || '').toLowerCase();
+    if (['failed', 'error', 'crashed', 'timeout'].includes(dStatus)) {
+      renderConsole({ kind: dStatus === 'timeout' ? 'timeout' : 'failed', title, message: formatErrorDetail(d.payload || d || {}), raw: d });
       return;
     }
     const payload = d.payload || {};
@@ -554,20 +612,28 @@ async function evictFactors(btn) {
     renderConsole({ kind: 'busy', title: '执行删除' });
 
     const r2 = await fetch('/api/control/jobs/factor.eviction/trigger', {method: 'POST'});
-    const d2 = await r2.json().catch(() => ({}));
+    const accepted2 = await r2.json().catch(() => ({}));
     if (!r2.ok) {
       renderConsole({
         kind: 'failed', title: '真删除失败',
         httpStatus: r2.status,
-        message: formatErrorDetail(d2 || {}),
-        raw: d2,
+        message: formatErrorDetail(accepted2 || {}),
+        raw: accepted2,
       });
       return;
     }
+    // 同 dry-run: 真删也走异步 daemon, 必须轮询到跑完再确认结果, 否则 "入队即当完成" 误报。
+    let d2 = accepted2;
+    if (String(accepted2.status || '').toLowerCase() === 'accepted' && accepted2.payload && accepted2.payload.poll_url) {
+      d2 = await pollJobRunUntilDone(accepted2, {
+        pollTimeout: 300000,
+        onTick: (pd, sec) => renderConsole({ kind: 'busy', title: '执行删除', summaryHtml: `<span class="kv-k">已耗时:</span> <span class="kv-v">${sec}</span> 秒` }),
+      }) || { status: 'timeout' };
+    }
     const status2 = (d2 && d2.status) ? String(d2.status).toLowerCase() : 'ok';
-    const isFailed2 = ['failed', 'error', 'crashed'].includes(status2);
+    const isFailed2 = ['failed', 'error', 'crashed', 'timeout'].includes(status2);
     renderConsole({
-      kind: isFailed2 ? 'failed' : 'ok',
+      kind: isFailed2 ? (status2 === 'timeout' ? 'timeout' : 'failed') : 'ok',
       title: '因子淘汰完成',
       reasonCode: d2.reason_code || undefined,
       jobId: 'factor.eviction',
