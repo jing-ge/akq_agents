@@ -36,6 +36,8 @@ _SUPPORTED_JOBS = {
     # M24: 4 个 user-facing 业务, picker 跑完写 job_results, 前端 GET /result 端点轮询.
     "factor.backtest_single", "factor.brainstorm",
     "portfolio.trade_list_recompute", "portfolio.nav_rebuild",
+    # LLM 因子接受 (改 status + 90 天回填) 下沉 daemon, 不阻塞 web.
+    "factor.llm_accept",
 }
 
 # M24: 这 4 个 job_id 走 picker 时 payload 字段映射, control.trigger 透传给 daemon.
@@ -43,6 +45,7 @@ _SUPPORTED_JOBS = {
 _USER_FACING_PAYLOAD_KEYS: dict[str, list[str]] = {
     "factor.backtest_single": ["factor_name", "days", "rebalance_step", "top_n"],
     "factor.brainstorm": ["n"],
+    "factor.llm_accept": ["factor_name"],
     "portfolio.trade_list_recompute": [],
     "portfolio.nav_rebuild": [],
 }
@@ -104,6 +107,8 @@ async def trigger_job(
         # M24: 业务参数 (factor_name / days / n 等) 必须在 body 传, 缺关键字段 400.
         if name == "factor.backtest_single" and not payload.get("factor_name"):
             raise HTTPException(400, "factor.backtest_single 需要 body.factor_name")
+        if name == "factor.llm_accept" and not payload.get("factor_name"):
+            raise HTTPException(400, "factor.llm_accept 需要 body.factor_name")
         # 截白名单外的字段 (前端不小心多塞字段也不会被 daemon 误用)
         allowed = set(_USER_FACING_PAYLOAD_KEYS[name])
         payload = {k: v for k, v in payload.items() if k in allowed}

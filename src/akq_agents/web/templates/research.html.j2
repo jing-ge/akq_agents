@@ -742,23 +742,25 @@ function renderLLMSuggestions(rows) {
 async function reviewLLM(btn, name, action) {
   // P1-2 (review): 显式 btn 参数 — 之前用 event.target 拿按钮, 键盘 / a11y / 程序触发
   // 时 event 不可用 → btn=null → "处理中…" 不出现, 用户连点触发多次 backfill。
-  // accept 现在同步跑 90 天 IS-IC backfill 约 30 秒, 必须给 loading + 禁用。
+  // accept 的 90 天 IS-IC backfill 已下沉 daemon (factor.llm_accept job), web 立即入队 + 轮询,
+  // 不再在 web 进程同步跑重 CPU (避免饿死 event loop)。reject 是纯 SQL, 继续走同步端点。
   let restoreLabel = null;
   if (btn) {
     restoreLabel = btn.innerHTML;
     btn.disabled = true;
     btn.classList.add('is-loading');
-    btn.innerHTML = action === 'accept' ? '处理中…(约30秒)' : '处理中…';
+    btn.innerHTML = action === 'accept' ? '处理中…(后台约30秒)' : '处理中…';
   }
   try {
-    const r = await fetch(`/api/research/factors/llm-suggestions/${encodeURIComponent(name)}/${action}`, {method:'POST'});
-    const d = await r.json();
-    if (!r.ok) { toast('失败：' + formatErrorDetail(d), 'error'); return; }
-    const tail = (action === 'accept' && d.is_ic && d.is_ic.ok)
-      ? `（IS IR=${(d.is_ic.ir ?? 0).toFixed(3)}, ${d.is_ic.n_metrics_written || 0} 行历史）`
-      : '';
-    toast(`${name} → ${action === 'accept' ? '已接受' + tail : '已拒绝'}`, 'ok');
-    loadLLMSuggestions();
+    if (action === 'accept') {
+      await reviewLLMAcceptAsync(name);
+    } else {
+      const r = await fetch(`/api/research/factors/llm-suggestions/${encodeURIComponent(name)}/${action}`, {method:'POST'});
+      const d = await r.json();
+      if (!r.ok) { toast('失败：' + formatErrorDetail(d), 'error'); return; }
+      toast(`${name} → 已拒绝`, 'ok');
+      loadLLMSuggestions();
+    }
   } catch (e) { toast('网络错误：' + e.message, 'error'); }
   finally {
     if (btn) {
@@ -767,6 +769,48 @@ async function reviewLLM(btn, name, action) {
       if (restoreLabel != null) btn.innerHTML = restoreLabel;
     }
   }
+}
+
+// accept 下沉 daemon: 触发 factor.llm_accept job → 立即 202 → 轮询 result 端点直到 ok/failed。
+async function reviewLLMAcceptAsync(name) {
+  const tr = await fetch('/api/control/jobs/factor.llm_accept/trigger', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({factor_name: name}),
+  });
+  const td = await tr.json();
+  if (!tr.ok) { toast('接受失败：' + formatErrorDetail(td), 'error'); return; }
+  const pollUrl = td.payload && td.payload.result_poll_url;
+  toast(`${name} 已入队，后台评估中…`, 'ok', { duration: 2500 });
+  if (!pollUrl) { loadLLMSuggestions(); return; }
+
+  // 轮询 result: 最多 ~90 秒 (每 3s 一次), running 继续, ok/failed 结束。
+  const started = Date.now();
+  const maxMs = 90000;
+  while (Date.now() - started < maxMs) {
+    await new Promise(res => setTimeout(res, 3000));
+    let pd;
+    try {
+      const pr = await fetch(pollUrl);
+      pd = await pr.json();
+    } catch (e) { continue; }  // 网络抖动, 下一轮再试
+    if (pd.status === 'running') continue;
+    if (pd.status === 'not_found') { toast(`${name} 任务丢失，请重试`, 'error'); loadLLMSuggestions(); return; }
+    if (pd.status === 'ok') {
+      const res = pd.result || {};
+      const isIc = res.is_ic || {};
+      const tail = (isIc.ok)
+        ? `（IS IR=${(isIc.ir ?? 0).toFixed(3)}, ${isIc.n_metrics_written || 0} 行历史）`
+        : '';
+      if (res.ok) toast(`${name} → 已接受${tail}`, 'ok');
+      else toast(`${name} 接受失败：${res.error || 'unknown'}`, 'error');
+      loadLLMSuggestions();
+      return;
+    }
+  }
+  // 超时: 后台可能仍在跑, 刷新列表让用户看最新状态
+  toast(`${name} 评估耗时较长，请稍后刷新查看`, 'warn');
+  loadLLMSuggestions();
 }
 
 // 页面加载时自动拉一次
@@ -1442,6 +1486,7 @@ async function loadKpiOverview() {
 
 // ===== P0-1 Trade List + Holdings =============================
 
+let _currentTradeListCohortDate = null;
 async function loadTradeList() {
   const sumEl = document.getElementById('trade-list-summary');
   const tblEl = document.getElementById('trade-list-table');
@@ -1449,6 +1494,8 @@ async function loadTradeList() {
   try {
     const r = await fetch('/api/trading/today-list');
     const d = await r.json();
+    // 记录当前渲染清单的 cohort_date，供"全部执行"复用（可能是 fallback 回退日期，非 today）
+    _currentTradeListCohortDate = d.cohort_date || null;
     if (!d.items || !d.items.length) {
       sumEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div><div>暂无交易清单</div><div class="empty-state-hint">下次 portfolio agent 跑完后自动生成</div></div>';
       tblEl.innerHTML = '';
@@ -1563,7 +1610,10 @@ async function markAllExecuted() {
   );
   if (!ok) return;
   try {
-    const r = await fetch('/api/trading/today-list/mark-all-executed', {method: 'POST'});
+    const url = _currentTradeListCohortDate
+      ? `/api/trading/today-list/mark-all-executed?date=${_currentTradeListCohortDate}`
+      : '/api/trading/today-list/mark-all-executed';
+    const r = await fetch(url, {method: 'POST'});
     const d = await r.json();
     if (!r.ok) {
       toast('失败：' + formatErrorDetail(d), 'error');

@@ -497,6 +497,10 @@ async def review_llm_suggestion(factor_name: str, action: str) -> dict[str, Any]
     # 通过 evaluator.evaluate 把 ic_mean/ir 写进 factor_proposals; LLM 因子之前漏了这一步,
     # 导致 shadow 期前 20 天用户在 UI 上看到的 LLM 因子 IR/IC 全是 NULL, 没法做接受决策).
     # 失败不影响 accept 本身, 只是 IS-IC 暂时缺失, 第二天 batch.deep_research 会补上。
+    #
+    # 注意: 前端 accept 已改走 daemon 异步 job `factor.llm_accept` (见 control.py + picker),
+    # web 不再同步跑 90 天回填以免饿死 event loop。这条同步路径保留仅为向后兼容
+    # (CLI / 脚本 / 直接打此端点的调用者); 正常 UI 流程不会走到这里的 backfill。
     is_ic_result: dict[str, Any] | None = None
     if action == "accept":
         is_ic_result = _evaluate_is_ic_for_llm_factor(svc, factor_name)

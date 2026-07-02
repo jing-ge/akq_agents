@@ -166,6 +166,7 @@ def _dispatch(
 _USER_FACING_JOBS: frozenset[str] = frozenset({
     "factor.backtest_single",
     "factor.brainstorm",
+    "factor.llm_accept",
     "portfolio.trade_list_recompute",
     "portfolio.nav_rebuild",
 })
@@ -197,6 +198,8 @@ def _run_user_facing_job(
                 result = _do_factor_backtest_single(services, payload)
             elif job_id == "factor.brainstorm":
                 result = _do_factor_brainstorm(services, payload)
+            elif job_id == "factor.llm_accept":
+                result = _do_factor_llm_accept(services, payload)
             elif job_id == "portfolio.trade_list_recompute":
                 result = _do_portfolio_trade_list_recompute(services, payload)
             elif job_id == "portfolio.nav_rebuild":
@@ -405,6 +408,116 @@ def _do_factor_brainstorm(services: dict[str, Any], payload: dict[str, Any]) -> 
     except Exception as exc:  # noqa: BLE001
         logger.exception("factor.brainstorm failed")
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "error_code": "BRAINSTORM_FAILED"}
+
+
+def _do_factor_llm_accept(services: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """LLM 因子建议"接受": 改 status=shadow + 跑 90 天 IS IC/IR 回填 (从 web research.py 搬过来).
+
+    payload: {factor_name: str}
+    之前同步跑在 web 请求里, 90 天 × 全 A 股 pandas 回填重 CPU, 会饿死 web event loop.
+    现在整段 (含改 status) 下沉 daemon, web 只入队立即 202.
+    """
+    from datetime import datetime as _dt
+
+    from akq_agents.services.data.repository import open_meta_db
+    from akq_agents.services.factors.discovery import make_factor
+    from akq_agents.services.factors.history_backfill import (
+        HistoryBackfillContext,
+        backfill_one,
+    )
+    from akq_agents.services.factors.proposal_store import recipe_from_json
+
+    name = str(payload.get("factor_name", ""))
+    if not name:
+        return {"ok": False, "error": "factor_name missing", "error_code": "BAD_PAYLOAD"}
+
+    repo = services.get("data_repository")
+    evaluator = services.get("factor_evaluator")
+    engine = services.get("discovery_engine")
+    store = services.get("factor_proposal_store")
+    if repo is None or evaluator is None or engine is None or store is None:
+        return {
+            "ok": False,
+            "factor_name": name,
+            "error": "services not ready (repo/evaluator/engine/proposal_store missing)",
+            "error_code": "SERVICES_MISSING",
+        }
+
+    db_path = repo._base_dir / "meta.db"
+    ts = _dt.now().isoformat()
+
+    # 1) 校验当前 status 必须是 llm_suggested, 然后改 shadow (幂等: partition manual 唯一, 重跑也安全)
+    try:
+        with open_meta_db(db_path) as conn:
+            row = conn.execute(
+                "SELECT status, recipe_json FROM factor_proposals WHERE factor_name = ?",
+                (name,),
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "factor_name": name, "error": f"factor not found: {name}", "error_code": "NOT_FOUND"}
+            cur_status, recipe_json = row[0], row[1]
+            # 已被本 job 或其他路径推进过 → 不重复报错, 幂等放行 (仍继续补回填)
+            if cur_status == "llm_suggested":
+                conn.execute(
+                    "UPDATE factor_proposals SET status='shadow', shadow_started_at=?, evaluated_at=? "
+                    "WHERE factor_name=?",
+                    (ts, ts, name),
+                )
+                conn.commit()
+            elif cur_status != "shadow":
+                return {
+                    "ok": False,
+                    "factor_name": name,
+                    "error": f"factor status is {cur_status!r}, not 'llm_suggested'",
+                    "error_code": "BAD_STATUS",
+                }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("factor.llm_accept status update failed for %s", name)
+        return {"ok": False, "factor_name": name, "error": f"status update: {exc}", "error_code": "STATUS_UPDATE_FAILED"}
+
+    # 2) 90 天 IS IC/IR 回填 (重 CPU, 这才是下沉 daemon 的主因). 失败不回滚 status —
+    #    第二天 batch.deep_research 会补上 metrics, 接受本身已经生效.
+    try:
+        recipe = recipe_from_json(recipe_json)
+        factor = make_factor(recipe)
+        try:
+            factor.name = name  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+        ctx = HistoryBackfillContext.build(repo=repo, evaluator=evaluator, days=90, step=1)
+        if ctx is None:
+            return {
+                "ok": True,
+                "factor_name": name,
+                "status": "shadow",
+                "is_ic": {"ok": False, "reason": "ctx_build_failed (no data?)"},
+            }
+        result = backfill_one(
+            factor, ctx, evaluator=evaluator, proposal_store=store,
+            compute_factor_history=engine._compute_factor_history,  # type: ignore[attr-defined]
+        )
+        return {
+            "ok": True,
+            "factor_name": name,
+            "status": "shadow",
+            "is_ic": {
+                "ok": bool(result.get("ok")),
+                "ic_mean": result.get("latest_ic_mean"),
+                "ir": result.get("latest_ir"),
+                "t_stat": result.get("latest_t_stat"),
+                "n_metrics_written": result.get("n_metrics_written", 0),
+                "reason": result.get("reason"),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("factor.llm_accept backfill for %s failed: %s", name, exc)
+        # status 已改 shadow, 接受生效; 回填失败只是 IC 暂缺
+        return {
+            "ok": True,
+            "factor_name": name,
+            "status": "shadow",
+            "is_ic": {"ok": False, "reason": f"exception: {exc}"},
+        }
 
 
 def _do_portfolio_trade_list_recompute(services: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
