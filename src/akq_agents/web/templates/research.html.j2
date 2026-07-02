@@ -1417,17 +1417,9 @@ function setupKpiOverview() {
     btn.addEventListener('click', () => {
       const id = btn.dataset.target;
       if (!id) return;
-      const card = document.getElementById(id);
-      if (!card) return;
-      // 计算 sticky bar 高度后偏移
-      const stickyH = document.querySelector('.kpi-overview')?.offsetHeight || 0;
-      const top = card.getBoundingClientRect().top + window.pageYOffset - stickyH - 12;
-      window.scrollTo({ top, behavior: 'smooth' });
-      // 高亮目标卡片一秒
-      card.classList.remove('kpi-flash-target');
-      void card.offsetWidth;
-      card.classList.add('kpi-flash-target');
-      setTimeout(() => card.classList.remove('kpi-flash-target'), 1400);
+      // 复用 jumpToCard: 目标卡片可能在别的 tab (如 nav-card 在 portfolio tab),
+      // 必须先切 tab 再滚动, 否则卡片隐藏时 scrollTo 会滚到错位/空白位置。
+      jumpToCard(id);
     });
   });
 }
