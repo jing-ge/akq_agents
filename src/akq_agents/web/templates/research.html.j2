@@ -2143,7 +2143,20 @@ async function runDiscovery() {
     statusEl: document.getElementById('discovery-status'),
     runningMessage: 'AI 因子发现中',
     successMessage: '完成，列表已刷新',
-    onSuccess: () => loadProposals(),
+    // factor.discovery 是异步 daemon job: trigger 只入队立即 202, daemon 5s 内 pick 起来跑 30~120s.
+    // 从 trigger 响应派生 job 状态轮询地址, 等 daemon 真跑完(status=ok/failed)再刷新列表,
+    // 否则\"入队即当完成\"会在因子还没生产出来时就刷新, 看到的是上一轮旧数据(误导).
+    pollUrlFromResponse: (d) => (d && d.payload && d.payload.poll_url) || null,
+    pollInterval: 3000,
+    pollTimeout: 180000,
+    pollIsDone: (d) => d && (d.status === 'ok' || d.status === 'failed' || d.status === 'error'),
+    onSuccess: (d) => {
+      if (d && (d.status === 'failed' || d.status === 'error')) {
+        const el = document.getElementById('discovery-status');
+        if (el) { el.classList.remove('status-ok'); el.classList.add('status-error'); el.innerHTML = '❌ 发现任务失败，请查看运维页 job-runs'; }
+      }
+      loadProposals();
+    },
     onError: () => loadProposals(),
   });
 }

@@ -73,7 +73,7 @@
   async function runLongOperation(opts) {
     const {
       button, url, body, statusEl,
-      pollUrl, pollInterval = 2000, pollTimeout = 120000,
+      pollUrl, pollUrlFromResponse, pollInterval = 2000, pollTimeout = 120000,
       pollIsDone,
       onSuccess, onError,
       successMessage,
@@ -147,7 +147,14 @@
         if (onError) try { onError(data); } catch (e) {}
         return { ok: false, noop: true, data };
       }
-      if (!pollUrl) {
+      // 若调用方给了 pollUrlFromResponse, 从 trigger 首响应里派生真正的轮询地址.
+      // 用于异步入队端点: trigger 只返回 202 + partition, 需据此拼出 job 状态轮询 URL,
+      // 等 daemon 真跑完再回调, 避免\"入队即当完成\"过早刷新看到旧数据.
+      let effectivePollUrl = pollUrl;
+      if (!effectivePollUrl && typeof pollUrlFromResponse === 'function') {
+        try { effectivePollUrl = pollUrlFromResponse(data); } catch (e) { effectivePollUrl = null; }
+      }
+      if (!effectivePollUrl) {
         stopTicker();
         setStatus(`✅ ${successMessage || (data && data.result) || '完成'}`, 'status-ok');
         if (onSuccess) try { onSuccess(data); } catch (e) {}
@@ -164,7 +171,7 @@
         }
         await new Promise(res => setTimeout(res, pollInterval));
         try {
-          const pr = await fetch(pollUrl);
+          const pr = await fetch(effectivePollUrl);
           const pd = await pr.json();
           if (isDone(pd)) {
             stopTicker();
