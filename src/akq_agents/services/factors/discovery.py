@@ -134,7 +134,7 @@ _BASES = {
     "ret_5d": lambda df: df["close"].pct_change(periods=5, fill_method=None).astype(float),
     "ret_20d": lambda df: df["close"].pct_change(periods=20, fill_method=None).astype(float),
     "ret_gap": lambda df: (
-        (df["open"] / df["close"].shift(1).replace(0, np.nan) - 1.0)
+        df["open"] / df["close"].shift(1).replace(0, np.nan) - 1.0
     ).astype(float),
     "abs_return": lambda df: df["close"].pct_change(fill_method=None).abs().astype(float),
     # ----- 量比 / 量均线 (5) -----
@@ -183,13 +183,13 @@ _BASES = {
         else pd.Series(0.0, index=df.index)
     ).astype(float),
     "oc_ret": lambda df: (
-        (df["close"] / df["open"].replace(0, np.nan) - 1.0)
+        df["close"] / df["open"].replace(0, np.nan) - 1.0
     ).astype(float),
     "intraday_return": lambda df: (
         (df["close"] - df["open"]) / df["open"].replace(0, np.nan)
     ).astype(float),
     "overnight_return": lambda df: (
-        (df["open"] / df["close"].shift(1).replace(0, np.nan) - 1.0)
+        df["open"] / df["close"].shift(1).replace(0, np.nan) - 1.0
     ).astype(float),
     "volume_change": lambda df: (
         df["volume"].pct_change(fill_method=None)

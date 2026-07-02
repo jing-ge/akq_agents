@@ -13,12 +13,15 @@
 </head>
 <body>
   <nav>
-    <span class="title">{{ ctx.title }}</span>
-    <a href="/ops" class="{% if page == 'ops' %}active{% endif %}" title="系统运行状态、后台启停、手动触发任务">运维 Ops<span id="nav-ops-dot" class="nav-dot" style="display:none"></span></a>
+    <a href="/" class="brand" title="AKQ Agents — A 股量化研究系统（advisory only）">
+      <span class="brand-mark">AKQ</span>
+      <span class="brand-sub">量化研究</span>
+    </a>
     <a href="/research" class="{% if page == 'research' %}active{% endif %}" title="每日组合、因子表现、自动发现的新因子">研究 Research</a>
+    <a href="/ops" class="{% if page == 'ops' %}active{% endif %}" title="系统运行状态、后台启停、手动触发任务">运维 Ops<span id="nav-ops-dot" class="nav-dot" style="display:none"></span></a>
     <a href="/data" class="{% if page == 'data' %}active{% endif %}" title="查询 AKShare 基础数据：行情、指数、板块、宏观、新闻">数据 Data</a>
-    <a href="/logs" class="{% if page == 'logs' %}active{% endif %}" title="实时滚动查看 daemon / web / 回测引擎物理日志">日志 Logs</a>
     <a href="/chat" class="{% if page == 'chat' %}active{% endif %}" title="跟 AI 对话查询系统状态或操作">对话 Chat</a>
+    <a href="/logs" class="{% if page == 'logs' %}active{% endif %}" title="实时滚动查看 daemon / web / 回测引擎物理日志">日志 Logs</a>
     <span class="spacer"></span>
     <details class="nav-disclaimer" title="本控制台仅供研究参考，不构成投资建议；不执行任何交易指令。">
       <summary>ⓘ</summary>

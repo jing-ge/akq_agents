@@ -219,7 +219,9 @@ def _attach_refresh_info(svc: ServiceContainer, data_health: dict[str, Any]) -> 
     依赖：repo.is_trading_day + SchedulerConfig（一次性 yaml 解析，~ms 级）
     全程 try/except 包住，失败时不影响主流程。
     """
-    from datetime import date as _date, datetime as _dt, timedelta as _td
+    from datetime import date as _date
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
     try:
         from akq_agents.bootstrap import load_scheduler_config
 

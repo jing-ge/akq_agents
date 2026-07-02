@@ -158,6 +158,45 @@ nav .title::before {
   box-shadow: 0 0 0 1px rgba(94,234,212,0.25), 0 0 14px var(--accent-glow);
   animation: pulse-soft 3.2s ease-in-out infinite;
 }
+
+/* ---- brand (nav 左侧品牌区: AKQ + 量化研究 副标) ---- */
+nav .brand {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px 6px 8px;
+  margin-right: 20px;
+  border-radius: var(--r-sm);
+  text-decoration: none;
+  transition: background 150ms var(--ease-out);
+}
+nav .brand:hover { background: var(--bg-2); }
+nav .brand::before {
+  content: "";
+  display: inline-block;
+  width: 9px; height: 9px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(94,234,212,0.25), 0 0 14px var(--accent-glow);
+  animation: pulse-soft 3.2s ease-in-out infinite;
+  align-self: center;
+}
+nav .brand-mark {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.05em;
+  font-family: var(--font-mono);
+}
+nav .brand-sub {
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+}
+@media (max-width: 640px) {
+  nav .brand-sub { display: none; }
+  nav .brand { margin-right: 8px; }
+}
 @keyframes pulse-soft {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.55; }

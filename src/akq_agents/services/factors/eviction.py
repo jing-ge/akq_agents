@@ -265,7 +265,7 @@ def select_victims(
             fs.reason = f"low_score:{fs.score:.3f}<{cfg.min_score}"
             victims.append(fs)
         elif pool_count - len(victims) > cfg.max_pool_size:
-            fs.reason = f"over_pool_size:rank_bottom"
+            fs.reason = "over_pool_size:rank_bottom"
             victims.append(fs)
         else:
             fs.reason = "kept"

@@ -188,7 +188,7 @@ class Alerter:
                 "kind": "alert.backup.missing",
                 "level": "warning",
                 "title": "🔒 没有任何备份",
-                "body": f"data/backup/LAST_BACKUP 不存在. 跑 scripts/backup.sh 启动第一次备份.",
+                "body": "data/backup/LAST_BACKUP 不存在. 跑 scripts/backup.sh 启动第一次备份.",
                 "payload": {"reason": "no_manifest"},
             })
             return out

@@ -235,6 +235,7 @@ class PortfolioAgent(BaseAgent):
                         return None
                     try:
                         from datetime import timedelta as _td
+
                         import pyarrow.dataset as ds
                         ohlcv_dir = getattr(repo, "_ohlcv_dir", None)
                         if ohlcv_dir is None or not ohlcv_dir.exists():
@@ -346,8 +347,9 @@ class PortfolioAgent(BaseAgent):
         repo = self._services.get("data_repository")
         if repo is None or not symbols:
             return {}
-        import pyarrow.dataset as ds
         from datetime import timedelta
+
+        import pyarrow.dataset as ds
         ohlcv_dir = getattr(repo, "_ohlcv_dir", None)
         if ohlcv_dir is None or not ohlcv_dir.exists():
             return {}

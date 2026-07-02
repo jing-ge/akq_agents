@@ -57,6 +57,7 @@ def register(
 def _do(services: dict[str, Any]) -> dict[str, Any]:
     """跑一次 shadow OOS 评估; 返回 stats 供 events 记账."""
     import time as _time
+
     from akq_agents.services.factors.discovery import DiscoveryStats
 
     engine = services["discovery_engine"]

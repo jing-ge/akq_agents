@@ -275,7 +275,7 @@ class FactorEvaluator:
     def evaluate_batch(
         self,
         *,
-        factor: "Factor",
+        factor: Factor,
         factor_history: pd.DataFrame,
         forward_returns: pd.DataFrame,
         as_of_dates: list,
@@ -326,11 +326,11 @@ class FactorEvaluator:
     def _compute_metric(
         self,
         *,
-        factor: "Factor",
+        factor: Factor,
         factor_history: pd.DataFrame,
         forward_returns: pd.DataFrame,
         as_of_date,
-    ) -> "FactorMetric":
+    ) -> FactorMetric:
         """M22: evaluate() 的纯计算部分, 不写 db, 供 evaluate_batch 复用."""
         ic = _rolling_ic(factor_history, forward_returns, self._window)
         ic_clean = ic.dropna()

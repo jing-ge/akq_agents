@@ -346,7 +346,7 @@ def cmd_trade_list(args: argparse.Namespace) -> None:
 
 def cmd_paper_summary(_: argparse.Namespace) -> None:
     """打印 Paper Trading 前向跟踪汇总。"""
-    from akq_agents.services.portfolio.paper_trading import PaperTradingStore, PaperTradingConfig
+    from akq_agents.services.portfolio.paper_trading import PaperTradingConfig, PaperTradingStore
 
     data_config = _require_data_config()
     repo = build_data_repository(data_config)

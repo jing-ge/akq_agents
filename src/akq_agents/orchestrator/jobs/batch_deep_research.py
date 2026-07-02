@@ -228,6 +228,7 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
     # 小批量任务 (n_targets < STEP_BATCH) 会在 done_count == n_targets 时写最后一行, 这是兜底,
     # 保证用户最少看到 1 行 "完成" 进度.
     import time as _time
+
     from akq_agents.orchestrator.step_recorder import StepRecorder
     STEP_BATCH = 10  # M22: 20 -> 10, 让 n_candidates 10-20 的小批量也看到中间进度
     repo_path = services.get("data_repository")

@@ -9,8 +9,6 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from akq_agents.web.deps import get_services
-
 router = APIRouter()
 
 # 进程级 service 单例（带 5min TTL 缓存）

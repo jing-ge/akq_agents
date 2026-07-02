@@ -54,6 +54,7 @@ def register(
 def _do(services: dict[str, Any], cfg: SchedulerConfig, *, dry_run: bool = False) -> dict[str, Any]:
     """跑一次 eviction. dry_run=True 时只统计不删."""
     import time as _time
+
     from akq_agents.services.factors.eviction import EvictionConfig, evict_factors
 
     repo = services["data_repository"]

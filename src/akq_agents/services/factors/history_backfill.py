@@ -53,7 +53,7 @@ class HistoryBackfillContext:
         days: int = 90,
         step: int = 1,
         top_n_universe: int = 300,
-    ) -> "HistoryBackfillContext | None":
+    ) -> HistoryBackfillContext | None:
         """从 repo 拉数据构造上下文; 数据不足 / universe 拿不到时返 None."""
         as_of = as_of_date or date.today()
         window = getattr(evaluator, "_window", 60)
@@ -136,7 +136,7 @@ class HistoryBackfillContext:
         days: int = 90,
         step: int = 1,
         as_of_date: date | None = None,
-    ) -> "HistoryBackfillContext | None":
+    ) -> HistoryBackfillContext | None:
         """复用调用方已经算好的 close + forward_returns (如 DiscoveryEngine.run_batch)。
 
         避免在 brainstorm/discovery 流程内再拉一次数据 → 一轮 brainstorm 20 因子额外
@@ -159,7 +159,7 @@ class HistoryBackfillContext:
         days: int,
         step: int,
         as_of: date,
-    ) -> "HistoryBackfillContext | None":
+    ) -> HistoryBackfillContext | None:
         all_dates = list(close.index)
         if len(all_dates) < window + days:
             logger.warning("history_backfill: insufficient dates (%d < %d+%d)",

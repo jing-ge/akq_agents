@@ -53,8 +53,9 @@ def _recompute_today_trade_list() -> dict[str, Any]:
     # 拿当日 close（从 ohlcv parquet 查 weights 里的 symbol + holdings 里的 symbol）
     holdings_dict = holdings_store.as_dict()
     all_syms = set(weights.keys()) | set(holdings_dict.keys())
-    import pyarrow.dataset as ds
     from datetime import timedelta
+
+    import pyarrow.dataset as ds
     ohlcv_dir = getattr(repo, "_ohlcv_dir", None)
     today_close: dict[str, float] = {}
     if ohlcv_dir and ohlcv_dir.exists() and all_syms:

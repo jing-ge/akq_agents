@@ -272,7 +272,7 @@ class JobRunner:
         fn: Callable[[], dict[str, Any] | None],
         *,
         timeout_s: int,
-    ) -> "Future[JobRunResult]":
+    ) -> Future[JobRunResult]:
         """M22: 提交后立即返回, 不阻塞 caller. 用于 web /api/jobs/{name}/trigger force_full
         这类用户手动触发但耗时长的场景 — web 端拿到 future 后立即返回 202 + job_id,
         用户去 /api/ops/job-runs 看进度。
@@ -286,12 +286,10 @@ class JobRunner:
         区别: 不在 caller 线程等 result, 由 threadpool worker 完成后自己写 job_runs。
         即使 caller (web handler) 已经 return response, 后台仍会写完。
         """
-        import concurrent.futures  # local import 避免污染模块顶部
-
         # 1) 幂等检查
         existing = self._store.get_job_run(job_id, partition)
         if existing is not None and existing.status == "ok":
-            fut: concurrent.futures.Future = concurrent.futures.Future()
+            fut: Future = Future()
             fut.set_result(JobRunResult(job_id, partition, "noop", reason_code="ALREADY_OK"))
             return fut
 
@@ -301,12 +299,12 @@ class JobRunner:
             try:
                 if not self._is_trading_day(today):
                     self._record_skipped(job_id, partition, "NOT_TRADING_DAY")
-                    fut2: concurrent.futures.Future = concurrent.futures.Future()
+                    fut2: Future = Future()
                     fut2.set_result(JobRunResult(job_id, partition, "skipped", reason_code="NOT_TRADING_DAY"))
                     return fut2
             except Exception as exc:  # noqa: BLE001
                 self._record_failed(job_id, partition, "GUARD_ERROR", str(exc))
-                fut3: concurrent.futures.Future = concurrent.futures.Future()
+                fut3: Future = Future()
                 fut3.set_result(JobRunResult(job_id, partition, "failed", reason_code="GUARD_ERROR"))
                 return fut3
 
