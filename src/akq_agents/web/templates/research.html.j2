@@ -1716,6 +1716,19 @@ async function loadTradeList() {
     } else if (executedTradable.length > 0) {
       // 全部已执行的完成态 — 复用 empty-state 系列样式
       html += `<div class="empty-state"><div class="empty-state-icon" style="color:var(--ok, #10b981)">✅</div><div>今日 ${executedTradable.length} 条交易已全部执行</div></div>`;
+    } else if (holdItems.length > 0) {
+      // 无交易信号 (BUY/SELL 全被阈值过滤). 显式告诉用户 "系统正常, 只是今天没让你动手".
+      // 避免用户误以为清单坏了 / 数据没生成. 提示如何调阈值让 UI 更喜好.
+      html += `<div class="empty-state">
+        <div class="empty-state-icon">🟢</div>
+        <div style="font-weight:600;margin-bottom:4px">今日无需调仓</div>
+        <div class="small" style="color:var(--fg-mute);max-width:520px;line-height:1.6">
+          ${holdItems.length} 只持仓保持不动 (权重变化不超过 <code>trade_list.min_weight_change</code>
+          或调仓金额 &lt; <code>trade_list.min_trade_amount</code>).
+          <br>想看更多细节 → 展开下方"保持不动的持仓". 想让阈值更敏感 → 改
+          <code>config/system.yaml</code> 的 <code>trade_list:</code> 段.
+        </div>
+      </div>`;
     }
     if (executedTradable.length > 0) {
       html += `<details style="margin-top:14px"><summary class="small">展开 ${executedTradable.length} 条已执行交易</summary>`;

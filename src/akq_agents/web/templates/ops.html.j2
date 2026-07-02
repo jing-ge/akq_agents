@@ -381,7 +381,7 @@ function renderConsole(state) {
   el.className = 'control-console ' + spec.cls;
 
   const codeBadge = state.reasonCode
-    ? `<span class="cc-code">${escapeHtml(state.reasonCode)}</span>` : '';
+    ? `<span class="cc-code" title="${escapeHtml(state.reasonCode)}">${escapeHtml(tCn(REASON_CODE_CN, state.reasonCode, state.reasonCode))}</span>` : '';
   const httpBadge = state.httpStatus
     ? `<span class="cc-code">HTTP ${state.httpStatus}</span>` : '';
 
@@ -699,8 +699,92 @@ const JOB_CN = {
   'batch.post_close': '盘后批处理',
   'batch.deep_research': '因子深度研究',
   'factor.discovery': '因子发现',
+  'factor.code_brainstorm': 'LLM 因子提议',
+  'factor.llm_accept': 'LLM 因子接受',
+  'factor.promote_shadows': 'Shadow 因子晋升',
+  'factor.eviction': '因子淘汰',
+  'factor.backtest_single': '单因子回测',
+  'portfolio.trade_list_recompute': '重算交易清单',
+  'portfolio.nav_rebuild': 'NAV 全量重建',
   'retry.fetch_errors': '重试抓取错误',
   'health.heartbeat': '健康心跳',
+  'data.refresh_daily': '当日数据刷新',
+  'alert.check': '告警巡检',
+  'manual.trigger_picker': '手动触发调度',
+};
+// M25 review: 中文化后端 reason_code / error_code, 让用户不用查代码就能看懂失败原因.
+// 覆盖 orchestrator/jobs/*.py 和 job_runner.py 里所有明文 reason_code / error_code.
+const REASON_CODE_CN = {
+  // 通用护栏 / 幂等
+  ALREADY_OK: '已完成过 (幂等跳过)',
+  NOT_TRADING_DAY: '非交易日',
+  GUARD_ERROR: '护栏检查异常',
+  TIMEOUT: '超时',
+  UNKNOWN: '未知错误',
+  DATA_NOT_READY: '数据未就绪',
+  // 用户输入 / 数据缺失
+  BAD_PAYLOAD: '请求参数缺失',
+  BAD_STATUS: '状态不允许此操作',
+  NOT_FOUND: '未找到',
+  FACTOR_NOT_FOUND: '因子未找到',
+  NO_OHLCV: '无 OHLCV 数据',
+  NO_SNAPSHOT_TODAY: '今日无组合快照',
+  NO_SNAPSHOTS: '无历史快照',
+  NO_REBALANCE_DATES: '无有效再平衡日期 (因子值缺失或股票不足)',
+  EMPTY_HISTORY: '因子历史为空 (算不出值)',
+  EMPTY_NAV: '回测 NAV 为空',
+  INSUFFICIENT_HISTORY: '历史数据不足',
+  // 服务未就绪
+  SERVICES_MISSING: '所需服务未装配',
+  BACKTESTER_MISSING: '回测器未启用',
+  WORKFLOW_MISSING: 'Workflow 未装配',
+  BRAINSTORMER_MISSING: 'LLM 提议器未启用',
+  // 业务失败
+  BACKTEST_FAILED: '回测执行失败',
+  BRAINSTORM_FAILED: 'LLM 提议失败',
+  COMPUTE_HISTORY_FAILED: '因子历史计算失败',
+  GENERATE_FAILED: '清单生成失败',
+  PREPARE_DATA_FAILED: '数据准备失败',
+  REBUILD_FAILED: 'NAV 重建失败',
+  STATUS_UPDATE_FAILED: '状态更新失败',
+  USER_FACING_FAILED: '业务执行失败',
+  // eviction / discovery 特殊标记
+  NO_VICTIMS: '无衰减因子 (无需淘汰)',
+  DRY_RUN: '试跑模式 (未写入)',
+};
+// M25 review: 中文化 events 表 kind 字段. events kind 命名规则 <namespace>.<action>,
+// 只覆盖已知的; 未映射的原样显示 (不影响功能).
+const EVENT_KIND_CN = {
+  // batch
+  'batch.post_close.completed': '盘后批处理·完成',
+  'batch.post_close.failed': '盘后批处理·失败',
+  'batch.deep_research.completed': '因子深度研究·完成',
+  'batch.deep_research.failed': '因子深度研究·失败',
+  // factor
+  'factor.discovery.completed': '因子发现·完成',
+  'factor.discovery.failed': '因子发现·失败',
+  'factor.promote_shadows.completed': 'Shadow 晋升·完成',
+  'factor.eviction.completed': '因子淘汰·完成',
+  'factor.code_brainstorm.completed': 'LLM 因子提议·完成',
+  'factor.code_brainstorm.failed': 'LLM 因子提议·失败',
+  'factor.llm_accept.completed': 'LLM 因子接受·完成',
+  'factor.llm_accept.failed': 'LLM 因子接受·失败',
+  // data
+  'data.refresh_daily.completed': '当日数据刷新·完成',
+  'data.refresh_daily.failed': '当日数据刷新·失败',
+  'retry.fetch_errors.completed': '错误重试·完成',
+  // portfolio
+  'portfolio.trade_list_recompute.completed': '重算交易清单·完成',
+  'portfolio.nav_rebuild.completed': 'NAV 重建·完成',
+  // alerter
+  'alert.nav.abnormal': '告警·NAV 异动',
+  'alert.data.refresh_failed': '告警·数据刷新失败',
+  'alert.factor.decayed': '告警·因子衰减',
+  'alert.factor.metrics_stale': '告警·因子指标陈旧',
+  // 兜底通配
+  'portfolio.backtester.rebuild_failed': '组合回测·重建失败',
+  'paper_trading.update_failed': 'Paper Trading·估值失败',
+  'trade_list.generation_failed': '交易清单·生成失败',
 };
 function tCn(map, key, fallback) { return map[key] != null ? map[key] : (fallback != null ? fallback : key); }
 
@@ -964,7 +1048,7 @@ function renderJobs(runs) {
       return `<tr>
       <td class="jc-job"><code>${r.job_id}</code>${jobCn ? ' <span class="small">'+ jobCn +'</span>' : ''}</td>
       <td class="jc-part">${r.partition}</td>
-      <td class="jc-status"><span class="status-${r.status}">${cn}</span>${r.reason_code ? ' <code>' + r.reason_code + '</code>' : ''}</td>
+      <td class="jc-status"><span class="status-${r.status}">${cn}</span>${r.reason_code ? ' <code title="' + r.reason_code + '">' + tCn(REASON_CODE_CN, r.reason_code, r.reason_code) + '</code>' : ''}</td>
       <td class="jc-dur">${r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) + ' 秒' : '—'}</td>
       <td class="jc-time small" title="${r.started_at || ''}">${startedShort}</td>
       <td class="jc-act"><button class="job-detail-btn" data-job="${jobAttr}" data-part="${partAttr}" onclick="expandJob(this)" title="展开/收起该任务的子步骤详情">📋 详情</button></td>
@@ -1105,7 +1189,7 @@ function renderEvents(events) {
       return `<tr>
       <td class="small">${e.ts}</td>
       <td><span class="status-${e.level === 'info' ? 'ok' : e.level}">${lvlCn}</span></td>
-      <td><code>${e.kind}</code></td>
+      <td><code title="${e.kind}">${tCn(EVENT_KIND_CN, e.kind, e.kind)}</code></td>
       <td class="small">${e.source || '—'}</td>
     </tr>`;
     }).join('')}

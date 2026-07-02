@@ -4,9 +4,12 @@
 # 用法：
 #   ./start.sh                # 启动 web + 自动开 daemon
 #   ./start.sh web            # 只启动 web（不开 daemon）
+#   ./start.sh daemon         # 只启动 daemon
+#   ./start.sh restart        # 重启 web + daemon
 #   ./start.sh stop           # 停止 web + daemon
 #   ./start.sh status         # 看当前进程 + daemon 状态
 #   ./start.sh logs           # tail web + daemon 日志
+#   ./start.sh open           # 用默认浏览器打开 web 控制台
 
 set -euo pipefail
 
@@ -159,6 +162,32 @@ except Exception as e:
 cmd_logs() {
     echo "== tail web.log + daemon.log (Ctrl+C 退出) =="
     tail -f "$WEB_LOG" "$DAEMON_LOG" 2>/dev/null
+}
+
+cmd_open() {
+    local url="http://${WEB_HOST}:${WEB_PORT}/"
+    if ! is_alive "$WEB_PID"; then
+        echo "[open] web 未运行，先启动：./start.sh up"
+        return 1
+    fi
+    echo "[open] $url"
+    if command -v open >/dev/null 2>&1; then
+        open "$url"
+    elif command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url"
+    else
+        echo "[open] 未找到浏览器打开命令，请手动访问：$url"
+    fi
+}
+
+cmd_restart() {
+    echo "== 重启 web + daemon =="
+    cmd_stop
+    sleep 1
+    cmd_web
+    cmd_daemon_start
+    echo
+    cmd_status
 }
 
 # ---- 入口 ---------------------------------------------------------------
