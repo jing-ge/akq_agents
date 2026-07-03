@@ -54,6 +54,21 @@
         </div>
       </div>
     </div>
+    <!-- 常驻快捷问题条: 折叠时只显 '💡 常问的问题' 一行, 展开显 chip 网格.
+         用户开聊后仍能随时点开再抛出预设, 不必回到空 empty state 才能用. -->
+    <details class="chat-quick-inline" id="chat-quick-inline">
+      <summary>💡 <span>常问的问题</span> <span class="qq-hint small">点开展开 8 个预设</span></summary>
+      <div class="quick-questions" role="list">
+        <button class="qq" onclick="askQuick(this)">今天的组合里有哪些股票？</button>
+        <button class="qq" onclick="askQuick(this)">现在 NAV 是多少？跑赢沪深300 多少？</button>
+        <button class="qq" onclick="askQuick(this)">今天我该买什么、卖什么？</button>
+        <button class="qq" onclick="askQuick(this)">对比 6-16 和 6-17 的组合变化</button>
+        <button class="qq" onclick="askQuick(this)">momentum_5 这个因子最近是不是在衰减？</button>
+        <button class="qq" onclick="askQuick(this)">前向跟踪 30 / 60 / 90 天的真实表现</button>
+        <button class="qq" onclick="askQuick(this)">最近发现的新因子有哪些？哪些被淘汰了？</button>
+        <button class="qq" onclick="askQuick(this)">现在跑一轮因子发现</button>
+      </div>
+    </details>
     <div class="chat-input">
       <textarea id="chat-input" rows="1" placeholder="输入你的问题，Enter 发送 ｜ Shift+Enter 换行 ｜ ↑ 回放上一条"></textarea>
       <button id="chat-send" onclick="sendMessage()" class="primary" disabled>发送</button>

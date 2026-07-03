@@ -1123,6 +1123,47 @@ button.is-loading::after {
 }
 .chat-input input { flex: 1; }
 
+/* chat 常驻快捷问题 (chat-input 上方 details) */
+.chat-quick-inline {
+  margin: 0 0 6px;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.chat-quick-inline > summary {
+  cursor: pointer;
+  padding: 8px 4px;
+  color: var(--fg-mute);
+  font-size: 12px;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+.chat-quick-inline > summary::-webkit-details-marker { display: none; }
+.chat-quick-inline > summary::before {
+  content: "▸";
+  color: var(--fg-dim);
+  transition: transform 200ms var(--ease-out);
+  display: inline-block;
+}
+.chat-quick-inline[open] > summary::before {
+  transform: rotate(90deg);
+}
+.chat-quick-inline > summary:hover { color: var(--fg); }
+.chat-quick-inline .qq-hint { color: var(--fg-dim); margin-left: auto; }
+.chat-quick-inline[open] .qq-hint { display: none; }
+.chat-quick-inline .quick-questions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px;
+  padding: 6px 0 10px;
+}
+.chat-quick-inline .quick-questions .qq {
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
 /* sessions sidebar entries */
 #sessions-list > div {
   padding: 9px 11px !important;
