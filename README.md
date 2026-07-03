@@ -25,16 +25,16 @@ PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app \
 打开 `/research`，从上到下扫一眼：
 
 1. **顶部数据新鲜度条** —— 一秒确认今日行情/组合/清单是不是最新。
-2. **KPI 总览** —— 6 张卡片：今日 BUY / 今日 SELL / 当日 NAV / 累计超额 / 持仓数 / Shadow 待 demote。
+2. **KPI 总览** —— 6 张卡片：今日 BUY / 今日 SELL / 当日 NAV / 累计超额 / 持仓数 / Shadow 待 demote。NAV 与累计超额卡片右下角有 60 日 sparkline 趋势线（绿=上涨 / 红=下跌 / 灰=持平）。
 3. **"今日待办"结论条** —— 系统把所有信号翻译成**一句话结论 + 直接跳转按钮**：
    - `⚠️ 今日需要调仓：3 买 / 2 卖，共 5 笔待执行` → 点"查看交易清单"
    - `☕ 今日无需调仓 — 组合稳定，可休息` → 点"净值曲线"或"Paper Trading"查看表现
    - `🔧 系统还没有产出今日结果` → 点跳转去 `/ops` 手动触发
-4. **Tab 分组**（4 组）：交易 / 组合 / 因子 / LLM Lab —— 按需要展开对应卡片。
+4. **Tab 分组**（4 组，切到才加载）：交易 / 组合 / 因子 / LLM Lab —— 按需要展开对应卡片。
 5. **右下角 ⌨ 快捷键浮标** —— 点开查看所有快捷键（`g+r/o/d/c/l` 跳转 / `r` 刷新本页 / `/` 聚焦搜索）。
 
 日常两个高频动作：
-- **调仓**：点 KPI 的"今日 BUY / SELL"跳到交易清单，逐条 ✓ 或"📦 全部执行"一键同步 holdings。
+- **调仓**：点 KPI 的"今日 BUY / SELL"跳到交易清单。清单按金额从大到小排，超过 15 条时自动分"Top 10 大额 + 剩余折叠"两段。逐条 ✓ 或"📦 全部执行"（弹窗会显示总买入/卖出金额和净流出，避免盲点）。
 - **审核 AI 因子建议**：/research 页 → LLM Lab tab → "LLM 因子构建建议"卡片，✓ 接受 / ✗ 拒绝。
 
 ## 启动脚本速查
@@ -337,6 +337,7 @@ $PY -m ruff check src/ tests/                        # lint
 | m16 | LLM 闭环（shadow 战况 + 归因诊断 + factor_postmortem + trade_list 闭环） |
 | m17 | alerter 巡检（NAV 异动 / 数据失败 / 因子衰减 → macOS 系统通知） |
 | m18 UX | 用户视角一致性打磨：顶栏品牌 / 主导航按频率排序 / ⌨ 快捷键浮标 / 首次使用引导横幅 / 结论条零操作日友好文案 / start.sh restart+open+help |
+| m19 UX | 深挖高频动作：全部执行前显示总金额+净流出 / 大批量清单按金额排序+Top10+折叠 / Research 页 4-tab 懒加载 (首屏 API 请求 11→3) / KPI 卡片加 60 日 sparkline 趋势线 |
 | m19 | 修 H1+B2 lookahead bias（因子选股必须用 t-1 close）+ min_abs_ir 门槛统一 (builtin/auto/llm 同标准) |
 | m23 | web → daemon 手动触发通道 picker（web 进程零 CPU 消耗） |
 | m24 | user-facing job 结果流（`job_results` 表，前端异步取回） |
