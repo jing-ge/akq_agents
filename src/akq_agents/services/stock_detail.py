@@ -460,6 +460,84 @@ class StockDetailService:
         ]
         return {"symbol": symbol, "days": days, "points": points}
 
+    # ------------------------------------------------------------------ industry peers
+
+    def fetch_industry_peers(self, symbol: str, lookback_days: int = 20) -> dict[str, Any]:
+        """行业相对表现: 同行业所有股票的近 N 日累计涨跌 vs 个股.
+
+        返回:
+        {
+          "symbol": ...,
+          "industry": "有色金属",
+          "peer_count": 87,
+          "lookback_days": 20,
+          "stock_ret_pct": -12.4,       # 个股累计涨跌 %
+          "industry_ret_pct": -8.1,     # 行业中位数累计涨跌 %
+          "rank_in_industry": 62,        # 从涨幅高到低的排名 (1 = 涨最多)
+          "rank_percentile": 71.3,       # 排名分位 (0-100, 100=垫底)
+        }
+
+        无 industry_map / 行业数据不足时返回 { "error": "no_industry_data" }.
+        全本地算 (parquet), 无需网络.
+        """
+        industry = self._lookup_industry(symbol)
+        if industry is None:
+            return {"symbol": symbol, "error": "no_industry_mapping"}
+
+        # 收集同行业 symbols
+        peers = [s for s, ind in self._industry_map.items() if ind == industry]
+        if len(peers) < 3:
+            return {"symbol": symbol, "industry": industry, "error": "insufficient_peers", "peer_count": len(peers)}
+
+        # 拉全体日线 (lookback_days 一点余量)
+        end = date.today()
+        start = end - timedelta(days=int(lookback_days * 1.8) + 10)
+        try:
+            df = self._repo.get_ohlcv_loose(peers, start, end)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("industry_peers get_ohlcv_loose failed: %s", exc)
+            return {"symbol": symbol, "industry": industry, "error": "ohlcv_fetch_failed"}
+        if df is None or df.empty:
+            return {"symbol": symbol, "industry": industry, "error": "empty_ohlcv", "peer_count": len(peers)}
+
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values(["symbol", "date"])
+
+        # 每只算 lookback_days 累计涨跌 % (末 close 相对于起点 close)
+        rets: dict[str, float] = {}
+        for sym, group in df.groupby("symbol"):
+            closes = group["close"].values
+            if len(closes) < 2:
+                continue
+            first = float(closes[0])
+            last = float(closes[-1])
+            if first <= 0:
+                continue
+            rets[str(sym)] = (last - first) / first * 100.0
+
+        if len(rets) < 3:
+            return {"symbol": symbol, "industry": industry, "error": "insufficient_ret_data", "peer_count": len(rets)}
+
+        stock_ret = rets.get(str(symbol))
+        if stock_ret is None:
+            return {"symbol": symbol, "industry": industry, "error": "stock_not_in_ret_data", "peer_count": len(rets)}
+
+        rets_list = sorted(rets.values(), reverse=True)  # 从大到小 (第 1 名 = 涨最多)
+        industry_median = float(pd.Series(rets_list).median())
+        rank = rets_list.index(stock_ret) + 1  # 1-indexed
+        rank_pct = (rank - 1) / (len(rets_list) - 1) * 100 if len(rets_list) > 1 else 0.0
+
+        return {
+            "symbol": symbol,
+            "industry": industry,
+            "peer_count": len(rets),
+            "lookback_days": lookback_days,
+            "stock_ret_pct": stock_ret,
+            "industry_ret_pct": industry_median,
+            "rank_in_industry": rank,
+            "rank_percentile": rank_pct,
+        }
+
     # ------------------------------------------------------------------ search
 
     def search(self, query: str, limit: int = 8) -> list[dict[str, str]]:

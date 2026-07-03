@@ -126,6 +126,21 @@ async def get_intraday(
         }
 
 
+@router.get("/peers/{symbol}")
+async def get_industry_peers(
+    symbol: str,
+    lookback_days: int = Query(default=20, ge=5, le=250),
+) -> dict[str, Any]:
+    """行业相对表现: 同行业股票的近 N 日累计涨跌 vs 个股.
+
+    全本地算 (parquet), 无需网络. 返回 industry / peer_count / stock_ret_pct /
+    industry_ret_pct / rank_in_industry / rank_percentile. 详见 fetch_industry_peers.
+    """
+    symbol = _clean_symbol(symbol)
+    service = _get_service()
+    return service.fetch_industry_peers(symbol, lookback_days=lookback_days)
+
+
 class AnalyzeRequest(BaseModel):
     period_context: str = "D"
     model: str | None = None

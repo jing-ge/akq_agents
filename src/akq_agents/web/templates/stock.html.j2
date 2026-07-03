@@ -144,6 +144,7 @@ let currentMode = { mode: 'kline', period: 'D' };
 let currentKlineData = null;
 let currentIntradayData = null;
 let currentOverview = null;  // 最近一次 overview response (quick 或 full), 供 AI 数据结论用
+let currentPeers = null;     // 行业对比数据 (全本地算, K 线拉完后拉一次)
 
 // ---------------------------------------------------------------
 // 生命周期
@@ -153,6 +154,7 @@ window.addEventListener('load', () => {
   document.getElementById('link-xueqiu').href = 'https://xueqiu.com/S/' + guessMarket(STOCK_SYMBOL).toUpperCase() + STOCK_SYMBOL;
   loadOverview();
   loadKline('D');
+  loadPeers();  // 行业相对表现 (全本地算, 只拉一次, 常驻结论卡用)
   bindTabs();
 });
 
@@ -161,6 +163,7 @@ window.addEventListener('hotkey:refresh', () => {
   loadOverview();
   if (currentMode.mode === 'kline') loadKline(currentMode.period);
   else loadIntraday(currentMode.days);
+  loadPeers();
   if (typeof toast === 'function') toast('已刷新', 'ok', { duration: 1200 });
 });
 
@@ -177,6 +180,20 @@ function guessMarket(sym) {
 //   2) full (无参数)   - 走全套 akshare - 慢, 后台并行拉, 回来后覆盖 quick 的近似值
 // 两段都走 renderHero, 后到者覆盖前到者 (full 有 quick 的所有字段 + 更多).
 // ---------------------------------------------------------------
+async function loadPeers() {
+  // 行业相对表现: 同行业股票近 20 日累计涨跌 vs 个股. 全本地算, 无需网络.
+  // 拿到就更新数据结论卡. 失败静默 (log 一下), 不打扰用户.
+  try {
+    const r = await fetch('/api/stock/peers/' + STOCK_SYMBOL + '?lookback_days=20');
+    if (!r.ok) return;
+    const d = await r.json();
+    currentPeers = d;
+    refreshInsightsPanel();
+  } catch (e) {
+    console.warn('peers 加载失败:', e);
+  }
+}
+
 async function loadOverview() {
   // quick: 立即出首屏可见的部分字段
   const quickPromise = fetch('/api/stock/overview/' + STOCK_SYMBOL + '?fast=1')
@@ -734,7 +751,7 @@ function refreshInsightsPanel() {
     return;
   }
   el.style.display = '';
-  el.innerHTML = buildQuickInsightsCard(currentOverview, currentKlineData);
+  el.innerHTML = buildQuickInsightsCard(currentOverview, currentKlineData, currentPeers);
 }
 
 // AI 数据结论卡: 展开 AI 面板时, 在 LLM 请求出结果前先展示这一卡结构化结论,
@@ -744,7 +761,8 @@ function refreshInsightsPanel() {
 //   - 近期表现: 最近 5/20/60 日累计涨跌 %
 //   - 成交动能: 最近 5 日平均量 vs 20 日均量 → 放量/缩量
 //   - 市值分档: 总市值 → 大盘/中盘/小盘 (按 300 亿 / 100 亿 门槛)
-function buildQuickInsightsCard(overview, kline) {
+//   - 行业对比: 个股 vs 行业中位数 20 日累计涨跌
+function buildQuickInsightsCard(overview, kline, peers) {
   const rows = [];  // 每行: {label, value, verdict, cls}
 
   // ==== 1. 估值位置 ====
@@ -854,6 +872,32 @@ function buildQuickInsightsCard(overview, kline) {
     else if (cap > 1e10) verdict = '<b class="qi-cheap">中小盘 (100-300 亿)</b>';
     else verdict = '<b class="qi-expensive">小盘股 (<100 亿)</b>';
     rows.push({ label: '市值分档', value: '总市值 ' + (cap / 1e8).toFixed(1) + ' 亿', verdict });
+  }
+
+  // ==== 6. 行业相对表现 (个股近 20 日 vs 同行业中位数) ====
+  if (peers && !peers.error && peers.stock_ret_pct != null && peers.industry_ret_pct != null) {
+    const stockR = peers.stock_ret_pct;
+    const indR = peers.industry_ret_pct;
+    const diff = stockR - indR;
+    const rankPct = peers.rank_percentile;  // 0=涨最多, 100=垫底
+    const clsR = (v) => v > 0 ? 'qi-pricey' : v < 0 ? 'qi-cheap' : 'qi-mid';
+    const sign = (v) => v > 0 ? '+' : '';
+    let verdict;
+    if (diff > 5) verdict = '<b class="qi-pricey">显著跑赢行业 (+' + diff.toFixed(1) + '%)</b>';
+    else if (diff > 1) verdict = '<b class="qi-lowish">小幅跑赢 (+' + diff.toFixed(1) + '%)</b>';
+    else if (diff > -1) verdict = '<span class="qi-mid">与行业同步 (' + (diff >= 0 ? '+' : '') + diff.toFixed(1) + '%)</span>';
+    else if (diff > -5) verdict = '<b class="qi-cheap">小幅跑输 (' + diff.toFixed(1) + '%)</b>';
+    else verdict = '<b class="qi-expensive">显著跑输行业 (' + diff.toFixed(1) + '%)</b>';
+    const rankText = rankPct != null
+      ? ` · 排名 ${peers.rank_in_industry}/${peers.peer_count} (前 ${(100 - rankPct).toFixed(0)}%)`
+      : '';
+    rows.push({
+      label: '行业对比',
+      value: `个股 <b class="${clsR(stockR)}">${sign(stockR)}${stockR.toFixed(1)}%</b>`
+        + ` vs ${peers.industry || '行业'}中位数 <b class="${clsR(indR)}">${sign(indR)}${indR.toFixed(1)}%</b>`
+        + rankText,
+      verdict,
+    });
   }
 
   if (rows.length === 0) {
