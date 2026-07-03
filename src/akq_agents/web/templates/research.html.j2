@@ -20,11 +20,13 @@
     <span class="kpi-tile-lbl">当日 NAV</span>
     <span class="kpi-tile-val" id="kpi-nav-val">—</span>
     <span class="kpi-tile-sub" id="kpi-nav-sub">—</span>
+    <svg class="kpi-spark" id="kpi-nav-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
   </button>
   <button class="kpi-tile kpi-primary" type="button" data-target="nav-card" title="累计超额收益 vs 沪深300">
     <span class="kpi-tile-lbl">累计超额</span>
     <span class="kpi-tile-val" id="kpi-excess-val">—</span>
-    <span class="kpi-tile-sub">vs 沪深300</span>
+    <span class="kpi-tile-sub" id="kpi-excess-sub">vs 沪深300</span>
+    <svg class="kpi-spark" id="kpi-excess-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
   </button>
   <button class="kpi-tile kpi-secondary" type="button" data-target="portfolio-card" title="今日推荐组合的持仓数">
     <span class="kpi-tile-lbl">持仓数</span>
@@ -1473,6 +1475,35 @@ function setupKpiOverview() {
   });
 }
 
+// KPI sparkline 渲染: 把序列转成 SVG polyline. 简单实现, 不依赖 echarts.
+// 尾点 dot + 线色跟趋势方向 (末点 vs 首点上涨 → 绿, 下跌 → 红, 持平 → 灰).
+function renderSparkline(elId, series) {
+  const el = document.getElementById(elId);
+  if (!el || !series || series.length < 2) return;
+  const min = Math.min(...series);
+  const max = Math.max(...series);
+  const range = max - min || 1e-9;
+  const W = 100, H = 24, pad = 2;
+  const step = (W - pad * 2) / Math.max(1, series.length - 1);
+  const pts = series.map((v, i) => {
+    const x = pad + i * step;
+    const y = H - pad - ((v - min) / range) * (H - pad * 2);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  const first = series[0], last = series[series.length - 1];
+  const trend = last - first;
+  const trendColor = Math.abs(trend) < range * 0.01
+    ? 'var(--fg-dim)'
+    : (trend >= 0 ? 'var(--ok)' : 'var(--err)');
+  const lastX = pad + (series.length - 1) * step;
+  const lastY = H - pad - ((last - min) / range) * (H - pad * 2);
+  el.innerHTML = `
+    <polyline points="${pts}" fill="none" stroke="${trendColor}" stroke-width="1.4"
+      stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>
+    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="1.6" fill="${trendColor}"/>
+  `;
+}
+
 async function loadKpiOverview() {
   // 并行拉所有数据源；任何一个失败仅 fallback 显示 "—"
   const tasks = [
@@ -1531,6 +1562,17 @@ async function loadKpiOverview() {
       setVal('kpi-excess-val', `${sign}${(excess * 100).toFixed(2)}%`, `对齐 ${lastAligned.date.slice(5)}`,
              excess >= 0 ? 'metric-good' : 'metric-bad');
     }
+    // KPI sparkline — 用最近 60 个点画迷你趋势线, 帮用户一眼感受走势
+    // (只画 nav 和 excess 两条, 因为 buy/sell/portfolio 数是离散的当日快照, 无历史轴)
+    try {
+      const tail = navD.nav.slice(-60);
+      const navSeries = tail.map(p => p.nav_net).filter(v => v != null);
+      renderSparkline('kpi-nav-spark', navSeries);
+      const excessSeries = tail
+        .filter(p => p.nav_net != null && p.benchmark_nav != null)
+        .map(p => p.nav_net - p.benchmark_nav);
+      renderSparkline('kpi-excess-spark', excessSeries);
+    } catch (e) { /* sparkline 失败不影响主流程 */ }
   } else {
     // NAV 数据为空：灰化 + 显示原因摘要
     const reason = navD && navD.summary && navD.summary.reason

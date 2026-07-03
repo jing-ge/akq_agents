@@ -1397,6 +1397,17 @@ button.danger:hover {
   font-variant-numeric: tabular-nums;
   margin-top: 1px;
 }
+.kpi-overview .kpi-spark {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 62px;
+  height: 20px;
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease-out);
+}
+.kpi-overview .kpi-tile:hover .kpi-spark { opacity: 0.9; }
 .kpi-overview .kpi-tile.is-flash::before {
   animation: kpi-flash 1100ms ease-out;
 }
