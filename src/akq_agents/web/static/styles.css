@@ -3584,6 +3584,60 @@ tbody tr:hover td { background: var(--accent-soft); transition: background 120ms
 .ma-badge.below .ma-badge-diff { color: var(--ok); }
 .ma-badge.flat  { }  /* 差异 <0.5% 保持中性 */
 
+/* ==== AI 面板数据结论卡 (LLM 前先展示的本地结构化结论) ==================== */
+.quick-insights-card {
+  padding: 12px 14px;
+  background: rgba(94, 234, 212, 0.03);
+  border: 1px solid rgba(94, 234, 212, 0.2);
+  border-radius: var(--r-md);
+  margin-bottom: 10px;
+}
+.qi-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.qi-subtitle {
+  font-weight: 400;
+  color: var(--fg-mute);
+  font-size: 11px;
+  margin-left: 4px;
+}
+.qi-hint { color: var(--fg-mute); font-size: 12px; padding: 8px 0; }
+.qi-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.qi-table td {
+  padding: 5px 8px 5px 0;
+  vertical-align: top;
+  line-height: 1.5;
+}
+.qi-table tr + tr td { border-top: 1px dashed rgba(255,255,255,0.06); }
+.qi-label {
+  color: var(--fg-mute);
+  font-weight: 600;
+  width: 78px;
+  white-space: nowrap;
+}
+.qi-value {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.qi-verdict {
+  text-align: right;
+  white-space: nowrap;
+  padding-left: 8px;
+}
+/* 结论词着色 (A 股: 红涨绿跌; 便宜=绿=ok, 贵=红=err) */
+.qi-cheap { color: var(--ok); font-weight: 600; }        /* 显著低估 / 空头排列 / 下跌 */
+.qi-lowish { color: rgb(163, 230, 216); font-weight: 600; }  /* 偏便宜 */
+.qi-mid { color: var(--fg); }                            /* 中位 / 震荡 */
+.qi-pricey { color: rgb(248, 155, 155); font-weight: 600; }  /* 偏贵 / 多头 / 上涨 */
+.qi-expensive { color: var(--err); font-weight: 600; }   /* 显著高估 / 空头 */
+
 .stock-missing-banner {
   padding: 14px 18px;
   background: var(--bg-2);

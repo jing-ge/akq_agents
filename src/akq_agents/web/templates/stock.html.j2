@@ -138,6 +138,7 @@ const STOCK_SYMBOL = "{{ symbol }}";
 let currentMode = { mode: 'kline', period: 'D' };
 let currentKlineData = null;
 let currentIntradayData = null;
+let currentOverview = null;  // 最近一次 overview response (quick 或 full), 供 AI 数据结论用
 
 // ---------------------------------------------------------------
 // 生命周期
@@ -175,7 +176,7 @@ async function loadOverview() {
   // quick: 立即出首屏可见的部分字段
   const quickPromise = fetch('/api/stock/overview/' + STOCK_SYMBOL + '?fast=1')
     .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-    .then(d => { renderHero(d, { partial: true }); return d; })
+    .then(d => { currentOverview = d; renderHero(d, { partial: true }); return d; })
     .catch(e => {
       console.warn('overview quick 失败:', e);
       return null;  // quick 失败不阻断 full, 让 full 兜底
@@ -184,7 +185,7 @@ async function loadOverview() {
   // full: 并行拉全套 (慢), 回来后覆盖 quick
   const fullPromise = fetch('/api/stock/overview/' + STOCK_SYMBOL)
     .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-    .then(d => { renderHero(d, { partial: false }); return d; })
+    .then(d => { currentOverview = d; renderHero(d, { partial: false }); return d; })
     .catch(e => {
       if (typeof toast === 'function') toast('overview 加载失败: ' + e.message, 'error');
       return null;
@@ -717,6 +718,142 @@ function renderMaBadges(kline) {
   badgesEl.innerHTML = html.join('');
 }
 
+// AI 数据结论卡: 展开 AI 面板时, 在 LLM 请求出结果前先展示这一卡结构化结论,
+// 用户第一秒就有可读内容. 全部本地算, 不请求任何后端.
+//   - 估值位置: PE/PB 5y 分位 → 便宜/中位/偏贵
+//   - 均线位置: 现价 vs MA5/20/60/120 → 多头/空头位置
+//   - 近期表现: 最近 5/20/60 日累计涨跌 %
+//   - 成交动能: 最近 5 日平均量 vs 20 日均量 → 放量/缩量
+//   - 市值分档: 总市值 → 大盘/中盘/小盘 (按 300 亿 / 100 亿 门槛)
+function buildQuickInsightsCard(overview, kline) {
+  const rows = [];  // 每行: {label, value, verdict, cls}
+
+  // ==== 1. 估值位置 ====
+  if (overview) {
+    const pe = overview.pe_ratio;
+    const pePct = overview.pe_percentile_5y;
+    const pb = overview.pb_ratio;
+    const pbPct = overview.pb_percentile_5y;
+    const verdictOf = (pct) => pct == null ? '—' :
+      pct < 20 ? '<b class="qi-cheap">显著低估</b>' :
+      pct < 40 ? '<b class="qi-lowish">偏便宜</b>' :
+      pct < 60 ? '<span class="qi-mid">中位</span>' :
+      pct < 80 ? '<b class="qi-pricey">偏贵</b>' :
+                 '<b class="qi-expensive">显著高估</b>';
+    if (pe != null || pb != null) {
+      const parts = [];
+      if (pe != null) parts.push('PE ' + pe.toFixed(2) + (pePct != null ? ` (5y 分位 ${pePct.toFixed(0)}%)` : ''));
+      if (pb != null) parts.push('PB ' + pb.toFixed(2) + (pbPct != null ? ` (5y 分位 ${pbPct.toFixed(0)}%)` : ''));
+      // 综合判定用 pe/pb 分位平均
+      let combined = null;
+      if (pePct != null && pbPct != null) combined = (pePct + pbPct) / 2;
+      else if (pePct != null) combined = pePct;
+      else if (pbPct != null) combined = pbPct;
+      rows.push({ label: '估值位置', value: parts.join(' · '), verdict: verdictOf(combined) });
+    }
+  }
+
+  // ==== 2. 均线位置 (需要日线 kline) ====
+  if (kline && ['D', 'W', 'M', 'Y'].includes(kline.period) && kline.bars && kline.bars.length >= 20) {
+    const closes = kline.bars.map(b => Number(b.c)).filter(x => !isNaN(x));
+    const cur = closes[closes.length - 1];
+    const maAt = (w) => {
+      if (closes.length < w) return null;
+      const s = closes.slice(-w);
+      return s.reduce((a, b) => a + b, 0) / w;
+    };
+    const above = [5, 10, 20, 60].map(w => {
+      const ma = maAt(w);
+      return ma != null && cur > ma;
+    });
+    const nAbove = above.filter(Boolean).length;
+    let verdict;
+    if (nAbove === 4) verdict = '<b class="qi-pricey">多头排列 (站上全部主要均线)</b>';
+    else if (nAbove === 0) verdict = '<b class="qi-cheap">空头排列 (跌破全部主要均线)</b>';
+    else if (nAbove >= 3) verdict = '<b class="qi-lowish">偏多 (' + nAbove + '/4 站上)</b>';
+    else if (nAbove >= 2) verdict = '<span class="qi-mid">震荡 (' + nAbove + '/4 站上)</span>';
+    else verdict = '<b class="qi-expensive">偏空 (' + nAbove + '/4 站上)</b>';
+    const parts = [];
+    for (const w of [5, 20, 60]) {
+      const ma = maAt(w);
+      if (ma != null) parts.push(`MA${w} ${ma.toFixed(2)}`);
+    }
+    rows.push({ label: '均线位置', value: '现价 ' + cur.toFixed(2) + ' · ' + parts.join(' · '), verdict });
+  }
+
+  // ==== 3. 近期表现 ====
+  if (kline && ['D', 'W', 'M', 'Y'].includes(kline.period) && kline.bars && kline.bars.length >= 5) {
+    const closes = kline.bars.map(b => Number(b.c)).filter(x => !isNaN(x));
+    const cur = closes[closes.length - 1];
+    const chgPct = (n) => {
+      if (closes.length < n + 1) return null;
+      const past = closes[closes.length - 1 - n];
+      return (cur - past) / past * 100;
+    };
+    const p5 = chgPct(5), p20 = chgPct(20), p60 = chgPct(60);
+    const parts = [];
+    const cls = (v) => v == null ? '' : v > 0 ? 'qi-pricey' : v < 0 ? 'qi-cheap' : 'qi-mid';
+    const fmt = (v) => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+    parts.push(`近 5 日 <b class="${cls(p5)}">${fmt(p5)}</b>`);
+    parts.push(`近 20 日 <b class="${cls(p20)}">${fmt(p20)}</b>`);
+    parts.push(`近 60 日 <b class="${cls(p60)}">${fmt(p60)}</b>`);
+    let verdict;
+    const p = p20 == null ? p5 : p20;
+    if (p == null) verdict = '—';
+    else if (p > 20) verdict = '<b class="qi-pricey">强势上涨</b>';
+    else if (p > 5) verdict = '<b class="qi-lowish">温和上涨</b>';
+    else if (p > -5) verdict = '<span class="qi-mid">震荡</span>';
+    else if (p > -20) verdict = '<b class="qi-cheap">温和下跌</b>';
+    else verdict = '<b class="qi-expensive">大幅下跌</b>';
+    rows.push({ label: '近期表现', value: parts.join(' · '), verdict });
+  }
+
+  // ==== 4. 成交动能 ====
+  if (kline && ['D'].includes(kline.period) && kline.bars && kline.bars.length >= 20) {
+    const vols = kline.bars.map(b => Number(b.v)).filter(x => !isNaN(x) && x > 0);
+    if (vols.length >= 20) {
+      const v5 = vols.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const v20 = vols.slice(-20).reduce((a, b) => a + b, 0) / 20;
+      const ratio = v5 / v20;
+      let verdict;
+      if (ratio > 1.5) verdict = '<b class="qi-pricey">显著放量 (' + ratio.toFixed(2) + 'x)</b>';
+      else if (ratio > 1.15) verdict = '<b class="qi-lowish">温和放量 (' + ratio.toFixed(2) + 'x)</b>';
+      else if (ratio < 0.7) verdict = '<b class="qi-cheap">显著缩量 (' + ratio.toFixed(2) + 'x)</b>';
+      else if (ratio < 0.85) verdict = '<span class="qi-mid">温和缩量 (' + ratio.toFixed(2) + 'x)</span>';
+      else verdict = '<span class="qi-mid">量能平稳 (' + ratio.toFixed(2) + 'x)</span>';
+      rows.push({ label: '成交动能', value: '近 5 日均量 vs 近 20 日均量', verdict });
+    }
+  }
+
+  // ==== 5. 市值分档 ====
+  if (overview && overview.market_cap != null) {
+    const cap = overview.market_cap;
+    let verdict;
+    if (cap > 3e11) verdict = '<b class="qi-pricey">大盘股 (>3000 亿)</b>';
+    else if (cap > 1e11) verdict = '<b class="qi-lowish">大盘股 (1000-3000 亿)</b>';
+    else if (cap > 3e10) verdict = '<span class="qi-mid">中盘股 (300-1000 亿)</span>';
+    else if (cap > 1e10) verdict = '<b class="qi-cheap">中小盘 (100-300 亿)</b>';
+    else verdict = '<b class="qi-expensive">小盘股 (<100 亿)</b>';
+    rows.push({ label: '市值分档', value: '总市值 ' + (cap / 1e8).toFixed(1) + ' 亿', verdict });
+  }
+
+  if (rows.length === 0) {
+    return '<div class="qi-hint">数据加载中, 请稍候…</div>';
+  }
+  let html = '<div class="quick-insights-card">'
+    + '<div class="qi-title">📊 数据结论 <span class="qi-subtitle">(本地即时算, LLM 综合判断稍后追加)</span></div>'
+    + '<table class="qi-table"><tbody>';
+  for (const r of rows) {
+    html += `<tr>
+      <td class="qi-label">${r.label}</td>
+      <td class="qi-value">${r.value}</td>
+      <td class="qi-verdict">${r.verdict}</td>
+    </tr>`;
+  }
+  html += '</tbody></table></div>';
+  return html;
+}
+
 function fmtNum(v, digits) {
   if (v === null || v === undefined) return '-';
   const n = parseFloat(v);
@@ -814,16 +951,21 @@ async function startAnalyze() {
   const body = document.getElementById('ai-content');
   const period = currentMode.mode === 'kline' ? currentMode.period : 'D';
 
-  body.innerHTML =
-    '<div class="stock-ai-loading">'
+  // 1) 先塞'数据结论卡'(本地立即算, 无需等 LLM). 用户展开面板第一秒
+  //    就有 5-6 条结构化基本面速览可读, 不再对着 spinner 干等.
+  const quickCard = buildQuickInsightsCard(currentOverview, currentKlineData);
+  const loadingCard =
+    '<div class="stock-ai-loading" id="ai-loading-placeholder">'
     + '<span class="lo-spinner"></span>'
-    + '<span>AI 正在分析 ' + escapeHtml(STOCK_SYMBOL) + '，大约需要 20-60 秒…</span>'
+    + '<span>AI 综合判断生成中, 大约需要 20-60 秒…</span>'
     + '</div>';
+  body.innerHTML = quickCard + loadingCard;
+
   const startTs = Date.now();
-  const tickerEl = body.querySelector('.stock-ai-loading span:last-child');
+  const tickerEl = body.querySelector('#ai-loading-placeholder span:last-child');
   const ticker = setInterval(() => {
     const s = Math.floor((Date.now() - startTs) / 1000);
-    tickerEl.textContent = 'AI 正在分析 ' + STOCK_SYMBOL + '，已用时 ' + s + ' 秒…';
+    if (tickerEl) tickerEl.textContent = 'AI 综合判断生成中, 已用时 ' + s + ' 秒…';
   }, 1000);
 
   try {
@@ -857,12 +999,17 @@ async function startAnalyze() {
 }
 
 function renderAnalyzeResult(d) {
+  // 不覆盖 quickCard, 只替换 loading placeholder 为 LLM 结果
   const body = document.getElementById('ai-content');
-  body.innerHTML = '';
-  const first = document.createElement('div');
-  first.className = 'ai-turn ai-turn-assistant';
-  first.innerHTML = renderMarkdown(d.content || '');
-  body.appendChild(first);
+  const placeholder = document.getElementById('ai-loading-placeholder');
+  const asstTurn = document.createElement('div');
+  asstTurn.className = 'ai-turn ai-turn-assistant';
+  asstTurn.innerHTML = renderMarkdown(d.content || '');
+  if (placeholder) {
+    placeholder.replaceWith(asstTurn);
+  } else {
+    body.appendChild(asstTurn);
+  }
   body.scrollTop = body.scrollHeight;
 }
 
