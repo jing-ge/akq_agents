@@ -3535,6 +3535,55 @@ tbody tr:hover td { background: var(--accent-soft); transition: background 120ms
 .hg-pct-bar-label.mid { color: var(--fg); }
 .hg-pct-bar-label.high { color: var(--err); }   /* >70% */
 
+/* ==== 均线速览条 (K 线下方一行, 显示现价 vs MA5/10/20/60/120) ============ */
+.stock-ma-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-size: 12px;
+}
+.ma-strip-label {
+  font-weight: 600;
+  color: var(--fg-mute);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.ma-strip-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+.ma-strip-hint {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+.ma-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.ma-badge-name { color: var(--fg-mute); font-weight: 600; }
+.ma-badge-val { color: var(--fg); }
+.ma-badge-diff { font-size: 11px; padding-left: 4px; border-left: 1px solid var(--line); }
+/* 站上均线 (多头): 红 (A 股); 跌破均线: 绿 */
+.ma-badge.above { border-color: rgba(248, 113, 113, 0.4); background: rgba(248, 113, 113, 0.08); }
+.ma-badge.above .ma-badge-diff { color: var(--err); }
+.ma-badge.below { border-color: rgba(94, 234, 212, 0.4); background: rgba(94, 234, 212, 0.06); }
+.ma-badge.below .ma-badge-diff { color: var(--ok); }
+.ma-badge.flat  { }  /* 差异 <0.5% 保持中性 */
+
 .stock-missing-banner {
   padding: 14px 18px;
   background: var(--bg-2);

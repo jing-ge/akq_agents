@@ -85,6 +85,15 @@
     <div id="stock-chart" class="stock-chart"></div>
   </div>
 
+  <!-- ================ 均线速览条 (本地日线算, K线加载完就出) ================ -->
+  <!-- 一眼看清'现价在哪根均线上/下' → 多空位置 -->
+  <div class="stock-ma-strip" id="ma-strip">
+    <span class="ma-strip-label">均线位置</span>
+    <div class="ma-strip-badges" id="ma-strip-badges">
+      <span class="ma-strip-hint">切到日/周/月 K 后自动计算</span>
+    </div>
+  </div>
+
   <!-- ================ 周期切换 ================ -->
   <div class="stock-period-tabs" id="period-tabs">
     <button data-mode="intraday" data-days="1">分时</button>
@@ -302,6 +311,7 @@ async function loadKline(period) {
     currentKlineData = d;
     renderMissingBanner(d.bars.length === 0 && ['D', 'W', 'M', 'Y'].includes(period));
     renderStockKline(d);
+    renderMaBadges(d);  // 均线速览条 (本地算, 秒出)
   } catch (e) {
     if (typeof toast === 'function') toast('K 线加载失败: ' + e.message, 'error');
     console.error(e);
@@ -334,6 +344,7 @@ async function loadIntraday(days) {
     }
     currentIntradayData = d;
     renderIntraday(d);
+    renderMaBadges({ period: 'intraday' });  // 切到分时时给出'非日 K 无均线'提示
   } catch (e) {
     if (typeof toast === 'function') toast('分时数据加载失败: ' + e.message, 'error');
     console.error(e);
@@ -656,6 +667,54 @@ function fillPctBar(fillId, labelId, pct) {
   fillEl.style.width = clamped.toFixed(0) + '%';
   labelEl.textContent = clamped.toFixed(0) + '%';
   labelEl.className = 'hg-pct-bar-label ' + (clamped < 30 ? 'low' : clamped > 70 ? 'high' : 'mid');
+}
+
+// 均线速览条: K 线加载后, 用最后一根 close 对比 MA5/10/20/60/120 位置.
+//   - 本地算, 无需网络.
+//   - 分钟 K / 分时 场景下 bar 是分钟, 均线含义会变 (改成'近 N 分钟均线'),
+//     所以只在日/周/月/年 K 时渲染, 其它周期 hint '切到日 K 后自动计算'.
+function renderMaBadges(kline) {
+  const badgesEl = document.getElementById('ma-strip-badges');
+  if (!badgesEl) return;
+  const period = (kline && kline.period) || '';
+  const isDaily = ['D', 'W', 'M', 'Y'].includes(period);
+  if (!isDaily) {
+    badgesEl.innerHTML = '<span class="ma-strip-hint">切到日/周/月/年 K 后自动计算</span>';
+    return;
+  }
+  const bars = (kline && kline.bars) || [];
+  if (bars.length < 5) {
+    badgesEl.innerHTML = '<span class="ma-strip-hint">bars 不足, 无法算均线</span>';
+    return;
+  }
+  const closes = bars.map(b => Number(b.c)).filter(c => !isNaN(c));
+  if (closes.length < 5) {
+    badgesEl.innerHTML = '<span class="ma-strip-hint">收盘价数据不足</span>';
+    return;
+  }
+  const current = closes[closes.length - 1];
+  const windows = [5, 10, 20, 60, 120];
+  const html = [];
+  for (const w of windows) {
+    if (closes.length < w) continue;  // 数据不够跳过
+    const slice = closes.slice(-w);
+    const ma = slice.reduce((a, b) => a + b, 0) / w;
+    const diffPct = ((current - ma) / ma) * 100;
+    const dir = diffPct > 0.5 ? 'above' : diffPct < -0.5 ? 'below' : 'flat';
+    const sign = diffPct >= 0 ? '+' : '';
+    html.push(
+      `<span class="ma-badge ${dir}" title="MA${w} = ${ma.toFixed(2)}, 现价${dir === 'above' ? '站上' : dir === 'below' ? '跌破' : '贴近'}此均线">`
+      + `<span class="ma-badge-name">MA${w}</span>`
+      + `<span class="ma-badge-val">${ma.toFixed(2)}</span>`
+      + `<span class="ma-badge-diff">${sign}${diffPct.toFixed(1)}%</span>`
+      + `</span>`
+    );
+  }
+  if (html.length === 0) {
+    badgesEl.innerHTML = '<span class="ma-strip-hint">bars 不足 5 根, 无均线</span>';
+    return;
+  }
+  badgesEl.innerHTML = html.join('');
 }
 
 function fmtNum(v, digits) {
