@@ -279,6 +279,38 @@
 }
 .cc-summary .kv-k { color: var(--fg-dim); }
 .cc-summary .kv-v { color: var(--fg); }
+/* 长任务实时进度条 (job_steps → console) */
+.cc-steps {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.6;
+}
+.cc-steps .cc-steps-lbl { color: var(--fg-dim); margin-right: 4px; }
+.cc-steps .cc-steps-sep { color: var(--fg-dim); opacity: 0.6; }
+.cc-steps .step-done {
+  color: var(--fg-mute);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(52, 211, 153, 0.08);
+}
+.cc-steps .step-current {
+  color: var(--info);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--info-soft);
+  animation: cc-step-pulse 1.4s ease-in-out infinite;
+}
+@keyframes cc-step-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
 .cc-details {
   margin-top: 8px;
   font-size: 11px;
@@ -491,11 +523,36 @@ async function doAction(btn, url, method) {
     if (rawStatus === 'accepted' && data.payload && data.payload.poll_url) {
       renderConsole({ kind: 'busy', title: '已入队，daemon 执行中… ' + title });
       const finalD = await pollJobRunUntilDone(data, {
-        onTick: (pd, sec) => renderConsole({
-          kind: 'busy',
-          title: `执行中 ${title}`,
-          summaryHtml: `<span class="kv-k">状态:</span> <span class="kv-v">${escapeHtml(pd.status || 'running')}</span>  ｜  <span class="kv-k">已耗时:</span> <span class="kv-v">${sec}</span> 秒`,
-        }),
+        onTick: (pd, sec) => {
+          // 长任务(1-15 分钟)时用户对着 spinner 干等信息量为 0. 从 job_steps 里取
+          // 已完成 + 正在跑的最后一步 name, 拼成 '拉数据 → 跑因子 → [ 生成组合… ]'
+          // 这样即使还没跑完, 用户也知道当前进度和已花时间, 避免焦虑.
+          const steps = (pd && pd.steps) || [];
+          let stepBar = '';
+          if (steps.length > 0) {
+            const done = steps.filter(s => s.status === 'ok' || s.status === 'success' || s.finished_at).length;
+            const inProg = steps.length > done ? steps[done] : null;
+            const parts = [];
+            for (let i = 0; i < done; i++) {
+              parts.push(`<span class="step-done" title="已完成: ${escapeHtml(steps[i].name)}${steps[i].duration_ms ? ' ('+steps[i].duration_ms+'ms)' : ''}">✓ ${escapeHtml(steps[i].name)}</span>`);
+            }
+            if (inProg) {
+              parts.push(`<span class="step-current" title="当前步骤: ${escapeHtml(inProg.name)}">▶ ${escapeHtml(inProg.name)}…</span>`);
+            }
+            if (parts.length > 0) {
+              stepBar = `<div class="cc-steps"><span class="cc-steps-lbl">进度:</span> ${parts.join(' <span class="cc-steps-sep">→</span> ')}</div>`;
+            }
+          }
+          renderConsole({
+            kind: 'busy',
+            title: `执行中 ${title}`,
+            summaryHtml:
+              `<span class="kv-k">状态:</span> <span class="kv-v">${escapeHtml(pd.status || 'running')}</span>  ｜  ` +
+              `<span class="kv-k">已耗时:</span> <span class="kv-v">${sec}</span> 秒` +
+              (steps.length > 0 ? `  ｜  <span class="kv-k">步骤:</span> <span class="kv-v">${steps.filter(s => s.finished_at).length} / ${steps.length}</span>` : '') +
+              stepBar,
+          });
+        },
       });
       data = finalD || { status: 'timeout' };
     }
