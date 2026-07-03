@@ -131,6 +131,46 @@ def test_overview_short_symbol_400(client, stock_service_stub) -> None:
     assert r.status_code == 400
 
 
+def test_overview_fast_calls_quick(client, stock_service_stub) -> None:
+    """?fast=1 应该走 fetch_overview_quick, 不碰 fetch_overview (它会拉 akshare 慢接口)."""
+    from akq_agents.services.stock_detail import StockOverview
+
+    stock_service_stub.fetch_overview_quick.return_value = StockOverview(
+        symbol="002131", name="利欧股份", industry=None, industry_pct_change=None,
+        market_cap=None, pe_ratio=None, pb_ratio=None, listing_date="2011-01-27",
+        quote={"since_listing_pct": 15.5},
+        as_of="2026-07-03T15:00:00",
+        degraded_fields=["quote", "industry", "market_cap", "industry_pct_change", "pe_ratio", "pb_ratio"],
+    )
+    r = client.get("/api/stock/overview/002131?fast=1")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["name"] == "利欧股份"
+    assert d["listing_date"] == "2011-01-27"
+    # quote 只有 since_listing_pct, 其它字段等 full 补
+    assert d["quote"] == {"since_listing_pct": 15.5}
+    # 关键: 慢方法一定没被调 (否则 fast 就没意义了)
+    stock_service_stub.fetch_overview_quick.assert_called_once_with("002131")
+    stock_service_stub.fetch_overview.assert_not_called()
+
+
+def test_overview_no_fast_calls_full(client, stock_service_stub) -> None:
+    """无 fast 参数走完整 fetch_overview (跟旧行为一致)."""
+    from akq_agents.services.stock_detail import StockOverview
+
+    stock_service_stub.fetch_overview.return_value = StockOverview(
+        symbol="002131", name="利欧股份", industry="通用设备", industry_pct_change=0.5,
+        market_cap=3.1e10, pe_ratio=15.2, pb_ratio=1.23, listing_date="2011-01-27",
+        quote={"price": 4.59, "pct_change": -0.43},
+        as_of="2026-07-03T15:00:00",
+        degraded_fields=[],
+    )
+    r = client.get("/api/stock/overview/002131")
+    assert r.status_code == 200
+    stock_service_stub.fetch_overview.assert_called_once_with("002131")
+    stock_service_stub.fetch_overview_quick.assert_not_called()
+
+
 # ============================================================================
 # /api/stock/kline
 # ============================================================================

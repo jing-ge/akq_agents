@@ -58,10 +58,16 @@ def _reset_service_for_tests() -> None:
 
 
 @router.get("/overview/{symbol}")
-async def get_overview(symbol: str) -> dict[str, Any]:
+async def get_overview(
+    symbol: str,
+    fast: bool = Query(default=False, description="只走本地数据源, 跳过所有 akshare 网络调用. 首屏推荐."),
+) -> dict[str, Any]:
     symbol = _clean_symbol(symbol)
     service = _get_service()
-    overview = service.fetch_overview(symbol)
+    if fast:
+        overview = service.fetch_overview_quick(symbol)
+    else:
+        overview = service.fetch_overview(symbol)
     return overview.to_dict()
 
 

@@ -99,6 +99,56 @@ class StockDetailService:
 
     # ---------------------------------------------------------------- overview
 
+    def fetch_overview_quick(self, symbol: str) -> StockOverview:
+        """快速 overview: 只读本地数据源, 不碰任何 akshare 网络接口.
+
+        用途: 前端首屏立即渲染 hero 卡骨架 (name / 上市日期 / 至今涨幅估算).
+        目标响应 <100ms. 完整字段 (今日快照 / 行业 / 市值 / PE-PB) 由前端
+        并行调 :meth:`fetch_overview` 补齐. degraded_fields 会列出所有
+        走 akshare 的字段, 告知前端"这些字段等 full 回来才有".
+
+        至今涨幅 (since_listing_pct) 用本地 parquet 首末收盘估算 —
+        非实时但足够展示; full 回来后会用真实现价刷新.
+        """
+        degraded: list[str] = [
+            "quote", "industry", "market_cap", "industry_pct_change",
+            "pe_ratio", "pb_ratio",
+        ]
+
+        name = self._lookup_name(symbol)
+        if name is None:
+            degraded.append("name")
+
+        quote: dict[str, Any] = {}
+        # 至今涨幅: parquet 首末收盘估算 (无需实时价). 首屏可先亮出.
+        try:
+            since_pct = self._compute_since_listing_pct_from_local(symbol)
+            if since_pct is not None:
+                quote["since_listing_pct"] = since_pct
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("stock_detail.quick since_pct failed for %s: %s", symbol, exc)
+
+        # 上市日期: 本地 parquet 首个交易日近似 (真实上市日在 individual_info)
+        try:
+            listing_local = self._first_bar_date_from_local(symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("stock_detail.quick first_bar failed for %s: %s", symbol, exc)
+            listing_local = None
+
+        return StockOverview(
+            symbol=symbol,
+            name=name,
+            industry=None,
+            industry_pct_change=None,
+            market_cap=None,
+            pe_ratio=None,
+            pb_ratio=None,
+            listing_date=listing_local,  # 近似, full 回来会覆盖为真实值
+            quote=quote,
+            as_of=datetime.now().isoformat(timespec="seconds"),
+            degraded_fields=degraded,
+        )
+
     def fetch_overview(self, symbol: str) -> StockOverview:
         """构造 hero 卡数据。所有 akshare 依赖失败都降级为 None + degraded_fields。"""
         degraded: list[str] = []
@@ -464,6 +514,45 @@ class StockDetailService:
         if first_close <= 0:
             return None
         return (current_price - first_close) / first_close * 100.0
+
+    def _compute_since_listing_pct_from_local(self, symbol: str) -> float | None:
+        """至今涨幅的"纯本地估算": 用 parquet 首末收盘, 无需外部实时价.
+
+        与 :meth:`_compute_since_listing_pct` 区别: 那个用参数传入的实时价当
+        分子; 这个直接拿本地最近一根 bar 的收盘价当分子. quick 首屏用它先
+        铺一个可用值, full 回来后会用真实现价重算覆盖.
+        """
+        end = date.today()
+        start = end - timedelta(days=365 * 5)
+        frame = self._repo.get_ohlcv_loose([symbol], start, end)
+        if frame is None or frame.empty:
+            return None
+        frame = frame[frame["symbol"].astype(str) == str(symbol)].copy()
+        if frame.empty:
+            return None
+        frame["date"] = pd.to_datetime(frame["date"])
+        frame = frame.sort_values("date")
+        first_close = float(frame.iloc[0]["close"])
+        last_close = float(frame.iloc[-1]["close"])
+        if first_close <= 0:
+            return None
+        return (last_close - first_close) / first_close * 100.0
+
+    def _first_bar_date_from_local(self, symbol: str) -> str | None:
+        """本地 parquet 首个交易日, 作为 listing_date 的近似 (真实值在 akshare individual_info).
+
+        返回 ``YYYY-MM-DD`` 字符串; 无数据返回 None.
+        """
+        end = date.today()
+        start = end - timedelta(days=365 * 5)
+        frame = self._repo.get_ohlcv_loose([symbol], start, end)
+        if frame is None or frame.empty:
+            return None
+        frame = frame[frame["symbol"].astype(str) == str(symbol)].copy()
+        if frame.empty:
+            return None
+        first_ts = pd.to_datetime(frame["date"]).min()
+        return first_ts.strftime("%Y-%m-%d") if pd.notna(first_ts) else None
 
     def _fetch_individual_info(self, symbol: str) -> dict[str, Any]:
         cached = _info_cache.get(symbol)

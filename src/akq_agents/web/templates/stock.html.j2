@@ -112,19 +112,37 @@ function guessMarket(sym) {
 
 // ---------------------------------------------------------------
 // 加载 overview
+// 分层加载策略, 避免首次打开个股页要等 20-30s (akshare spot 全 A 快照慢):
+//   1) quick (?fast=1) - 只走本地, ~50ms - 立即铺 name / 上市日期 / 至今涨幅估算
+//   2) full (无参数)   - 走全套 akshare - 慢, 后台并行拉, 回来后覆盖 quick 的近似值
+// 两段都走 renderHero, 后到者覆盖前到者 (full 有 quick 的所有字段 + 更多).
 // ---------------------------------------------------------------
 async function loadOverview() {
-  try {
-    const r = await fetch('/api/stock/overview/' + STOCK_SYMBOL);
-    if (!r.ok) throw new Error(await r.text());
-    const d = await r.json();
-    renderHero(d);
-  } catch (e) {
-    if (typeof toast === 'function') toast('overview 加载失败: ' + e.message, 'error');
-  }
+  // quick: 立即出首屏可见的部分字段
+  const quickPromise = fetch('/api/stock/overview/' + STOCK_SYMBOL + '?fast=1')
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(d => { renderHero(d, { partial: true }); return d; })
+    .catch(e => {
+      console.warn('overview quick 失败:', e);
+      return null;  // quick 失败不阻断 full, 让 full 兜底
+    });
+
+  // full: 并行拉全套 (慢), 回来后覆盖 quick
+  const fullPromise = fetch('/api/stock/overview/' + STOCK_SYMBOL)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(d => { renderHero(d, { partial: false }); return d; })
+    .catch(e => {
+      if (typeof toast === 'function') toast('overview 加载失败: ' + e.message, 'error');
+      return null;
+    });
+
+  await Promise.all([quickPromise, fullPromise]);
 }
 
-function renderHero(d) {
+function renderHero(d, opts) {
+  opts = opts || {};
+  const isPartial = !!opts.partial;
+
   document.title = (d.name || d.symbol) + ' ' + d.symbol + ' - AKQ Agents';
   document.getElementById('hero-name').textContent = d.name || '未知名称';
   document.getElementById('hero-code').textContent = d.symbol;
@@ -134,11 +152,24 @@ function renderHero(d) {
 
   const priceEl = document.getElementById('hero-price');
   const chgEl = document.getElementById('hero-chg');
-  priceEl.textContent = fmtNum(price, 2);
-  const dir = classifyDir(pct);
-  priceEl.className = 'stock-hero-price ' + dir;
-  chgEl.textContent = fmtPct(pct);
-  chgEl.className = 'stock-hero-chg ' + dir;
+  // partial 且没 price → 保留占位, 别覆盖成 '-' (full 回来后会填上)
+  if (price != null) {
+    priceEl.textContent = fmtNum(price, 2);
+    const dir = classifyDir(pct);
+    priceEl.className = 'stock-hero-price ' + dir;
+    chgEl.textContent = fmtPct(pct);
+    chgEl.className = 'stock-hero-chg ' + dir;
+  } else if (!isPartial) {
+    // full 也没 price (真降级) → 显示 '-'
+    priceEl.textContent = '-';
+    chgEl.textContent = '';
+  } else {
+    // partial 无 price → 用 loading 微提示
+    if (priceEl.textContent === '-' || priceEl.textContent === '') {
+      priceEl.textContent = '…';
+      priceEl.classList.add('is-loading');
+    }
+  }
 
   // 行业信息
   const indEl = document.getElementById('hero-industry');
@@ -147,12 +178,15 @@ function renderHero(d) {
     const idir = classifyDir(ipct);
     indEl.innerHTML = '<span class="ind-name">' + escapeHtml(d.industry) + '</span>'
       + (ipct != null ? '<span class="ind-pct ' + idir + '">' + fmtPct(ipct) + '</span>' : '');
-  } else {
+  } else if (!isPartial) {
     indEl.textContent = '';
   }
+  // partial + 无 industry → 保持空, 等 full
 
   const setV = (id, v, dirClass) => {
     const el = document.getElementById(id);
+    // partial 时: 只有 v 有值才更新; v 无值则保留占位, 避免闪 (full 会填上)
+    if (isPartial && (v === null || v === undefined || v === '-')) return;
     el.textContent = (v === null || v === undefined || v === '-') ? '-' : v;
     if (dirClass) el.className = 'kv-v ' + dirClass;
     else el.className = 'kv-v';
@@ -161,23 +195,26 @@ function renderHero(d) {
   setV('hero-prev', fmtNum(q.prev_close, 2), 'dim');
   setV('hero-high', fmtNum(q.high, 2), classifyByRef(q.high, q.prev_close));
   setV('hero-low', fmtNum(q.low, 2), classifyByRef(q.low, q.prev_close));
-  setV('hero-volume', fmtWan(q.volume) + '手');
-  setV('hero-amount', fmtYi(q.amount));
-  setV('hero-turnover', fmtPct(q.turnover_ratio));
-  setV('hero-cap', fmtYi(d.market_cap));
+  setV('hero-volume', q.volume != null ? fmtWan(q.volume) + '手' : null);
+  setV('hero-amount', q.amount != null ? fmtYi(q.amount) : null);
+  setV('hero-turnover', q.turnover_ratio != null ? fmtPct(q.turnover_ratio) : null);
+  setV('hero-cap', d.market_cap != null ? fmtYi(d.market_cap) : null);
   setV('hero-pe', fmtNum(d.pe_ratio, 2));
   setV('hero-pb', fmtNum(d.pb_ratio, 2));
-  setV('hero-since', fmtPct(q.since_listing_pct), classifyDir(q.since_listing_pct));
-  setV('hero-listing', d.listing_date || '-', 'dim');
+  setV('hero-since', q.since_listing_pct != null ? fmtPct(q.since_listing_pct) : null,
+       q.since_listing_pct != null ? classifyDir(q.since_listing_pct) : 'dim');
+  setV('hero-listing', d.listing_date || null, 'dim');
 
-  // degraded 提示
-  const degraded = d.degraded_fields || [];
-  const degradedEl = document.getElementById('hero-degraded');
-  if (degraded.length > 0) {
-    degradedEl.style.display = '';
-    degradedEl.textContent = '⚠️ 以下字段本次获取失败，显示为 "-"：' + degraded.join(', ');
-  } else {
-    degradedEl.style.display = 'none';
+  // degraded 提示: 只有 full 回来时才展示 (partial 的 degraded 全是"等 full"性质, 不给用户看)
+  if (!isPartial) {
+    const degraded = d.degraded_fields || [];
+    const degradedEl = document.getElementById('hero-degraded');
+    if (degraded.length > 0) {
+      degradedEl.style.display = '';
+      degradedEl.textContent = '⚠️ 以下字段本次获取失败，显示为 "-"：' + degraded.join(', ');
+    } else {
+      degradedEl.style.display = 'none';
+    }
   }
 }
 

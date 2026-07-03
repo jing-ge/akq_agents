@@ -248,6 +248,27 @@ def test_fetch_overview_unknown_symbol(repo_with_ohlcv, name_store, fake_ak_all_
     assert ov.quote.get("price") is None or "price" not in ov.quote
 
 
+def test_fetch_overview_quick_no_akshare(repo_with_ohlcv, name_store):
+    """quick 版本必须完全不碰 akshare (哪怕 ak_module 所有方法 raise 也要正常返回)."""
+    exploding_ak = MagicMock()
+    for method in ("stock_zh_a_spot", "stock_individual_info_em", "stock_a_lg_indicator",
+                   "stock_board_industry_name_em", "stock_zh_a_hist_min_em"):
+        setattr(exploding_ak, method, MagicMock(side_effect=RuntimeError("akshare 不该被 quick 调用")))
+    svc = StockDetailService(repo=repo_with_ohlcv, name_store=name_store, ak_module=exploding_ak)
+    ov = svc.fetch_overview_quick("002131")
+    # 本地字段有值
+    assert ov.name == "利欧股份"
+    assert ov.listing_date is not None  # 本地 parquet 首个交易日估算
+    assert ov.quote.get("since_listing_pct") is not None
+    # akshare 字段全 None + 都进 degraded
+    assert ov.industry is None
+    assert ov.market_cap is None
+    assert ov.pe_ratio is None
+    assert ov.pb_ratio is None
+    for field in ("quote", "industry", "market_cap", "industry_pct_change", "pe_ratio", "pb_ratio"):
+        assert field in ov.degraded_fields
+
+
 # ============================================================================
 # fetch_kline
 # ============================================================================
