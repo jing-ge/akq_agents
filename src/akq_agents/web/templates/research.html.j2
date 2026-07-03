@@ -668,14 +668,13 @@ function renderShadowStats(rows) {
 }
 
 window.addEventListener('load', () => {
-  setTimeout(loadFactorCorrelation, 1500);
-  // M19 review: 数字开关切换时重新刷新图 (不需要重拉数据, 但 echarts 要 setOption)
+  // loadFactorCorrelation 现由 factors tab 的懒加载器触发, 不再在 window.load 里主动 setTimeout.
+  // 只保留数字开关切换时的重绘回调 (无需重拉数据, echarts setOption 即可).
   const cb = document.getElementById('corr-show-numbers');
   if (cb) cb.addEventListener('change', () => loadFactorCorrelation());
 });
 
-// 页面加载时自动拉一次
-window.addEventListener('load', loadShadowStats);
+// loadShadowStats / loadLLMSuggestions 也搬到 llm tab 懒加载器, 不再 window.load 主动触发.
 </script>
 
 <!-- M14: LLM 因子构建建议（人工审核） -->
@@ -840,8 +839,7 @@ async function reviewLLMAcceptAsync(name) {
   loadLLMSuggestions();
 }
 
-// 页面加载时自动拉一次
-window.addEventListener('load', loadLLMSuggestions);
+// loadLLMSuggestions 已搬到 llm tab 懒加载器 (loadTabIfNeeded('llm')). 不再 window.load 主动触发.
 </script>
 
 <!-- M11: 因子推理详情 Modal -->
@@ -878,6 +876,40 @@ window.addEventListener('load', loadLLMSuggestions);
 // ============================================================
 const RESEARCH_TABS = ['trade', 'portfolio', 'factors', 'llm'];
 
+// 各 tab 的懒加载器 — 第一次切到该 tab 时才发对应 API 请求.
+// 之前 window.load 里一次性触发所有 tab 的 loader (11 个 API), 用户如果只看 trade tab,
+// 其余请求都是白花的 (对新用户/无数据用户尤其明显). 现在只默认加载 trade 需要的.
+// 无害保留: KPI 总览 + freshness + trade 卡片 + 因子相关性 (放 factors 但用户经常想快看).
+const _tabLoaded = { trade: false, portfolio: false, factors: false, llm: false };
+function loadTabIfNeeded(tabKey) {
+  if (_tabLoaded[tabKey]) return;
+  _tabLoaded[tabKey] = true;
+  try {
+    if (tabKey === 'trade') {
+      // trade tab (默认): 今日交易清单 + 持仓
+      if (typeof loadTradeList === 'function') loadTradeList();
+      if (typeof loadHoldings === 'function') loadHoldings();
+    } else if (tabKey === 'portfolio') {
+      // portfolio tab: 净值曲线 + Paper Trading + 组合快照
+      if (typeof loadNav === 'function') loadNav();
+      if (typeof loadPaperTracking === 'function') loadPaperTracking();
+      const dateSel = document.getElementById('portfolio-date');
+      if (dateSel && dateSel.value && typeof loadPortfolio === 'function') loadPortfolio();
+    } else if (tabKey === 'factors') {
+      // factors tab: 因子全集总览 + 单因子 + 自动发现流水 + 相关性
+      if (typeof loadFactorsOverview === 'function') loadFactorsOverview();
+      const factorSel = document.getElementById('factor-name');
+      if (factorSel && factorSel.value && typeof loadFactor === 'function') loadFactor();
+      if (typeof loadProposals === 'function') loadProposals();
+      if (typeof loadFactorCorrelation === 'function') loadFactorCorrelation();
+    } else if (tabKey === 'llm') {
+      // llm tab: LLM 因子构建建议 + Shadow 战况
+      if (typeof loadLLMSuggestions === 'function') loadLLMSuggestions();
+      if (typeof loadShadowStats === 'function') loadShadowStats();
+    }
+  } catch (e) { console.warn('lazy load ' + tabKey + ' failed:', e); }
+}
+
 function activateResearchTab(tabKey, opts) {
   if (!RESEARCH_TABS.includes(tabKey)) tabKey = 'trade';
   document.body.setAttribute('data-active-tab', tabKey);
@@ -886,6 +918,8 @@ function activateResearchTab(tabKey, opts) {
     btn.classList.toggle('is-active', on);
     btn.setAttribute('aria-selected', on ? 'true' : 'false');
   });
+  // 首次切到该 tab → 触发懒加载
+  loadTabIfNeeded(tabKey);
   // URL hash 同步 (不触发 scroll)
   if (!opts || opts.updateHash !== false) {
     if (location.hash !== '#' + tabKey) {
@@ -1400,25 +1434,18 @@ function renderFactorsOverview() {
 
 // 自动加载第一个日期 / 因子
 window.addEventListener('load', () => {
+  // trade/portfolio/factors/llm 各 tab 的初始加载现在由 activateResearchTab → loadTabIfNeeded 触发,
+  // 这里只保留全局必需的 + 事件绑定 + 用户切换控件的 change 回调.
   const dateSel = document.getElementById('portfolio-date');
-  if (dateSel.value) loadPortfolio();
-  dateSel.addEventListener('change', loadPortfolio);
+  if (dateSel) dateSel.addEventListener('change', loadPortfolio);
   const factorSel = document.getElementById('factor-name');
-  if (factorSel.value) loadFactor();
-  factorSel.addEventListener('change', loadFactor);
-  // M19: 因子全集总览 (页面打开就加载)
-  loadFactorsOverview();
+  if (factorSel) factorSel.addEventListener('change', loadFactor);
   const ofStatus = document.getElementById('factors-overview-status-filter');
   if (ofStatus) ofStatus.addEventListener('change', renderFactorsOverview);
   const ofSelected = document.getElementById('factors-overview-only-selected');
   if (ofSelected) ofSelected.addEventListener('change', renderFactorsOverview);
   const proposalStatusSel = document.getElementById('proposal-status');
   if (proposalStatusSel) proposalStatusSel.addEventListener('change', loadProposals);
-  loadProposals();
-  loadNav();
-  loadPaperTracking();
-  loadTradeList();
-  loadHoldings();
   setupAutoRefresh();
   setupKpiOverview();
   loadKpiOverview();
