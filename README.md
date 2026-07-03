@@ -227,6 +227,9 @@ daemon 每 30 分钟巡检 3 条规则，触发时写 `events.alert.*` + 调 `os
 - **首次使用引导横幅** — 检测 OHLCV 数据缺失或组合未生成时自动显示指引，可 dismiss
 - **导航健康红点** — 导航栏 "运维 Ops" 右侧的红/黄小圆点，daemon 挂了 / 今日批处理失败 / 数据异常时任意页面都能看见
 - **右下角 ⌨ 快捷键浮标** — 常驻按钮，点击弹出快捷键面板
+- **Ops 长任务进度链** — "立即跑一次完整流程"等 1-15 分钟任务，console 实时显示当前步骤（`✓ 拉数据 → ✓ 跑因子 → ▶ 生成组合…`）
+- **Chat 常驻预设问题** — 对话中随时点开"💡 常问的问题"折叠区，8 个预设 chip 直接抛出
+- **Logs 级别快捷 pill** — 三态互斥（全部 / 警告+ / 仅错误），前端二次过滤，找问题最快
 - **快捷键**（也可按 `?` 或点浮标查看）：
   - `g+r/o/d/c/l` — 跳转 研究 / 运维 / 数据 / 对话 / 日志
   - `r` — 刷新本页数据
@@ -338,6 +341,7 @@ $PY -m ruff check src/ tests/                        # lint
 | m17 | alerter 巡检（NAV 异动 / 数据失败 / 因子衰减 → macOS 系统通知） |
 | m18 UX | 用户视角一致性打磨：顶栏品牌 / 主导航按频率排序 / ⌨ 快捷键浮标 / 首次使用引导横幅 / 结论条零操作日友好文案 / start.sh restart+open+help |
 | m19 UX | 深挖高频动作：全部执行前显示总金额+净流出 / 大批量清单按金额排序+Top10+折叠 / Research 页 4-tab 懒加载 (首屏 API 请求 11→3) / KPI 卡片加 60 日 sparkline 趋势线 |
+| m20 UX | 覆盖运维/对话/日志三页：Ops 长任务实时进度链 (job_steps → console) / Chat 常驻'💡 常问的问题'折叠区 / Logs 三态级别快捷 pill (全部/警告+/仅错误) |
 | m19 | 修 H1+B2 lookahead bias（因子选股必须用 t-1 close）+ min_abs_ir 门槛统一 (builtin/auto/llm 同标准) |
 | m23 | web → daemon 手动触发通道 picker（web 进程零 CPU 消耗） |
 | m24 | user-facing job 结果流（`job_results` 表，前端异步取回） |
