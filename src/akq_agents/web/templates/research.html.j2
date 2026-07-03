@@ -1697,11 +1697,26 @@ async function loadTradeList() {
     };
     // 只显示 BUY/SELL，HOLD 折叠；executed=true 的从主表收起到独立折叠区
     const tradable = d.items.filter(it => it.action !== 'HOLD');
+    // 按 |delta_amount| 从大到小排 — 用户先看金额最大的几笔, 而不是随机顺序.
+    // 99 条清单一屏放不下, 大额优先能让用户快速定位真正需要关注的交易.
+    // 排序稳定性: 相同金额时 BUY 优先, 便于先看要花的钱.
+    tradable.sort((a, b) => {
+      const da = Math.abs(Number(a.delta_amount) || 0);
+      const db = Math.abs(Number(b.delta_amount) || 0);
+      if (db !== da) return db - da;
+      if (a.action !== b.action) return a.action === 'BUY' ? -1 : 1;
+      return 0;
+    });
     const pendingTradable = tradable.filter(it => !it.executed);
     const executedTradable = tradable.filter(it => it.executed);
     const holdItems = d.items.filter(it => it.action === 'HOLD');
 
-    const renderRow = (it, executedCol) => `<tr>
+    // 大批量清单 (>15 条) 分'重点 Top 10 + 剩余折叠', 减少滚动疲劳
+    const BIG_LIST_THRESHOLD = 15;
+    const isBigList = pendingTradable.length > BIG_LIST_THRESHOLD;
+    const topN = 10;
+
+    const renderRow = (it, executedCol, isTop) => `<tr${isTop ? ' class="row-top"' : ''}>
       <td>${actBadge(it.action)}</td>
       <td><code>${it.symbol}</code>${it.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(it.name)}</div>` : ''}</td>
       <td class="small">${it.industry || '-'}</td>
@@ -1721,7 +1736,26 @@ async function loadTradeList() {
 
     let html = '';
     if (pendingTradable.length > 0) {
-      html += `${tableHead}<tbody>${pendingTradable.map(it => renderRow(it, false)).join('')}</tbody></table>`;
+      if (isBigList) {
+        const top = pendingTradable.slice(0, topN);
+        const rest = pendingTradable.slice(topN);
+        const topAmt = top.reduce((s, it) => s + Math.abs(Number(it.delta_amount) || 0), 0);
+        const restAmt = rest.reduce((s, it) => s + Math.abs(Number(it.delta_amount) || 0), 0);
+        html += `<div class="trade-list-hint small">
+          共 <b>${pendingTradable.length}</b> 笔待执行，已按金额从大到小排。
+          先看下方 <b>Top ${topN} 大额</b>（约占 ${(topAmt / (topAmt + restAmt) * 100).toFixed(0)}%）；
+          剩余 ${rest.length} 笔小额可在下方展开。
+        </div>`;
+        html += `${tableHead}<tbody>${top.map(it => renderRow(it, false, true)).join('')}</tbody></table>`;
+        if (rest.length > 0) {
+          html += `<details class="trade-more"><summary class="small">
+            展开剩余 ${rest.length} 笔小额交易 (累计 ¥${fmt(restAmt, 0)})
+          </summary>`;
+          html += `${tableHead.replace('class="trade-table"', 'class="trade-table trade-table-rest" style="margin-top:8px"')}<tbody>${rest.map(it => renderRow(it, false, false)).join('')}</tbody></table></details>`;
+        }
+      } else {
+        html += `${tableHead}<tbody>${pendingTradable.map(it => renderRow(it, false, false)).join('')}</tbody></table>`;
+      }
     } else if (executedTradable.length > 0) {
       // 全部已执行的完成态 — 复用 empty-state 系列样式
       html += `<div class="empty-state"><div class="empty-state-icon" style="color:var(--ok, #10b981)">✅</div><div>今日 ${executedTradable.length} 条交易已全部执行</div></div>`;
@@ -1741,7 +1775,7 @@ async function loadTradeList() {
     }
     if (executedTradable.length > 0) {
       html += `<details style="margin-top:14px"><summary class="small">展开 ${executedTradable.length} 条已执行交易</summary>`;
-      html += `${tableHead.replace('class="trade-table"', 'class="trade-table" style="margin-top:8px"')}<tbody>${executedTradable.map(it => renderRow(it, true)).join('')}</tbody></table></details>`;
+      html += `${tableHead.replace('class="trade-table"', 'class="trade-table" style="margin-top:8px"')}<tbody>${executedTradable.map(it => renderRow(it, true, false)).join('')}</tbody></table></details>`;
     }
     if (holdItems.length > 0) {
       html += `<details style="margin-top:14px"><summary class="small">展开 ${holdItems.length} 个保持不动的持仓</summary>`;

@@ -2343,6 +2343,48 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
   background: var(--bg-2);
 }
 
+/* ===== 交易清单大批量视图 (Top N + 折叠剩余) ===== */
+.trade-list-hint {
+  padding: 8px 12px;
+  margin: 6px 0 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--r-sm);
+  color: var(--fg-mute);
+  line-height: 1.55;
+}
+.trade-list-hint b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.trade-table tr.row-top td:first-child {
+  border-left: 2px solid var(--accent);
+}
+.trade-table tr.row-top {
+  background: linear-gradient(to right, var(--accent-soft), transparent 40%);
+}
+.trade-more {
+  margin-top: 12px;
+}
+.trade-more > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--fg-mute);
+  transition: background 150ms, border-color 150ms;
+}
+.trade-more > summary:hover {
+  background: var(--bg-3);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+.trade-more[open] > summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 /* chat quick questions */
 .quick-questions {
   display: flex; flex-direction: column; gap: 8px;
