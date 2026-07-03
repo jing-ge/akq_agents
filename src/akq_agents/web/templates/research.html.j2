@@ -888,15 +888,19 @@ function loadTabIfNeeded(tabKey) {
   _tabLoaded[tabKey] = true;
   try {
     if (tabKey === 'trade') {
-      // trade tab (默认): 今日交易清单 + 持仓
+      // trade tab (默认): 今日交易清单 + 持仓 + 今日组合快照 + 因子归因
+      // ⚠️ portfolio-card / attribution-chart 两张卡 data-tab="trade" 属于 trade 视图,
+      //    对应 loadPortfolio (内部会级联 loadAttribution) 必须在这里触发,
+      //    而不是等用户切到 portfolio tab. 之前放在 portfolio tab lazy loader 里
+      //    导致 trade tab 默认视图下这两张卡永远是空的 (b9f61ec 引入的回归).
       if (typeof loadTradeList === 'function') loadTradeList();
       if (typeof loadHoldings === 'function') loadHoldings();
-    } else if (tabKey === 'portfolio') {
-      // portfolio tab: 净值曲线 + Paper Trading + 组合快照
-      if (typeof loadNav === 'function') loadNav();
-      if (typeof loadPaperTracking === 'function') loadPaperTracking();
       const dateSel = document.getElementById('portfolio-date');
       if (dateSel && dateSel.value && typeof loadPortfolio === 'function') loadPortfolio();
+    } else if (tabKey === 'portfolio') {
+      // portfolio tab: 净值曲线 + Paper Trading
+      if (typeof loadNav === 'function') loadNav();
+      if (typeof loadPaperTracking === 'function') loadPaperTracking();
     } else if (tabKey === 'factors') {
       // factors tab: 因子全集总览 + 单因子 + 自动发现流水 + 相关性
       if (typeof loadFactorsOverview === 'function') loadFactorsOverview();
@@ -921,7 +925,16 @@ function activateResearchTab(tabKey, opts) {
     btn.setAttribute('aria-selected', on ? 'true' : 'false');
   });
   // 首次切到该 tab → 触发懒加载
-  loadTabIfNeeded(tabKey);
+  // ⚠️ setupResearchTabs() 在 script 定义时立即执行 (不等 DOMContentLoaded),
+  //    此时后面几个 script 块里的 loadTradeList/loadHoldings/loadPortfolio 等
+  //    异步加载函数还未 declare, 直接调用会因 `typeof === 'function'` 检查失败
+  //    全部跳过 → 首屏各卡片永远空白 (b9f61ec 引入的 tab 懒加载回归).
+  //    解法: 把懒加载推到当前 tick 之后, 那时所有 script 已全部解析完成.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => loadTabIfNeeded(tabKey), { once: true });
+  } else {
+    setTimeout(() => loadTabIfNeeded(tabKey), 0);
+  }
   // URL hash 同步 (不触发 scroll)
   if (!opts || opts.updateHash !== false) {
     if (location.hash !== '#' + tabKey) {
