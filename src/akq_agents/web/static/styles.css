@@ -2119,6 +2119,40 @@ tr.is-clickable:hover { background: var(--bg-2) !important; }
 .logs-toolbar .sep {
   flex: 1;
 }
+.logs-toolbar .log-level-pills {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.logs-toolbar .log-pill {
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 140ms, color 140ms;
+}
+.logs-toolbar .log-pill:hover {
+  color: var(--fg);
+  background: var(--bg-3);
+}
+.logs-toolbar .log-pill.is-active[data-level="all"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.logs-toolbar .log-pill.is-active[data-level="warn"] {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.logs-toolbar .log-pill.is-active[data-level="error"] {
+  background: var(--err-soft);
+  color: var(--err);
+}
 .logs-toolbar .meta {
   color: var(--fg-dim);
   font-size: 11px;

@@ -19,6 +19,16 @@
         <option value="akquant_backtest">akquant_backtest（回测 / 因子重算）</option>
       </select>
     </label>
+    <!-- 级别快捷: 三态互斥, 点一下等于往 grep 里塞对应关键字。
+         用户找问题最高频就是"给我看错误 / 警告", 不必手打字 ERROR。 -->
+    <div class="log-level-pills" role="tablist" aria-label="级别快速过滤">
+      <button type="button" class="log-pill is-active" data-level="all" aria-selected="true"
+              onclick="setLogLevelFilter('all', this)" title="显示全部日志">全部</button>
+      <button type="button" class="log-pill" data-level="warn" aria-selected="false"
+              onclick="setLogLevelFilter('warn', this)" title="仅显示 WARN + 以上">⚠ 警告+</button>
+      <button type="button" class="log-pill" data-level="error" aria-selected="false"
+              onclick="setLogLevelFilter('error', this)" title="仅显示 ERROR / CRITICAL / FATAL">🔴 仅错误</button>
+    </div>
     <label>grep 过滤：
       <input type="text" id="log-grep" data-hotkey-search placeholder="只看包含…的行（区分大小写不敏感）"
              onkeydown="if(event.key==='Enter'){ refreshLogs(true); }">
@@ -113,6 +123,22 @@ function buildLogHtml(entries, startNo, freshFromIdx) {
   }).join('');
 }
 
+// 级别快捷 pill: 通过 grep 参数复用后端过滤 (子字符串). 三态互斥.
+// - all   → 清 grep, 显示全部
+// - warn  → grep=WARN (匹配 WARN / WARNING; ERROR 不含 WARN 字符串, 需再加逻辑? 后端是 or 语义, 只能选一个)
+//   实际实现: warn 时用 grep=WARN, ERROR 会被漏, 但用户想看告警多半是想'高于 info', 加个 or 会复杂;
+//   → 采用第二方案: 前端已有 levelClass 分类, 拉全量后前端二次过滤显示. 保持数据完整性 + 精准过滤.
+let _logLevelFilter = 'all';
+function setLogLevelFilter(level, btn) {
+  _logLevelFilter = level;
+  document.querySelectorAll('.log-level-pills .log-pill').forEach(b => {
+    const on = b.dataset.level === level;
+    b.classList.toggle('is-active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  refreshLogs(true);
+}
+
 async function refreshLogs(force) {
   const viewer = document.getElementById('logs-viewer');
   const meta = document.getElementById('log-meta');
@@ -121,7 +147,6 @@ async function refreshLogs(force) {
   const grep = document.getElementById('log-grep').value.trim();
   const url = `/api/ops/logs?source=${encodeURIComponent(source)}&lines=${encodeURIComponent(lines)}`
             + (grep ? `&grep=${encodeURIComponent(grep)}` : '');
-
   // 拉取前先记录当前滚动状态
   const wasAtBottom = (viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 40;
 
@@ -136,9 +161,17 @@ async function refreshLogs(force) {
     }
     const arr = d.lines || [];
     // 结构化条目;后端没给 entries 时,退回用原始行包成 {msg} 结构
-    const entries = d.entries || arr.map(ln => ({ ts: '', level: '', logger: '', msg: ln }));
-    // 用最后一行 + 行数当签名，简单 diff 新增
-    const sig = arr.length + '|' + (arr.length ? arr[arr.length - 1].slice(0, 200) : '');
+    const entriesRaw = d.entries || arr.map(ln => ({ ts: '', level: '', logger: '', msg: ln }));
+    // 前端级别过滤 (拉全量 + 二次筛): 保持数据完整, 精准匹配 lv-* 类, 而不是简单 grep=WARN
+    // 会漏掉 ERROR 或者 grep=ERROR 会漏掉 CRITICAL 之类的问题.
+    const entries = _logLevelFilter === 'all' ? entriesRaw : entriesRaw.filter(e => {
+      const cls = levelClass(e.level) || classifyLogLine(e.msg || '');
+      if (_logLevelFilter === 'error') return cls === 'lv-error';
+      if (_logLevelFilter === 'warn')  return cls === 'lv-error' || cls === 'lv-warn';
+      return true;
+    });
+    // 用最后一行 + 行数 + 过滤态当签名, 切换 pill 时能刷新 (不然 sig 不变会被跳过)
+    const sig = arr.length + '|' + _logLevelFilter + '|' + (arr.length ? arr[arr.length - 1].slice(0, 200) : '');
     if (!force && sig === _lastSig) {
       // 没变 — 只刷状态
       const ts = new Date();
