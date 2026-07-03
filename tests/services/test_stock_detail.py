@@ -119,6 +119,31 @@ def _make_indicator_df(pe: float = -722.48, pb: float = 1.23) -> pd.DataFrame:
     ])
 
 
+def _make_value_em_df(pe: float = -722.48, pb: float = 1.23, market_cap: float = 3.1e10) -> pd.DataFrame:
+    """akshare stock_value_em 风格: 数据日期 / PE(TTM) / PE(静) / 市净率 / PEG值 / 市销率 / 总市值 等. 需 30+ 行才能算分位."""
+    rows = []
+    end = date.today()
+    for i in range(60):
+        d = end - timedelta(days=60 - i)
+        rows.append({
+            "数据日期": d,
+            "当日收盘价": 10.0 + i * 0.05,
+            "当日涨跌幅": 0.1,
+            "总市值": market_cap,
+            "流通市值": market_cap * 0.95,
+            "总股本": 1.5e9,
+            "流通股本": 1.4e9,
+            # 最新 (最后一行) 就是传入的 pe/pb; 之前 59 行给一点扰动让分位有意义
+            "PE(TTM)": pe - (60 - 1 - i) * 0.5,
+            "PE(静)": pe - (60 - 1 - i) * 0.3,
+            "市净率": pb - (60 - 1 - i) * 0.003,
+            "PEG值": 0.001,
+            "市现率": 9.0,
+            "市销率": 0.5,
+        })
+    return pd.DataFrame(rows)
+
+
 def _make_sw_df() -> pd.DataFrame:
     return pd.DataFrame([
         {"行业名称": "通用设备", "涨跌幅": 3.35},
@@ -127,19 +152,18 @@ def _make_sw_df() -> pd.DataFrame:
 
 
 def _make_min_df() -> pd.DataFrame:
-    """akshare stock_zh_a_hist_min_em 风格。"""
+    """akshare stock_zh_a_minute (新浪源) 风格: 英文列 day / open / close / low / high / volume / amount."""
     rows = []
     base_ts = pd.Timestamp("2026-07-03 09:30:00")
     for i in range(30):
         rows.append({
-            "时间": (base_ts + pd.Timedelta(minutes=i * 5)).strftime("%Y-%m-%d %H:%M:%S"),
-            "开盘": 10.0 + i * 0.01,
-            "收盘": 10.0 + i * 0.01 + 0.005,
-            "最低": 10.0 + i * 0.01 - 0.02,
-            "最高": 10.0 + i * 0.01 + 0.03,
-            "成交量": 1000 + i * 10,
-            "成交额": (1000 + i * 10) * 10.0,
-            "均价": 10.0 + i * 0.005,
+            "day": (base_ts + pd.Timedelta(minutes=i * 5)).strftime("%Y-%m-%d %H:%M:%S"),
+            "open": 10.0 + i * 0.01,
+            "close": 10.0 + i * 0.01 + 0.005,
+            "low": 10.0 + i * 0.01 - 0.02,
+            "high": 10.0 + i * 0.01 + 0.03,
+            "volume": 1000 + i * 10,
+            "amount": (1000 + i * 10) * 10.0,
         })
     return pd.DataFrame(rows)
 
@@ -172,9 +196,9 @@ def fake_ak_all_ok():
     ak = SimpleNamespace()
     ak.stock_zh_a_spot = MagicMock(return_value=_make_spot_df("002131"))
     ak.stock_individual_info_em = MagicMock(return_value=_make_info_df())
-    ak.stock_a_lg_indicator = MagicMock(return_value=_make_indicator_df())
+    ak.stock_value_em = MagicMock(return_value=_make_value_em_df())
     ak.sw_index_first_info = MagicMock(return_value=_make_sw_df())
-    ak.stock_zh_a_hist_min_em = MagicMock(return_value=_make_min_df())
+    ak.stock_zh_a_minute = MagicMock(return_value=_make_min_df())
     return ak
 
 
@@ -208,9 +232,11 @@ def test_fetch_overview_individual_info_failed(repo_with_ohlcv, name_store, fake
     svc = StockDetailService(repo=repo_with_ohlcv, name_store=name_store, ak_module=fake_ak_all_ok)
     ov = svc.fetch_overview("002131")
     assert ov.industry is None
-    assert ov.market_cap is None
+    # market_cap 现在会从 stock_value_em (还活着) 兜底, 所以不再 None (设计变更).
+    assert ov.market_cap == 3.1e10
+    assert ov.market_cap is not None
+    assert "market_cap" not in ov.degraded_fields
     assert "industry" in ov.degraded_fields
-    assert "market_cap" in ov.degraded_fields
     # 依赖 industry 名字才能查行业涨跌幅 → 也降级
     assert "industry_pct_change" in ov.degraded_fields
     # 其它字段仍正常
@@ -220,7 +246,7 @@ def test_fetch_overview_individual_info_failed(repo_with_ohlcv, name_store, fake
 
 
 def test_fetch_overview_indicator_failed(repo_with_ohlcv, name_store, fake_ak_all_ok):
-    fake_ak_all_ok.stock_a_lg_indicator = MagicMock(side_effect=RuntimeError("boom"))
+    fake_ak_all_ok.stock_value_em = MagicMock(side_effect=RuntimeError("boom"))
     svc = StockDetailService(repo=repo_with_ohlcv, name_store=name_store, ak_module=fake_ak_all_ok)
     ov = svc.fetch_overview("002131")
     assert ov.pe_ratio is None
@@ -251,8 +277,8 @@ def test_fetch_overview_unknown_symbol(repo_with_ohlcv, name_store, fake_ak_all_
 def test_fetch_overview_quick_no_akshare(repo_with_ohlcv, name_store):
     """quick 版本必须完全不碰 akshare (哪怕 ak_module 所有方法 raise 也要正常返回)."""
     exploding_ak = MagicMock()
-    for method in ("stock_zh_a_spot", "stock_individual_info_em", "stock_a_lg_indicator",
-                   "stock_board_industry_name_em", "stock_zh_a_hist_min_em"):
+    for method in ("stock_zh_a_spot", "stock_individual_info_em", "stock_value_em",
+                   "stock_board_industry_name_em", "stock_zh_a_minute"):
         setattr(exploding_ak, method, MagicMock(side_effect=RuntimeError("akshare 不该被 quick 调用")))
     svc = StockDetailService(repo=repo_with_ohlcv, name_store=name_store, ak_module=exploding_ak)
     ov = svc.fetch_overview_quick("002131")
@@ -315,17 +341,18 @@ def test_fetch_kline_minute_pass_through(repo_with_ohlcv, fake_ak_all_ok):
     svc = StockDetailService(repo=repo_with_ohlcv, name_store=None, ak_module=fake_ak_all_ok)
     result = svc.fetch_kline("002131", "5m", limit=100)
     assert result["period"] == "5m"
-    assert result["source"] == "akshare_realtime"
+    assert result["source"] == "akshare_sina_minute"
     assert len(result["bars"]) == 30  # fake_min_df 返 30 条
     # 验证 akshare 被以正确参数调用
-    fake_ak_all_ok.stock_zh_a_hist_min_em.assert_called_once()
-    call_kwargs = fake_ak_all_ok.stock_zh_a_hist_min_em.call_args.kwargs
-    assert call_kwargs["symbol"] == "002131"
+    fake_ak_all_ok.stock_zh_a_minute.assert_called_once()
+    call_kwargs = fake_ak_all_ok.stock_zh_a_minute.call_args.kwargs
+    # 新浪 API 需要市场前缀 sh/sz/bj (002131 是 sz)
+    assert call_kwargs["symbol"] == "sz002131"
     assert call_kwargs["period"] == "5"
 
 
 def test_fetch_kline_minute_akshare_fail_raises(repo_with_ohlcv, fake_ak_all_ok):
-    fake_ak_all_ok.stock_zh_a_hist_min_em = MagicMock(side_effect=RuntimeError("network"))
+    fake_ak_all_ok.stock_zh_a_minute = MagicMock(side_effect=RuntimeError("network"))
     svc = StockDetailService(repo=repo_with_ohlcv, name_store=None, ak_module=fake_ak_all_ok)
     with pytest.raises(RuntimeError):
         svc.fetch_kline("002131", "1m", limit=100)
@@ -383,29 +410,29 @@ def test_fetch_intraday_happy_path(repo_with_ohlcv, fake_ak_all_ok):
 
 def test_fetch_intraday_akshare_fail(repo_with_ohlcv, fake_ak_all_ok, monkeypatch):
     """3 次重试全挂才抛 RuntimeError. mock time.sleep 避免测试慢."""
-    fake_ak_all_ok.stock_zh_a_hist_min_em = MagicMock(side_effect=RuntimeError("net"))
+    fake_ak_all_ok.stock_zh_a_minute = MagicMock(side_effect=RuntimeError("net"))
     import akq_agents.services.stock_detail as sd
     monkeypatch.setattr(sd.time, "sleep", lambda *_a, **_kw: None)
     svc = StockDetailService(repo=repo_with_ohlcv, name_store=None, ak_module=fake_ak_all_ok)
     with pytest.raises(RuntimeError):
         svc.fetch_intraday("002131", days=1)
     # 应重试 3 次
-    assert fake_ak_all_ok.stock_zh_a_hist_min_em.call_count == 3
+    assert fake_ak_all_ok.stock_zh_a_minute.call_count == 3
 
 
 def test_fetch_intraday_recovers_on_retry(repo_with_ohlcv, fake_ak_all_ok, monkeypatch):
     """第 1 次失败, 第 2 次成功 → 重试成功, 不抛."""
     import akq_agents.services.stock_detail as sd
     monkeypatch.setattr(sd.time, "sleep", lambda *_a, **_kw: None)
-    # 保留 fake_ak_all_ok.stock_zh_a_hist_min_em 原本的成功返回, 但前 1 次挂
-    original_ret = fake_ak_all_ok.stock_zh_a_hist_min_em.return_value
+    # 保留 fake_ak_all_ok.stock_zh_a_minute 原本的成功返回, 但前 1 次挂
+    original_ret = fake_ak_all_ok.stock_zh_a_minute.return_value
     call_count = {"n": 0}
     def flaky(*_a, **_kw):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("first attempt boom")
         return original_ret
-    fake_ak_all_ok.stock_zh_a_hist_min_em = MagicMock(side_effect=flaky)
+    fake_ak_all_ok.stock_zh_a_minute = MagicMock(side_effect=flaky)
     svc = StockDetailService(repo=repo_with_ohlcv, name_store=None, ak_module=fake_ak_all_ok)
     result = svc.fetch_intraday("002131", days=1)
     assert result["symbol"] == "002131"

@@ -85,6 +85,9 @@ class StockOverview:
     quote: dict[str, Any]  # price / pct_change / open / prev_close / high / low / volume / amount / turnover_ratio / since_listing_pct
     as_of: str
     degraded_fields: list[str] = field(default_factory=list)
+    # 5 年历史分位 (0-100, 100=当前是 5 年最高). 后加字段, 默认 None 保持向后兼容.
+    pe_percentile_5y: float | None = None
+    pb_percentile_5y: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +98,8 @@ class StockOverview:
             "market_cap": self.market_cap,
             "pe_ratio": self.pe_ratio,
             "pb_ratio": self.pb_ratio,
+            "pe_percentile_5y": self.pe_percentile_5y,
+            "pb_percentile_5y": self.pb_percentile_5y,
             "listing_date": self.listing_date,
             "quote": self.quote,
             "as_of": self.as_of,
@@ -162,6 +167,8 @@ class StockDetailService:
             market_cap=None,
             pe_ratio=None,
             pb_ratio=None,
+            pe_percentile_5y=None,
+            pb_percentile_5y=None,
             listing_date=listing_local,  # 近似, full 回来会覆盖为真实值
             quote=quote,
             as_of=datetime.now().isoformat(timespec="seconds"),
@@ -227,12 +234,20 @@ class StockDetailService:
         if industry_pct is None:
             degraded.append("industry_pct_change")
 
-        # 6) PE / PB
+        # 6) PE / PB (+ 5 年历史分位 + market_cap 兜底)
         pe = pb = None
+        pe_pct = pb_pct = None
         try:
             ind = self._fetch_indicator(symbol)
             pe = ind.get("pe")
             pb = ind.get("pb")
+            pe_pct = ind.get("pe_percentile_5y")
+            pb_pct = ind.get("pb_percentile_5y")
+            # market_cap 若 individual_info 挂了, 用 stock_value_em 里的 总市值 兜底
+            if market_cap is None and ind.get("market_cap_em") is not None:
+                market_cap = ind["market_cap_em"]
+                if "market_cap" in degraded:
+                    degraded.remove("market_cap")
         except Exception as exc:  # noqa: BLE001
             logger.debug("stock_detail.indicator failed for %s: %s", symbol, exc)
         if pe is None:
@@ -248,6 +263,8 @@ class StockDetailService:
             market_cap=market_cap,
             pe_ratio=pe,
             pb_ratio=pb,
+            pe_percentile_5y=pe_pct,
+            pb_percentile_5y=pb_pct,
             listing_date=listing_date,
             quote=quote,
             as_of=datetime.now().isoformat(timespec="seconds"),
@@ -318,31 +335,36 @@ class StockDetailService:
         return {"symbol": symbol, "period": period, "bars": bars, "source": "local_parquet", "truncated": False}
 
     def _fetch_kline_from_akshare_min(self, symbol: str, period: str, limit: int) -> dict[str, Any]:
+        """分钟 K 用新浪 stock_zh_a_minute (em 分钟接口本地网络全挂, 新浪源 0.5s 秒开).
+
+        列结构: day / open / high / low / close / volume / amount.
+        symbol 需带市场前缀 sh/sz/bj (自动 guessMarket).
+        """
         ak = self._get_ak()
         ak_period = self._PERIOD_MINUTE[period]
-        # akshare stock_zh_a_hist_min_em 需要 6 位裸代码
+        sina_symbol = _guess_market(symbol) + symbol
         try:
-            df = ak.stock_zh_a_hist_min_em(symbol=symbol, period=ak_period, adjust="")
+            df = _ak_call_with_retry(
+                ak.stock_zh_a_minute,
+                symbol=sina_symbol, period=ak_period, adjust="",
+                label="stock_zh_a_minute",
+            )
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"akshare minute kline failed: {exc}") from exc
 
         if df is None or df.empty:
-            return {"symbol": symbol, "period": period, "bars": [], "source": "akshare_realtime", "truncated": False}
+            return {"symbol": symbol, "period": period, "bars": [], "source": "akshare_sina_minute", "truncated": False}
 
-        # 列名映射（akshare 返回中文）
-        col_map = {
-            "时间": "t", "开盘": "o", "收盘": "c", "最低": "l", "最高": "h",
-            "成交量": "v", "成交额": "a",
-        }
+        # 新浪列: day / open / high / low / close / volume / amount → 前端标准键 t/o/c/l/h/v/a
+        col_map = {"day": "t", "open": "o", "close": "c", "low": "l", "high": "h",
+                   "volume": "v", "amount": "a"}
         for src, dst in col_map.items():
             if src in df.columns:
                 df = df.rename(columns={src: dst})
 
-        # 只保留需要的列
         cols_needed = [c for c in ["t", "o", "c", "l", "h", "v", "a"] if c in df.columns]
         df = df[cols_needed].copy()
 
-        # 数值列转 float，t 转字符串
         for c in ("o", "c", "l", "h", "v", "a"):
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -364,23 +386,23 @@ class StockDetailService:
             }
             for _, row in df.iterrows()
         ]
-        return {"symbol": symbol, "period": period, "bars": bars, "source": "akshare_realtime", "truncated": False}
+        return {"symbol": symbol, "period": period, "bars": bars, "source": "akshare_sina_minute", "truncated": False}
 
     # ---------------------------------------------------------------- intraday
 
     def fetch_intraday(self, symbol: str, days: int = 1) -> dict[str, Any]:
-        """分时 / 五日分时。用 akshare 1m 数据拼装。
+        """分时 / 五日分时. 用新浪 stock_zh_a_minute 1m 数据裁剪.
 
-        akshare stock_zh_a_hist_min_em 在本地网络上容易被远端切连接
-        (RemoteDisconnected). 用 _ak_call_with_retry 兜底; 若最终仍失败,
-        抛 RuntimeError (endpoint 层会转成 200 + empty + error).
+        em 的 stock_zh_a_hist_min_em 本地网络完全打不通; 新浪 stock_zh_a_minute
+        0.5s 秒开且返回近 10 个交易日的 1m 数据, 拿来当分时/五日的数据源刚好.
         """
         ak = self._get_ak()
+        sina_symbol = _guess_market(symbol) + symbol
         try:
             df = _ak_call_with_retry(
-                ak.stock_zh_a_hist_min_em,
-                symbol=symbol, period="1", adjust="",
-                label="stock_zh_a_hist_min_em",
+                ak.stock_zh_a_minute,
+                symbol=sina_symbol, period="1", adjust="",
+                label="stock_zh_a_minute (intraday)",
             )
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"akshare intraday failed: {exc}") from exc
@@ -388,13 +410,15 @@ class StockDetailService:
         if df is None or df.empty:
             return {"symbol": symbol, "days": days, "points": []}
 
-        col_map = {"时间": "t", "开盘": "o", "收盘": "c", "最低": "l", "最高": "h",
-                   "成交量": "v", "成交额": "a", "均价": "avg"}
+        # 新浪列: day / open / close / high / low / volume / amount → 标准键
+        # (新浪不提供 均价/avg, 前端已容错为 null)
+        col_map = {"day": "t", "open": "o", "close": "c", "low": "l", "high": "h",
+                   "volume": "v", "amount": "a"}
         for src, dst in col_map.items():
             if src in df.columns:
                 df = df.rename(columns={src: dst})
 
-        # 5 日分时：akshare 单次一般返回近 5 交易日；1 日只保留今天
+        # 5 日分时：新浪 1m 单次返回近 5-10 交易日；1 日只保留最新一天
         if days == 1 and "t" in df.columns:
             try:
                 df["_day"] = pd.to_datetime(df["t"]).dt.date
@@ -403,7 +427,7 @@ class StockDetailService:
             except Exception:  # noqa: BLE001
                 pass
 
-        for c in ("c", "v", "avg"):
+        for c in ("c", "v"):
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -411,7 +435,7 @@ class StockDetailService:
             {
                 "t": str(row.get("t", "")),
                 "price": _num(row.get("c")),
-                "avg": _num(row.get("avg")) if "avg" in df.columns else None,
+                "avg": None,  # 新浪源无均价列, 保留字段以兼容前端
                 "volume": _num(row.get("v", 0)),
             }
             for _, row in df.iterrows()
@@ -622,33 +646,61 @@ class StockDetailService:
         return info
 
     def _fetch_indicator(self, symbol: str) -> dict[str, Any]:
+        """PE/PB/PEG/市销率/总市值 + 5 年分位.
+
+        换用 stock_value_em (em 单股 valuation) — 原 stock_a_lg_indicator 在当前
+        akshare 版本已被删除 (AttributeError). stock_value_em 单次返回 ~2000 天
+        历史 PE(TTM)/PE(静)/市净率/PEG/市现率/市销率, 除了直接拿最新值, 顺便
+        算 PE/PB 的 5 年历史分位, 直接解决 AI 分析里 'PE/PB 分位缺失' 问题.
+        """
         cached = _indicator_cache.get(symbol)
         now = time.monotonic()
         if cached is not None and now - cached["ts"] < _INDICATOR_CACHE_TTL_S:
             return cached["data"]
         ak = self._get_ak()
         try:
-            df = _ak_call_with_retry(ak.stock_a_lg_indicator, symbol=symbol,
-                                     label="stock_a_lg_indicator")
+            df = _ak_call_with_retry(ak.stock_value_em, symbol=symbol,
+                                     label="stock_value_em")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("stock_a_lg_indicator failed: %s", exc)
+            logger.debug("stock_value_em failed: %s", exc)
             _indicator_cache[symbol] = {"ts": now, "data": {}}
             return {}
         if df is None or df.empty:
             _indicator_cache[symbol] = {"ts": now, "data": {}}
             return {}
-        # 取最新一行
+        # 列: 数据日期 / 当日收盘价 / 当日涨跌幅 / 总市值 / 流通市值 / 总股本 / 流通股本
+        #     / PE(TTM) / PE(静) / 市净率 / PEG值 / 市现率 / 市销率
+        data: dict[str, Any] = {}
         try:
-            row = df.iloc[-1]
-            data = {
-                "pe": _num(row.get("pe") or row.get("pe_ttm")),
-                "pb": _num(row.get("pb")),
-                "ps": _num(row.get("ps") or row.get("ps_ttm")),
-                "dv_ratio": _num(row.get("dv_ratio")),
-            }
+            df = df.sort_values("数据日期") if "数据日期" in df.columns else df
+            latest = df.iloc[-1]
+            data["pe"] = _num(latest.get("PE(TTM)"))
+            data["pe_static"] = _num(latest.get("PE(静)"))
+            data["pb"] = _num(latest.get("市净率"))
+            data["ps"] = _num(latest.get("市销率"))
+            data["peg"] = _num(latest.get("PEG值"))
+            data["market_cap_em"] = _num(latest.get("总市值"))
+            data["float_cap_em"] = _num(latest.get("流通市值"))
+            # 5 年 PE/PB 分位 (0-100, 100 = 当前是 5 年最高). AI 分析用得上.
+            try:
+                if "数据日期" in df.columns:
+                    df["_date"] = pd.to_datetime(df["数据日期"])
+                    five_y_ago = df["_date"].max() - pd.Timedelta(days=365 * 5)
+                    recent = df[df["_date"] >= five_y_ago]
+                else:
+                    recent = df.tail(365 * 5)
+                if "PE(TTM)" in recent.columns and data["pe"] is not None:
+                    pe_series = pd.to_numeric(recent["PE(TTM)"], errors="coerce").dropna()
+                    if len(pe_series) > 20:
+                        data["pe_percentile_5y"] = float((pe_series < data["pe"]).mean() * 100)
+                if "市净率" in recent.columns and data["pb"] is not None:
+                    pb_series = pd.to_numeric(recent["市净率"], errors="coerce").dropna()
+                    if len(pb_series) > 20:
+                        data["pb_percentile_5y"] = float((pb_series < data["pb"]).mean() * 100)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("compute PE/PB percentile failed: %s", exc)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("parse indicator failed: %s", exc)
-            data = {}
+            logger.debug("parse stock_value_em failed: %s", exc)
         _indicator_cache[symbol] = {"ts": now, "data": data}
         return data
 
@@ -702,6 +754,22 @@ def _resample_ohlcv(frame: pd.DataFrame, period: str) -> pd.DataFrame:
     resampled = df.resample(rule).agg(agg).dropna(subset=["open", "close"])
     resampled = resampled.reset_index()
     return resampled
+
+
+def _guess_market(symbol: str) -> str:
+    """根据 6 位裸代码猜测市场前缀 (给新浪 API 用).
+
+    - 6 开头 → sh (上交所)
+    - 8/4 开头 → bj (北交所)
+    - 其他 (0/3) → sz (深交所)
+    """
+    s = str(symbol).lstrip("0") or "0"
+    first = str(symbol)[0] if symbol else "0"
+    if first == "6":
+        return "sh"
+    if first in ("8", "4"):
+        return "bj"
+    return "sz"
 
 
 def _num(v: Any) -> float | None:
