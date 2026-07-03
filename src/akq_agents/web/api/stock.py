@@ -43,8 +43,21 @@ def _get_service():
     except Exception as exc:  # noqa: BLE001
         logger.warning("StockNameStore init failed: %s", exc)
 
+    # 本地 industry 兜底 map (SQLite meta.db.industry_map). em 挂时 hero 卡
+    # 的 industry 字段依赖它填. 加载失败也不 raise, 只是 industry 会 None.
+    industry_map: dict[str, str] = {}
+    try:
+        from akq_agents.services.portfolio.industry_map import IndustryMapStore
+        db_path = svc.repo._base_dir / "meta.db"
+        industry_map = IndustryMapStore(db_path).load_names()
+        logger.info("IndustryMapStore loaded %d entries for stock_detail", len(industry_map))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("IndustryMapStore load failed: %s", exc)
+
     from akq_agents.services.stock_detail import StockDetailService
-    _service_singleton = StockDetailService(repo=svc.repo, name_store=name_store)
+    _service_singleton = StockDetailService(
+        repo=svc.repo, name_store=name_store, industry_map=industry_map,
+    )
     return _service_singleton
 
 

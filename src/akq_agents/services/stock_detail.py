@@ -110,16 +110,26 @@ class StockOverview:
 class StockDetailService:
     """个股详情服务。所有方法都是幂等只读的。"""
 
-    def __init__(self, repo: Any, name_store: Any = None, ak_module: Any = None) -> None:
+    def __init__(self, repo: Any, name_store: Any = None, ak_module: Any = None,
+                 industry_map: Any = None) -> None:
         """
         :param repo: :class:`DataRepository`，读本地 parquet
         :param name_store: :class:`StockNameStore`，可选；未传时 name 字段为 None
         :param ak_module: 允许测试注入 mock akshare（默认 lazy import 真实模块）
+        :param industry_map: dict {symbol: industry_name}, 用于 em 域名挂时兜底 industry 字段.
+            不传时不做兜底 (industry 依然可能为 None).
         """
         self._repo = repo
         self._name_store = name_store
         self._ak = ak_module
+        self._industry_map = industry_map or {}
         self._names_cache: dict[str, str] | None = None
+
+    def _lookup_industry(self, symbol: str) -> str | None:
+        """本地兜底: 从 industry_map 查 symbol 对应行业名. 无则 None."""
+        if not self._industry_map:
+            return None
+        return self._industry_map.get(str(symbol)) or None
 
     # ---------------------------------------------------------------- overview
 
@@ -159,10 +169,15 @@ class StockDetailService:
             logger.debug("stock_detail.quick first_bar failed for %s: %s", symbol, exc)
             listing_local = None
 
+        # 行业: 本地 industry_map 兜底 (em 挂时首屏也能亮出所属行业)
+        industry_local = self._lookup_industry(symbol)
+        if industry_local is not None and "industry" in degraded:
+            degraded.remove("industry")
+
         return StockOverview(
             symbol=symbol,
             name=name,
-            industry=None,
+            industry=industry_local,
             industry_pct_change=None,
             market_cap=None,
             pe_ratio=None,
@@ -208,7 +223,7 @@ class StockDetailService:
         if since_pct is not None:
             quote["since_listing_pct"] = since_pct
 
-        # 4) 行业 / 市值
+        # 4) 行业 / 市值 (em 挂了走本地兜底)
         industry = None
         market_cap = None
         listing_date = None
@@ -219,6 +234,9 @@ class StockDetailService:
             listing_date = info.get("listing_date")
         except Exception as exc:  # noqa: BLE001
             logger.debug("stock_detail.individual_info failed for %s: %s", symbol, exc)
+        # em 拿不到 industry 时用本地 industry_map (SQLite meta.db) 兜底
+        if industry is None:
+            industry = self._lookup_industry(symbol)
         if industry is None:
             degraded.append("industry")
         if market_cap is None:
