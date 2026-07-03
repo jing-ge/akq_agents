@@ -51,6 +51,25 @@ _SW_CACHE_TTL_S = 3600
 _sw_cache: dict[str, Any] = {"ts": 0.0, "df": None}
 
 
+def _ak_call_with_retry(fn, *args, attempts: int = 3, base_delay: float = 0.3, label: str = "akshare", **kwargs):
+    """akshare em 域名在本地网络容易 RemoteDisconnected. 短重试 3 次让毛刺自愈.
+
+    延时 0.3s → 0.6s → 0.9s. 3 次都挂就 re-raise 最后一次异常, 调用方各自 catch.
+    label 只用于 log; 不影响行为.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < attempts - 1:
+                logger.debug("%s attempt %d failed (%s), retrying...", label, attempt + 1, exc)
+                time.sleep(base_delay * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
+
+
 @dataclass
 class StockOverview:
     """hero 卡返回结构。"""
@@ -353,23 +372,18 @@ class StockDetailService:
         """分时 / 五日分时。用 akshare 1m 数据拼装。
 
         akshare stock_zh_a_hist_min_em 在本地网络上容易被远端切连接
-        (RemoteDisconnected). 加两次重试兜底; 若最终仍失败, 抛 RuntimeError
-        (endpoint 层会转成 200 + empty + error, 避免 502 让前端整个 toast 报错).
+        (RemoteDisconnected). 用 _ak_call_with_retry 兜底; 若最终仍失败,
+        抛 RuntimeError (endpoint 层会转成 200 + empty + error).
         """
         ak = self._get_ak()
-        last_exc: Exception | None = None
-        for attempt in range(3):  # 首次 + 2 次重试
-            try:
-                df = ak.stock_zh_a_hist_min_em(symbol=symbol, period="1", adjust="")
-                break
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                # 短延时: 0.3s → 0.8s. 让远端连接池有机会恢复.
-                if attempt < 2:
-                    time.sleep(0.3 * (attempt + 1))
-        else:
-            # for-else: 3 次都挂了
-            raise RuntimeError(f"akshare intraday failed: {last_exc}") from last_exc
+        try:
+            df = _ak_call_with_retry(
+                ak.stock_zh_a_hist_min_em,
+                symbol=symbol, period="1", adjust="",
+                label="stock_zh_a_hist_min_em",
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"akshare intraday failed: {exc}") from exc
 
         if df is None or df.empty:
             return {"symbol": symbol, "days": days, "points": []}
@@ -577,7 +591,8 @@ class StockDetailService:
         # akshare 个股信息接口：stock_individual_info_em
         # 返回 key-value 表，字段包含 "行业" / "总市值" / "总股本" / "流通股" / "上市时间" 等
         try:
-            df = ak.stock_individual_info_em(symbol=symbol)
+            df = _ak_call_with_retry(ak.stock_individual_info_em, symbol=symbol,
+                                     label="stock_individual_info_em")
         except Exception as exc:  # noqa: BLE001
             logger.debug("stock_individual_info_em failed: %s", exc)
             _info_cache[symbol] = {"ts": now, "data": {}}
@@ -613,7 +628,8 @@ class StockDetailService:
             return cached["data"]
         ak = self._get_ak()
         try:
-            df = ak.stock_a_lg_indicator(symbol=symbol)
+            df = _ak_call_with_retry(ak.stock_a_lg_indicator, symbol=symbol,
+                                     label="stock_a_lg_indicator")
         except Exception as exc:  # noqa: BLE001
             logger.debug("stock_a_lg_indicator failed: %s", exc)
             _indicator_cache[symbol] = {"ts": now, "data": {}}
@@ -641,7 +657,7 @@ class StockDetailService:
         if _sw_cache["df"] is None or now - _sw_cache["ts"] > _SW_CACHE_TTL_S:
             ak = self._get_ak()
             try:
-                df = ak.sw_index_first_info()
+                df = _ak_call_with_retry(ak.sw_index_first_info, label="sw_index_first_info")
             except Exception as exc:  # noqa: BLE001
                 logger.debug("sw_index_first_info failed: %s", exc)
                 return None

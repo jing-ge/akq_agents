@@ -3411,6 +3411,27 @@ tbody tr:hover td { background: var(--accent-soft); transition: background 120ms
   border-left: 3px solid var(--warn);
 }
 
+/* stock hero 卡下方的加载/完成状态条 — 代替原告警式的 degraded-tip */
+/* 复用同一 DOM (#hero-degraded), 只是根据 class 切颜色和图标 */
+.stock-status-tip {
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  border-left: 3px solid var(--fg-mute);
+  color: var(--fg-mute);
+  background: var(--bg-2);
+}
+.stock-status-tip.loading {
+  border-left-color: var(--info);
+  color: var(--info);
+  background: var(--info-soft);
+}
+.stock-status-tip.ok {
+  border-left-color: var(--ok);
+  color: var(--ok);
+  background: var(--ok-soft, rgba(94, 234, 212, 0.08));
+}
+
 .stock-missing-banner {
   padding: 14px 18px;
   background: var(--bg-2);

@@ -205,15 +205,35 @@ function renderHero(d, opts) {
        q.since_listing_pct != null ? classifyDir(q.since_listing_pct) : 'dim');
   setV('hero-listing', d.listing_date || null, 'dim');
 
-  // degraded 提示: 只有 full 回来时才展示 (partial 的 degraded 全是"等 full"性质, 不给用户看)
-  if (!isPartial) {
-    const degraded = d.degraded_fields || [];
-    const degradedEl = document.getElementById('hero-degraded');
-    if (degraded.length > 0) {
-      degradedEl.style.display = '';
-      degradedEl.textContent = '⚠️ 以下字段本次获取失败，显示为 "-"：' + degraded.join(', ');
+  // 状态条: 用友好的加载状态代替原本'字段获取失败'的告警
+  // - partial:  ⏳ 加载中 (提示还有慢字段在拉)
+  // - full+全ok: ✅ 已加载完毕
+  // - full+缺:  ✅ 主要字段已就位 · N 项字段暂不可用
+  const statusEl = document.getElementById('hero-degraded');
+  if (statusEl) {
+    if (isPartial) {
+      statusEl.style.display = '';
+      statusEl.className = 'stock-status-tip loading';
+      statusEl.textContent = '⏳ 数据加载中… (行业/市值/PE-PB 等字段需要 20-30s, 加载完成后自动更新)';
     } else {
-      degradedEl.style.display = 'none';
+      const degraded = d.degraded_fields || [];
+      statusEl.style.display = '';
+      if (degraded.length === 0) {
+        statusEl.className = 'stock-status-tip ok';
+        statusEl.textContent = '✅ 已加载完毕';
+      } else {
+        // 有降级字段, 但不打红/黄告警 — 已有字段依然可用, 缺失的等下次刷新
+        statusEl.className = 'stock-status-tip ok';
+        statusEl.textContent = '✅ 主要字段已就位 · ' + degraded.length + ' 项字段暂不可用 (akshare 上游波动, 已重试 3 次)';
+      }
+      // full 完成后 3 秒淡出
+      setTimeout(() => {
+        if (statusEl.className.includes('ok')) {
+          statusEl.style.transition = 'opacity 0.5s';
+          statusEl.style.opacity = '0';
+          setTimeout(() => { statusEl.style.display = 'none'; statusEl.style.opacity = ''; statusEl.style.transition = ''; }, 500);
+        }
+      }, 3000);
     }
   }
 }
