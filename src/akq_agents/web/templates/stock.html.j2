@@ -3,7 +3,12 @@
 
 {% block content %}
 <div class="stock-page">
-  <!-- ================ Hero 卡 ================ -->
+  <!-- ================ Hero 卡 (三组式布局) ================ -->
+  <!-- 设计: 一眼看清 = 三个信息组 各司其职:
+       1) 名称/代码/现价/涨跌  → 顶部大字, 涨跌色标记
+       2) 行情快照 (开高低昨收成交等 6 项) → 左组
+       3) 估值 (PE + PE 5年分位条 / PB + PB 5年分位条) → 中组, 分位条视觉
+       4) 规模 (总市值 / 至今涨幅 / 上市日期) → 右组 -->
   <div class="stock-hero" id="stock-hero">
     <div class="stock-hero-top">
       <span class="stock-hero-name" id="hero-name">{{ symbol }}</span>
@@ -16,21 +21,61 @@
         <a href="#" id="link-xueqiu" target="_blank" rel="noopener">雪球</a>
       </span>
     </div>
-    <div class="stock-hero-grid">
-      <div class="kv"><span class="kv-k">今开</span><span class="kv-v" id="hero-open">-</span></div>
-      <div class="kv"><span class="kv-k">最高</span><span class="kv-v" id="hero-high">-</span></div>
-      <div class="kv"><span class="kv-k">成交量</span><span class="kv-v" id="hero-volume">-</span></div>
-      <div class="kv"><span class="kv-k">总市值</span><span class="kv-v" id="hero-cap">-</span></div>
-      <div class="kv"><span class="kv-k">昨收</span><span class="kv-v" id="hero-prev">-</span></div>
-      <div class="kv"><span class="kv-k">最低</span><span class="kv-v" id="hero-low">-</span></div>
-      <div class="kv"><span class="kv-k">成交额</span><span class="kv-v" id="hero-amount">-</span></div>
-      <div class="kv"><span class="kv-k">市盈率</span><span class="kv-v" id="hero-pe">-</span></div>
-      <div class="kv"><span class="kv-k">换手率</span><span class="kv-v" id="hero-turnover">-</span></div>
-      <div class="kv"><span class="kv-k">市净率</span><span class="kv-v" id="hero-pb">-</span></div>
-      <div class="kv"><span class="kv-k">至今涨幅</span><span class="kv-v" id="hero-since">-</span></div>
-      <div class="kv"><span class="kv-k">上市日期</span><span class="kv-v dim" id="hero-listing">-</span></div>
+
+    <div class="stock-hero-groups">
+      <!-- 组 1: 行情快照 -->
+      <section class="hg-group">
+        <h3 class="hg-title">行情快照</h3>
+        <div class="hg-kvs">
+          <div class="kv"><span class="kv-k">今开</span><span class="kv-v" id="hero-open">-</span></div>
+          <div class="kv"><span class="kv-k">昨收</span><span class="kv-v dim" id="hero-prev">-</span></div>
+          <div class="kv"><span class="kv-k">最高</span><span class="kv-v" id="hero-high">-</span></div>
+          <div class="kv"><span class="kv-k">最低</span><span class="kv-v" id="hero-low">-</span></div>
+          <div class="kv"><span class="kv-k">成交量</span><span class="kv-v" id="hero-volume">-</span></div>
+          <div class="kv"><span class="kv-k">成交额</span><span class="kv-v" id="hero-amount">-</span></div>
+          <div class="kv"><span class="kv-k">换手率</span><span class="kv-v" id="hero-turnover">-</span></div>
+        </div>
+      </section>
+
+      <!-- 组 2: 估值分位 (PE / PB 各带 5 年分位进度条) -->
+      <section class="hg-group hg-group-valuation">
+        <h3 class="hg-title">估值 <span class="hg-subtitle">(5 年历史分位)</span></h3>
+        <div class="hg-valuation-row">
+          <div class="hg-val-item">
+            <div class="hg-val-head">
+              <span class="hg-val-label">市盈率 PE</span>
+              <span class="hg-val-num" id="hero-pe">-</span>
+            </div>
+            <div class="hg-pct-bar" title="PE 5 年历史分位: 越高越贵">
+              <div class="hg-pct-bar-fill" id="hero-pe-pct-fill" style="width:0%"></div>
+              <span class="hg-pct-bar-label" id="hero-pe-pct-label">—</span>
+            </div>
+          </div>
+          <div class="hg-val-item">
+            <div class="hg-val-head">
+              <span class="hg-val-label">市净率 PB</span>
+              <span class="hg-val-num" id="hero-pb">-</span>
+            </div>
+            <div class="hg-pct-bar" title="PB 5 年历史分位: 越高越贵">
+              <div class="hg-pct-bar-fill" id="hero-pb-pct-fill" style="width:0%"></div>
+              <span class="hg-pct-bar-label" id="hero-pb-pct-label">—</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 组 3: 规模 & 时间 -->
+      <section class="hg-group">
+        <h3 class="hg-title">规模</h3>
+        <div class="hg-kvs">
+          <div class="kv kv-major"><span class="kv-k">总市值</span><span class="kv-v" id="hero-cap">-</span></div>
+          <div class="kv"><span class="kv-k">至今涨幅</span><span class="kv-v" id="hero-since">-</span></div>
+          <div class="kv"><span class="kv-k">上市日期</span><span class="kv-v dim" id="hero-listing">-</span></div>
+        </div>
+      </section>
     </div>
-    <div id="hero-degraded" class="stock-degraded-tip" style="display:none;margin-top:10px"></div>
+
+    <div id="hero-degraded" class="stock-status-tip" style="display:none;margin-top:10px"></div>
     <div id="hero-missing-banner" class="stock-missing-banner" style="display:none;margin-top:10px"></div>
   </div>
 
@@ -201,6 +246,10 @@ function renderHero(d, opts) {
   setV('hero-cap', d.market_cap != null ? fmtYi(d.market_cap) : null);
   setV('hero-pe', fmtNum(d.pe_ratio, 2));
   setV('hero-pb', fmtNum(d.pb_ratio, 2));
+
+  // PE / PB 5 年历史分位可视化 (progressive bar + 语义色)
+  fillPctBar('hero-pe-pct-fill', 'hero-pe-pct-label', d.pe_percentile_5y);
+  fillPctBar('hero-pb-pct-fill', 'hero-pb-pct-label', d.pb_percentile_5y);
   setV('hero-since', q.since_listing_pct != null ? fmtPct(q.since_listing_pct) : null,
        q.since_listing_pct != null ? classifyDir(q.since_listing_pct) : 'dim');
   setV('hero-listing', d.listing_date || null, 'dim');
@@ -588,6 +637,27 @@ function renderIntraday(data) {
 // ---------------------------------------------------------------
 // 格式化辅助
 // ---------------------------------------------------------------
+// 分位条填充: 给定 0-100 百分位, 更新进度条宽度和 label 数值/语义色.
+//   - null: 保持 0% + label='—'
+//   - <30:  low  (绿, 偏便宜)
+//   - 30-70: mid (中性)
+//   - >70:  high (红, 偏贵)
+function fillPctBar(fillId, labelId, pct) {
+  const fillEl = document.getElementById(fillId);
+  const labelEl = document.getElementById(labelId);
+  if (!fillEl || !labelEl) return;
+  if (pct == null || isNaN(pct)) {
+    fillEl.style.width = '0%';
+    labelEl.textContent = '—';
+    labelEl.className = 'hg-pct-bar-label';
+    return;
+  }
+  const clamped = Math.max(0, Math.min(100, Number(pct)));
+  fillEl.style.width = clamped.toFixed(0) + '%';
+  labelEl.textContent = clamped.toFixed(0) + '%';
+  labelEl.className = 'hg-pct-bar-label ' + (clamped < 30 ? 'low' : clamped > 70 ? 'high' : 'mid');
+}
+
 function fmtNum(v, digits) {
   if (v === null || v === undefined) return '-';
   const n = parseFloat(v);

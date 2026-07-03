@@ -3432,6 +3432,109 @@ tbody tr:hover td { background: var(--accent-soft); transition: background 120ms
   background: var(--ok-soft, rgba(94, 234, 212, 0.08));
 }
 
+/* ==== stock hero 三组布局 (行情快照 / 估值分位 / 规模) ==================== */
+.stock-hero-groups {
+  display: grid;
+  grid-template-columns: 1.4fr 1.2fr 0.9fr;
+  gap: 20px;
+  margin-top: 12px;
+}
+@media (max-width: 960px) {
+  .stock-hero-groups { grid-template-columns: 1fr; gap: 12px; }
+}
+.hg-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+}
+.hg-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-mute);
+  margin: 0;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.hg-subtitle {
+  font-weight: 400;
+  color: var(--fg-mute);
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.hg-kvs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 12px;
+}
+.hg-kvs .kv {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+}
+.hg-kvs .kv-major .kv-v { font-size: 16px; font-weight: 600; color: var(--fg); }
+.hg-kvs .kv-k { color: var(--fg-mute); }
+.hg-kvs .kv-v { color: var(--fg); font-variant-numeric: tabular-nums; }
+.hg-kvs .kv-v.dim { color: var(--fg-dim); }
+.hg-kvs .kv-v.up { color: var(--err); }     /* A 股: 红涨绿跌 */
+.hg-kvs .kv-v.down { color: var(--ok); }
+
+/* 估值组: PE / PB + 分位进度条 */
+.hg-group-valuation .hg-valuation-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.hg-val-item { display: flex; flex-direction: column; gap: 4px; }
+.hg-val-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.hg-val-label { font-size: 12px; color: var(--fg-mute); }
+.hg-val-num { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* 分位条: 0-100 进度, 20 以下绿(便宜) 80 以上红(贵) */
+.hg-pct-bar {
+  position: relative;
+  height: 14px;
+  background: linear-gradient(90deg,
+    rgba(94, 234, 212, 0.20) 0%,       /* 低位 绿 */
+    rgba(94, 234, 212, 0.10) 20%,
+    rgba(148, 163, 184, 0.10) 50%,      /* 中位 灰 */
+    rgba(248, 113, 113, 0.10) 80%,
+    rgba(248, 113, 113, 0.22) 100%      /* 高位 红 */
+  );
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+.hg-pct-bar-fill {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  background: linear-gradient(90deg, rgba(94,234,212,0.5), rgba(148,163,184,0.5) 50%, rgba(248,113,113,0.5) 100%);
+  transition: width 0.3s var(--ease-out);
+}
+.hg-pct-bar-label {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 4px var(--bg-1);
+}
+/* 显式着色: 分位段跟随语义变色 */
+.hg-pct-bar-label.low { color: var(--ok); }     /* <30% */
+.hg-pct-bar-label.mid { color: var(--fg); }
+.hg-pct-bar-label.high { color: var(--err); }   /* >70% */
+
 .stock-missing-banner {
   padding: 14px 18px;
   background: var(--bg-2);
