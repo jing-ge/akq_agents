@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 from datetime import date as _date
 from typing import Any
 
@@ -11,6 +13,41 @@ from fastapi import APIRouter, HTTPException, Query
 from akq_agents.web.deps import ServiceContainer, get_services
 
 router = APIRouter()
+
+# --- factors/correlation 结果缓存 -------------------------------------------
+# 目的: 该 endpoint 冷执行 ~50s (5000 只 × N 因子 × lookback 天 cross-section 计算),
+# 但因子池只在 accept/promote/demote 时变, universe 一天变一次, target_d 一天变一次.
+# 结果对同一 (target_d, lookback_days, factor_set_hash) 完全稳定, 天然可缓存.
+# 用进程内 dict + TTL: 命中 ~毫秒级, miss 时才跑一次真实计算.
+_CORRELATION_CACHE_TTL_S = 3600  # 1 小时 (足够跨越用户切 tab / 30s 自动刷新链路)
+_CORRELATION_CACHE_MAX = 8       # LRU 上限, 防止无界增长
+_correlation_cache: dict[str, dict[str, Any]] = {}
+# 结构: {key: {"ts": monotonic, "value": dict}}
+
+
+def _correlation_cache_key(target_d: _date, lookback_days: int, factor_names: list[str]) -> str:
+    """key = target 日 + lookback + 因子名列表哈希 (排序后 hash, 顺序无关)."""
+    names = "|".join(sorted(factor_names))
+    h = hashlib.md5(names.encode("utf-8")).hexdigest()[:12]
+    return f"{target_d.isoformat()}:{lookback_days}:{h}"
+
+
+def _correlation_cache_get(key: str) -> dict[str, Any] | None:
+    e = _correlation_cache.get(key)
+    if e is None:
+        return None
+    if time.monotonic() - e["ts"] > _CORRELATION_CACHE_TTL_S:
+        _correlation_cache.pop(key, None)
+        return None
+    return e["value"]
+
+
+def _correlation_cache_put(key: str, value: dict[str, Any]) -> None:
+    # 简单 LRU: 超过上限时删最旧一条 (按 ts). 命中率不敏感, 简单实现即可.
+    if len(_correlation_cache) >= _CORRELATION_CACHE_MAX:
+        oldest_key = min(_correlation_cache, key=lambda k: _correlation_cache[k]["ts"])
+        _correlation_cache.pop(oldest_key, None)
+    _correlation_cache[key] = {"ts": time.monotonic(), "value": value}
 
 
 def _backfill_names(svc: Any, items: list[dict[str, Any]]) -> None:
@@ -765,8 +802,13 @@ def _load_close_pair(repo, symbols, d):
 async def factors_correlation(
     date: str | None = Query(None, description="YYYY-MM-DD，缺省用最近一日"),
     lookback_days: int = Query(60, ge=20, le=180),
+    no_cache: bool = Query(False, description="调试开关: 强制跳过结果缓存重算 (~50s)"),
 ) -> dict[str, Any]:
-    """返回 active 因子两两 cross-section 相关性矩阵。"""
+    """返回 active 因子两两 cross-section 相关性矩阵。
+
+    结果按 (target_d, lookback_days, 因子集合 hash) 缓存 1 小时 ——
+    因子改动 (accept/promote/demote) 或换日期会自然失效, 无需手动清缓存.
+    """
     from datetime import timedelta as _td
 
     svc: ServiceContainer = get_services()
@@ -787,6 +829,16 @@ async def factors_correlation(
         target_d = _date.fromisoformat(date)
     else:
         target_d = _latest_ohlcv_partition(svc.repo) or _date.today()
+
+    # 缓存 lookup: key 只用 (target_d, lookback_days, 因子名集合 hash),
+    # 不依赖任何 repo 内部状态 — universe / ohlcv 都是 target_d 决定的.
+    factor_names_all = [f.name for f in factors]
+    cache_key = _correlation_cache_key(target_d, lookback_days, factor_names_all)
+    if not no_cache:
+        cached = _correlation_cache_get(cache_key)
+        if cached is not None:
+            return {**cached, "cache_hit": True}
+
     max_lookback = max((f.lookback_days for f in factors), default=60)
     start = target_d - _td(days=max(lookback_days, max_lookback * 2))
 
@@ -811,13 +863,15 @@ async def factors_correlation(
     factor_names = list(corr.columns)
     matrix = corr.values.tolist()
 
-    return {
+    result = {
         "as_of_date": target_d.isoformat(),
         "factors": factor_names,
         "matrix": matrix,
         "n_observations": int(df.dropna(how="any").shape[0]),
         "n_total_symbols": int(df.shape[0]),
     }
+    _correlation_cache_put(cache_key, result)
+    return {**result, "cache_hit": False}
 
 
 def _latest_ohlcv_partition(repo) -> _date | None:
