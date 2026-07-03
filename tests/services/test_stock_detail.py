@@ -381,11 +381,35 @@ def test_fetch_intraday_happy_path(repo_with_ohlcv, fake_ak_all_ok):
         assert "price" in result["points"][0]
 
 
-def test_fetch_intraday_akshare_fail(repo_with_ohlcv, fake_ak_all_ok):
+def test_fetch_intraday_akshare_fail(repo_with_ohlcv, fake_ak_all_ok, monkeypatch):
+    """3 次重试全挂才抛 RuntimeError. mock time.sleep 避免测试慢."""
     fake_ak_all_ok.stock_zh_a_hist_min_em = MagicMock(side_effect=RuntimeError("net"))
+    import akq_agents.services.stock_detail as sd
+    monkeypatch.setattr(sd.time, "sleep", lambda *_a, **_kw: None)
     svc = StockDetailService(repo=repo_with_ohlcv, name_store=None, ak_module=fake_ak_all_ok)
     with pytest.raises(RuntimeError):
         svc.fetch_intraday("002131", days=1)
+    # 应重试 3 次
+    assert fake_ak_all_ok.stock_zh_a_hist_min_em.call_count == 3
+
+
+def test_fetch_intraday_recovers_on_retry(repo_with_ohlcv, fake_ak_all_ok, monkeypatch):
+    """第 1 次失败, 第 2 次成功 → 重试成功, 不抛."""
+    import akq_agents.services.stock_detail as sd
+    monkeypatch.setattr(sd.time, "sleep", lambda *_a, **_kw: None)
+    # 保留 fake_ak_all_ok.stock_zh_a_hist_min_em 原本的成功返回, 但前 1 次挂
+    original_ret = fake_ak_all_ok.stock_zh_a_hist_min_em.return_value
+    call_count = {"n": 0}
+    def flaky(*_a, **_kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("first attempt boom")
+        return original_ret
+    fake_ak_all_ok.stock_zh_a_hist_min_em = MagicMock(side_effect=flaky)
+    svc = StockDetailService(repo=repo_with_ohlcv, name_store=None, ak_module=fake_ak_all_ok)
+    result = svc.fetch_intraday("002131", days=1)
+    assert result["symbol"] == "002131"
+    assert call_count["n"] == 2
 
 
 # ============================================================================

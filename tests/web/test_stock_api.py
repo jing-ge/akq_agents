@@ -242,10 +242,18 @@ def test_intraday_happy_path(client, stock_service_stub) -> None:
     assert len(d["points"]) == 1
 
 
-def test_intraday_akshare_fail_502(client, stock_service_stub) -> None:
+def test_intraday_akshare_fail_returns_200_with_error(client, stock_service_stub) -> None:
+    """上游 akshare 挂 → 200 + points=[] + error 标记 (不再抛 502).
+
+    前端可以'分时暂不可用'占位替代 toast 报错整页, K 线依然可用.
+    """
     stock_service_stub.fetch_intraday.side_effect = RuntimeError("boom")
     r = client.get("/api/stock/intraday/002131?days=5")
-    assert r.status_code == 502
+    assert r.status_code == 200
+    d = r.json()
+    assert d["points"] == []
+    assert d["error"] == "upstream_unavailable"
+    assert "boom" in d["detail"]
 
 
 # ============================================================================

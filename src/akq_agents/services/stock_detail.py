@@ -350,12 +350,26 @@ class StockDetailService:
     # ---------------------------------------------------------------- intraday
 
     def fetch_intraday(self, symbol: str, days: int = 1) -> dict[str, Any]:
-        """分时 / 五日分时。用 akshare 1m 数据拼装。"""
+        """分时 / 五日分时。用 akshare 1m 数据拼装。
+
+        akshare stock_zh_a_hist_min_em 在本地网络上容易被远端切连接
+        (RemoteDisconnected). 加两次重试兜底; 若最终仍失败, 抛 RuntimeError
+        (endpoint 层会转成 200 + empty + error, 避免 502 让前端整个 toast 报错).
+        """
         ak = self._get_ak()
-        try:
-            df = ak.stock_zh_a_hist_min_em(symbol=symbol, period="1", adjust="")
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"akshare intraday failed: {exc}") from exc
+        last_exc: Exception | None = None
+        for attempt in range(3):  # 首次 + 2 次重试
+            try:
+                df = ak.stock_zh_a_hist_min_em(symbol=symbol, period="1", adjust="")
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                # 短延时: 0.3s → 0.8s. 让远端连接池有机会恢复.
+                if attempt < 2:
+                    time.sleep(0.3 * (attempt + 1))
+        else:
+            # for-else: 3 次都挂了
+            raise RuntimeError(f"akshare intraday failed: {last_exc}") from last_exc
 
         if df is None or df.empty:
             return {"symbol": symbol, "days": days, "points": []}

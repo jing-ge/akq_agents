@@ -248,6 +248,21 @@ async function loadIntraday(days) {
       throw new Error(err.detail || ('HTTP ' + r.status));
     }
     const d = await r.json();
+    // 上游降级 (akshare 分钟接口 RemoteDisconnected 等): 200 + points=[] + error 标记.
+    // 展示占位提示, 不打 toast 骚扰用户 (K 线仍可用, 分时暂不可用是常态).
+    if (d.error === 'upstream_unavailable') {
+      const el = document.getElementById('stock-chart');
+      if (el && typeof echarts !== 'undefined') {
+        const inst = echarts.getInstanceByDom(el);
+        if (inst) inst.clear();
+      }
+      const hint = document.getElementById('chart-hint');
+      if (hint) {
+        hint.style.display = '';
+        hint.textContent = '⚠️ 分时数据源暂不可用 (akshare 分钟接口连接被切), 请稍后重试或切换到 K 线周期.';
+      }
+      return;
+    }
     currentIntradayData = d;
     renderIntraday(d);
   } catch (e) {

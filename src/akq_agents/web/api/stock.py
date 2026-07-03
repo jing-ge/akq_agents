@@ -93,12 +93,24 @@ async def get_intraday(
     symbol: str,
     days: int = Query(default=1, ge=1, le=5),
 ) -> dict[str, Any]:
+    """分时 / 五日分时.
+
+    akshare 分钟接口本地网络稳定性差, 服务层已内部重试 3 次. 仍失败时
+    返回 200 + points=[] + error 字段, 让前端以'暂不可用'替代整页崩溃.
+    """
     symbol = _clean_symbol(symbol)
     service = _get_service()
     try:
         return service.fetch_intraday(symbol, days)
     except RuntimeError as exc:
-        raise HTTPException(502, detail=f"upstream failed: {exc}") from exc
+        # 上游降级: 返回 200 + 空点 + error, 前端友好展示
+        return {
+            "symbol": symbol,
+            "days": days,
+            "points": [],
+            "error": "upstream_unavailable",
+            "detail": str(exc),
+        }
 
 
 class AnalyzeRequest(BaseModel):
