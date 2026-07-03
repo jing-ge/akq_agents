@@ -1781,10 +1781,38 @@ async function markExecuted(symbol, date, btn) {
 }
 
 async function markAllExecuted() {
-  const ok = await confirmDialog(
-    '确认把今日 trade_list 里所有 BUY/SELL 全部标记已执行？\n这会同步更新你的 holdings 持仓表。',
-    { title: '一键标记全部已执行', confirmLabel: '全部执行', danger: true }
-  );
+  // 从已渲染的清单里统计 pending BUY/SELL 数量与金额, 让用户在确认前看到真实规模,
+  // 而不是简单"确认全部执行?" 用户可能有 20 条买入 * 5000 元一起下, 有权知情.
+  let pendingBuyN = 0, pendingSellN = 0;
+  let pendingBuyAmt = 0, pendingSellAmt = 0;
+  try {
+    const r = await fetch('/api/trading/today-list');
+    const d = await r.json();
+    (d.items || []).forEach(it => {
+      if (it.executed) return;
+      const amt = Math.abs(Number(it.delta_amount) || 0);
+      if (it.action === 'BUY') { pendingBuyN += 1; pendingBuyAmt += amt; }
+      else if (it.action === 'SELL') { pendingSellN += 1; pendingSellAmt += amt; }
+    });
+  } catch {}
+  const total = pendingBuyN + pendingSellN;
+  if (total === 0) {
+    toast('没有待执行的交易, 已跳过', 'ok');
+    return;
+  }
+  const fmtY = (v) => Number(v).toLocaleString('en', {maximumFractionDigits: 0});
+  const msg =
+    `将标记 ${total} 笔交易为已执行, 并同步更新你的 holdings 持仓表:\n\n` +
+    `  • 买入 ${pendingBuyN} 笔, 累计 ¥${fmtY(pendingBuyAmt)}\n` +
+    `  • 卖出 ${pendingSellN} 笔, 累计 ¥${fmtY(pendingSellAmt)}\n` +
+    `  • 净流出 ¥${fmtY(pendingBuyAmt - pendingSellAmt)}\n\n` +
+    `注意: 该操作仅在系统内记录, 不会真的下单. 但会覆盖你的 holdings, 请确认已在券商完成对应交易再点确定.`;
+  const ok = await confirmDialog(msg, {
+    title: `确认执行 ${total} 笔交易`,
+    confirmLabel: `确定执行 (${total} 笔)`,
+    cancelLabel: '再想想',
+    danger: true,
+  });
   if (!ok) return;
   try {
     const url = _currentTradeListCohortDate
