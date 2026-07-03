@@ -54,28 +54,28 @@
     <button data-mode="kline" data-period="15m">15 分</button>
     <button data-mode="kline" data-period="5m">5 分</button>
   </div>
-</div>
 
-<!-- AI 分析悬浮按钮（commit 3 实现交互，样式先出 UI 骨架） -->
-<button id="ai-analyze-btn" class="ai-drawer-toggle" type="button">🤖 AI 分析</button>
-
-<!-- AI 抽屉（commit 3 实现内容加载） -->
-<div id="ai-drawer-backdrop" class="ai-drawer-backdrop"></div>
-<aside id="ai-drawer" class="ai-drawer" aria-hidden="true">
-  <div class="ai-drawer-head">
-    <span class="ai-drawer-title">🤖 AI 综合分析 <span class="small" id="ai-drawer-sym"></span></span>
-    <button class="ai-drawer-close" id="ai-drawer-close" type="button" aria-label="关闭">×</button>
-  </div>
-  <div class="ai-drawer-body" id="ai-drawer-body">
-    <div class="ai-drawer-loading">
-      <span>点下方按钮开始分析</span>
+  <!-- ================ AI 综合分析 (常驻可折叠面板, 位于 K 线下方) ================ -->
+  <!-- 设计: 默认收起, 不占空间; 展开才请求 LLM (省 token); 展开时仍与 K 线共存不遮挡. -->
+  <div class="stock-ai-card" id="ai-card">
+    <button class="stock-ai-head" id="ai-toggle" type="button" aria-expanded="false" aria-controls="ai-body">
+      <span class="stock-ai-title">🤖 AI 综合分析 <span class="small" id="ai-head-sym">· {{ symbol }}</span></span>
+      <span class="stock-ai-hint" id="ai-head-hint">点击展开, 首次会自动请求 AI 生成 (20-60s)</span>
+      <span class="stock-ai-caret" aria-hidden="true">▸</span>
+    </button>
+    <div class="stock-ai-body" id="ai-body" hidden>
+      <div class="stock-ai-content" id="ai-content">
+        <div class="stock-ai-loading">
+          <span>点击上方标题展开后开始分析</span>
+        </div>
+      </div>
+      <div class="stock-ai-input" id="ai-input" style="display:none">
+        <textarea id="ai-textarea" rows="1" placeholder="继续追问... Enter 发送, Shift+Enter 换行"></textarea>
+        <button id="ai-send" type="button">发送</button>
+      </div>
     </div>
   </div>
-  <div class="ai-drawer-input" id="ai-drawer-input" style="display:none">
-    <textarea id="ai-drawer-textarea" rows="1" placeholder="继续追问... Enter 发送，Shift+Enter 换行"></textarea>
-    <button id="ai-drawer-send">发送</button>
-  </div>
-</aside>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -559,34 +559,30 @@ function classifyByRef(v, ref) {
 }
 
 // ---------------------------------------------------------------
-// AI 抽屉交互
+// AI 综合分析面板 (常驻可折叠, K 线下方) 交互
 // ---------------------------------------------------------------
 let AI_SESSION_ID = null;
 let AI_LOADING = false;
 
-document.getElementById('ai-analyze-btn').addEventListener('click', () => {
-  openDrawer();
-  if (!AI_SESSION_ID) startAnalyze();
-});
-
-document.getElementById('ai-drawer-close').addEventListener('click', closeDrawer);
-document.getElementById('ai-drawer-backdrop').addEventListener('click', closeDrawer);
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && document.getElementById('ai-drawer').classList.contains('is-open')) {
-    closeDrawer();
+document.getElementById('ai-toggle').addEventListener('click', () => {
+  const card = document.getElementById('ai-card');
+  if (card.classList.contains('is-expanded')) {
+    collapsePanel();
+  } else {
+    expandPanel();
+    if (!AI_SESSION_ID) startAnalyze();
   }
 });
 
 // 追问 textarea Enter 发送 / Shift+Enter 换行
-const askInput = document.getElementById('ai-drawer-textarea');
+const askInput = document.getElementById('ai-textarea');
 askInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     sendFollowup();
   }
 });
-document.getElementById('ai-drawer-send').addEventListener('click', sendFollowup);
+document.getElementById('ai-send').addEventListener('click', sendFollowup);
 
 // textarea 自动增高
 askInput.addEventListener('input', () => {
@@ -594,34 +590,36 @@ askInput.addEventListener('input', () => {
   askInput.style.height = Math.min(askInput.scrollHeight, 120) + 'px';
 });
 
-function openDrawer() {
-  document.getElementById('ai-drawer').classList.add('is-open');
-  document.getElementById('ai-drawer').setAttribute('aria-hidden', 'false');
-  document.getElementById('ai-drawer-backdrop').classList.add('is-open');
-  document.getElementById('ai-drawer-sym').textContent = '· ' + STOCK_SYMBOL;
+function expandPanel() {
+  const card = document.getElementById('ai-card');
+  card.classList.add('is-expanded');
+  document.getElementById('ai-toggle').setAttribute('aria-expanded', 'true');
+  document.getElementById('ai-body').hidden = false;
 }
 
-function closeDrawer() {
-  document.getElementById('ai-drawer').classList.remove('is-open');
-  document.getElementById('ai-drawer').setAttribute('aria-hidden', 'true');
-  document.getElementById('ai-drawer-backdrop').classList.remove('is-open');
+function collapsePanel() {
+  const card = document.getElementById('ai-card');
+  card.classList.remove('is-expanded');
+  document.getElementById('ai-toggle').setAttribute('aria-expanded', 'false');
+  document.getElementById('ai-body').hidden = true;
 }
 
 async function startAnalyze() {
   if (AI_LOADING) return;
   AI_LOADING = true;
-  const btn = document.getElementById('ai-analyze-btn');
-  btn.disabled = true;
-  const body = document.getElementById('ai-drawer-body');
+  const toggleBtn = document.getElementById('ai-toggle');
+  toggleBtn.disabled = true;
+  const hintEl = document.getElementById('ai-head-hint');
+  const body = document.getElementById('ai-content');
   const period = currentMode.mode === 'kline' ? currentMode.period : 'D';
 
   body.innerHTML =
-    '<div class="ai-drawer-loading">'
+    '<div class="stock-ai-loading">'
     + '<span class="lo-spinner"></span>'
     + '<span>AI 正在分析 ' + escapeHtml(STOCK_SYMBOL) + '，大约需要 20-60 秒…</span>'
     + '</div>';
   const startTs = Date.now();
-  const tickerEl = body.querySelector('.ai-drawer-loading span:last-child');
+  const tickerEl = body.querySelector('.stock-ai-loading span:last-child');
   const ticker = setInterval(() => {
     const s = Math.floor((Date.now() - startTs) / 1000);
     tickerEl.textContent = 'AI 正在分析 ' + STOCK_SYMBOL + '，已用时 ' + s + ' 秒…';
@@ -646,18 +644,19 @@ async function startAnalyze() {
     const d = await r.json();
     AI_SESSION_ID = d.session_id;
     renderAnalyzeResult(d);
-    document.getElementById('ai-drawer-input').style.display = '';
+    document.getElementById('ai-input').style.display = '';
+    hintEl.textContent = '已生成, 可下方追问';
   } catch (e) {
     clearInterval(ticker);
     renderAnalyzeError(e.message || String(e));
   } finally {
     AI_LOADING = false;
-    btn.disabled = false;
+    toggleBtn.disabled = false;
   }
 }
 
 function renderAnalyzeResult(d) {
-  const body = document.getElementById('ai-drawer-body');
+  const body = document.getElementById('ai-content');
   body.innerHTML = '';
   const first = document.createElement('div');
   first.className = 'ai-turn ai-turn-assistant';
@@ -667,25 +666,26 @@ function renderAnalyzeResult(d) {
 }
 
 function renderAnalyzeError(msg) {
-  const body = document.getElementById('ai-drawer-body');
+  const body = document.getElementById('ai-content');
   body.innerHTML =
     '<div class="stock-degraded-tip">🤖 AI 分析失败：' + escapeHtml(msg) + '<br>'
     + '<span class="small" style="color:var(--fg-dim)">请稍后重试；若持续失败，检查本地 LLM 代理（默认 127.0.0.1:18931）是否可达。</span>'
     + '</div>'
     + '<button class="primary" style="margin-top:12px" onclick="AI_SESSION_ID=null;startAnalyze()">重试</button>';
+  document.getElementById('ai-head-hint').textContent = '生成失败，点击面板内的重试';
 }
 
 async function sendFollowup() {
   if (AI_LOADING || !AI_SESSION_ID) return;
-  const textarea = document.getElementById('ai-drawer-textarea');
+  const textarea = document.getElementById('ai-textarea');
   const content = textarea.value.trim();
   if (!content) return;
 
   AI_LOADING = true;
-  document.getElementById('ai-drawer-send').disabled = true;
+  document.getElementById('ai-send').disabled = true;
 
   // 追加用户气泡
-  const body = document.getElementById('ai-drawer-body');
+  const body = document.getElementById('ai-content');
   const userTurn = document.createElement('div');
   userTurn.className = 'ai-turn ai-turn-user';
   userTurn.textContent = content;
@@ -730,7 +730,7 @@ async function sendFollowup() {
     asstTurn.innerHTML = '<span style="color:var(--err)">网络异常：' + escapeHtml(e.message || String(e)) + '</span>';
   } finally {
     AI_LOADING = false;
-    document.getElementById('ai-drawer-send').disabled = false;
+    document.getElementById('ai-send').disabled = false;
   }
 }
 

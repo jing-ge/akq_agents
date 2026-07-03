@@ -344,16 +344,21 @@ def test_nav_has_stock_search_input(client) -> None:
     assert 'id="nav-search-suggest"' in r.text
 
 
-def test_stock_page_has_ai_drawer(client, stock_service_stub) -> None:
-    """commit 3：验证个股页含 AI 分析按钮 + 抽屉 DOM。"""
+def test_stock_page_has_ai_panel(client, stock_service_stub) -> None:
+    """验证个股页含 AI 综合分析折叠面板 DOM (K 线下方常驻, 不再是右侧抽屉)."""
     r = client.get("/stock/002131")
     assert r.status_code == 200
     text = r.text
-    assert 'id="ai-analyze-btn"' in text
-    assert 'id="ai-drawer"' in text
-    assert 'id="ai-drawer-body"' in text
-    assert 'id="ai-drawer-textarea"' in text
-    assert 'id="ai-drawer-send"' in text
+    # 折叠面板容器 + head 切换按钮 + 内容/输入区
+    assert 'id="ai-card"' in text
+    assert 'id="ai-toggle"' in text
+    assert 'id="ai-body"' in text
+    assert 'id="ai-content"' in text
+    assert 'id="ai-textarea"' in text
+    assert 'id="ai-send"' in text
+    # 旧右侧抽屉 DOM 应彻底移除 (防重构回退)
+    assert 'id="ai-analyze-btn"' not in text
+    assert 'id="ai-drawer"' not in text
     # 复用 /api/chat 追问
     assert "/api/chat/sessions/" in text
 
