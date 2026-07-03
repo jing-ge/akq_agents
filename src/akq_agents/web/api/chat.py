@@ -30,7 +30,9 @@ async def list_sessions(limit: int = Query(default=20, ge=1, le=200)) -> dict[st
     svc: ServiceContainer = get_services()
     if svc.llm_store is None:
         return {"sessions": [], "n": 0}
-    sessions = svc.llm_store.list_sessions(limit=limit)
+    # 多拉一些再过滤 stock:* 前缀（个股页私有 session，不属于主 chat 历史）
+    raw = svc.llm_store.list_sessions(limit=max(limit * 2, 50))
+    sessions = [s for s in raw if not (s.get("session_id") or "").startswith("stock:")][:limit]
     return {"sessions": sessions, "n": len(sessions)}
 
 

@@ -311,7 +311,7 @@ function renderDailyAttr(d) {
   } else {
     for (const r of d.top_contributors) {
       html += `<tr>
-        <td><code>${r.symbol}</code> ${escapeHtml(r.name || '')}</td>
+        <td><a href="/stock/${r.symbol}" class="stock-link"><code>${r.symbol}</code></a> ${escapeHtml(r.name || '')}</td>
         <td>${(r.prev_weight * 100).toFixed(2)}%</td>
         <td class="status-ok">${(r.ret_pct * 100).toFixed(2)}%</td>
         <td class="status-ok"><b>+${r.contrib_bps.toFixed(1)}</b></td>
@@ -326,7 +326,7 @@ function renderDailyAttr(d) {
   } else {
     for (const r of d.top_draggers) {
       html += `<tr>
-        <td><code>${r.symbol}</code> ${escapeHtml(r.name || '')}</td>
+        <td><a href="/stock/${r.symbol}" class="stock-link"><code>${r.symbol}</code></a> ${escapeHtml(r.name || '')}</td>
         <td>${(r.prev_weight * 100).toFixed(2)}%</td>
         <td class="status-error">${(r.ret_pct * 100).toFixed(2)}%</td>
         <td class="status-error"><b>${r.contrib_bps.toFixed(1)}</b></td>
@@ -1079,7 +1079,7 @@ function renderPortfolioTable(rows) {
       <th><abbr title="对该股票评分贡献最大的 Top 2 因子；悬停看完整因子名">主要因子</abbr></th>
     </tr></thead><tbody>
     ${rows.map(r => `<tr>
-      <td><code>${r.symbol}</code></td>
+      <td><a href="/stock/${r.symbol}" class="stock-link"><code>${r.symbol}</code></a></td>
       <td>${r.name || '—'}</td>
       <td class="num">${(r.weight * 100).toFixed(2)}%</td>
       <td class="num">${r.composite_score != null ? r.composite_score.toFixed(3) : '—'}</td>
@@ -1800,7 +1800,7 @@ async function loadTradeList() {
 
     const renderRow = (it, executedCol, isTop) => `<tr${isTop ? ' class="row-top"' : ''}>
       <td>${actBadge(it.action)}</td>
-      <td><code>${it.symbol}</code>${it.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(it.name)}</div>` : ''}</td>
+      <td><a href="/stock/${it.symbol}" class="stock-link" title="打开个股详情页"><code>${it.symbol}</code></a>${it.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(it.name)}</div>` : ''}</td>
       <td class="small">${it.industry || '-'}</td>
       <td>${fmt(it.current_shares, 0)} → ${fmt(it.target_shares, 0)}</td>
       <td class="${it.delta_shares>=0?'metric-good':'metric-bad'}">${it.delta_shares>=0?'+':''}${fmt(it.delta_shares, 0)}</td>
@@ -1864,7 +1864,7 @@ async function loadTradeList() {
       html += `<table class="trade-table" style="margin-top:8px"><thead><tr>
         <th>代码</th><th>行业</th><th>股数</th><th>当前价</th><th>原因</th>
       </tr></thead><tbody>${holdItems.map(it => `<tr>
-        <td><code>${it.symbol}</code>${it.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(it.name)}</div>` : ''}</td>
+        <td><a href="/stock/${it.symbol}" class="stock-link"><code>${it.symbol}</code></a>${it.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(it.name)}</div>` : ''}</td>
         <td class="small">${it.industry || '-'}</td>
         <td>${fmt(it.current_shares, 0)}</td>
         <td>${fmt(it.current_price, 2)}</td>
@@ -1966,7 +1966,7 @@ async function loadHoldings() {
     tblEl.innerHTML = `<table><thead><tr>
       <th>代码</th><th>股数</th><th>成本价</th><th>更新时间</th><th>备注</th><th>操作</th>
     </tr></thead><tbody>${d.holdings.map(h => `<tr>
-      <td><code>${h.symbol}</code>${h.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(h.name)}</div>` : ''}</td>
+      <td><a href="/stock/${h.symbol}" class="stock-link"><code>${h.symbol}</code></a>${h.name ? `<div class="small" style="color:var(--fg-dim)">${escapeHtml(h.name)}</div>` : ''}</td>
       <td>${Number(h.shares).toLocaleString('en')}</td>
       <td>${h.avg_cost != null ? Number(h.avg_cost).toFixed(2) : '-'}</td>
       <td class="small">${h.updated_at}</td>

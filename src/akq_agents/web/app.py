@@ -16,6 +16,7 @@ from akq_agents.web.api.data_explorer import router as data_router
 from akq_agents.web.api.discovery import router as discovery_router
 from akq_agents.web.api.ops import router as ops_router
 from akq_agents.web.api.research import router as research_router
+from akq_agents.web.api.stock import router as stock_router
 from akq_agents.web.api.trading import router as trading_router
 from akq_agents.web.deps import get_services
 from akq_agents.web.guard import LocalhostOnlyMiddleware
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(control_router, prefix="/api/control", tags=["control"])
     app.include_router(data_router, prefix="/api/data", tags=["data"])
     app.include_router(trading_router, prefix="/api/trading", tags=["trading"])
+    app.include_router(stock_router, prefix="/api/stock", tags=["stock"])
 
     # pages
     @app.get("/", include_in_schema=False)
@@ -80,7 +82,10 @@ def create_app() -> FastAPI:
         svc = get_services()
         sessions = []
         if svc.llm_store is not None:
-            sessions = svc.llm_store.list_sessions(limit=20)
+            # 过滤掉个股页专属 session（stock:XXXXXX:xxxxxxxx），它们只在
+            # /stock/{symbol} 的 AI 抽屉里追问，不该混进主 chat 历史列表。
+            sessions = [s for s in svc.llm_store.list_sessions(limit=50)
+                        if not (s.get("session_id") or "").startswith("stock:")][:20]
         return templates.TemplateResponse(
             request=request, name="chat.html.j2",
             context={"page": "chat", "ctx": _page_ctx(), "sessions": sessions},
@@ -98,6 +103,22 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             request=request, name="logs.html.j2",
             context={"page": "logs", "ctx": _page_ctx()},
+        )
+
+    @app.get("/stock/{symbol}", response_class=HTMLResponse, include_in_schema=False)
+    async def page_stock(request: Request, symbol: str) -> HTMLResponse:
+        # 去掉可能的市场前缀，仅保留 6 位裸代码
+        clean = str(symbol).strip().lower()
+        for prefix in ("sh", "sz", "bj"):
+            if clean.startswith(prefix):
+                clean = clean[len(prefix):]
+                break
+        if not clean.isdigit() or len(clean) != 6:
+            # 无效 symbol 回研究页而不是抛 404（UX 引导 + 避免 crawler 触发大量 404 log）
+            return RedirectResponse(url="/research", status_code=307)  # type: ignore[return-value]
+        return templates.TemplateResponse(
+            request=request, name="stock.html.j2",
+            context={"page": "stock", "ctx": _page_ctx(), "symbol": clean},
         )
 
     return app

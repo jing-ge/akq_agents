@@ -22,6 +22,12 @@
     <a href="/data" class="{% if page == 'data' %}active{% endif %}" title="查询 AKShare 基础数据：行情、指数、板块、宏观、新闻">数据 Data</a>
     <a href="/chat" class="{% if page == 'chat' %}active{% endif %}" title="跟 AI 对话查询系统状态或操作">对话 Chat</a>
     <a href="/logs" class="{% if page == 'logs' %}active{% endif %}" title="实时滚动查看 daemon / web / 回测引擎物理日志">日志 Logs</a>
+    <div class="nav-search" role="search">
+      <input id="hotkey-search" data-hotkey-search type="text"
+             autocomplete="off" spellcheck="false"
+             placeholder="搜股票代码 / 名称（按 / 聚焦）" />
+      <div id="nav-search-suggest" class="nav-search-suggest" hidden></div>
+    </div>
     <span class="spacer"></span>
     <details class="nav-disclaimer" title="本控制台仅供研究参考，不构成投资建议；不执行任何交易指令。">
       <summary>ⓘ</summary>
@@ -643,6 +649,113 @@
   }
   window.addEventListener('load', loadOpsHealthDot);
   setInterval(loadOpsHealthDot, 30000);
+  </script>
+
+  <script>
+  // ============================================================
+  // 顶部全局股票搜索框 — debounce 200ms + 键盘导航
+  //   支持 6 位代码前缀（600519）或名称包含（贵州茅台）
+  //   下拉 8 条建议，↑↓ 选择、Enter 跳 /stock/{symbol}
+  // ============================================================
+  (function setupNavSearch() {
+    const input = document.getElementById('hotkey-search');
+    const suggest = document.getElementById('nav-search-suggest');
+    if (!input || !suggest) return;
+    let debounceTimer = null;
+    let activeIndex = -1;
+    let currentMatches = [];
+
+    const closeSuggest = () => {
+      suggest.hidden = true;
+      suggest.innerHTML = '';
+      activeIndex = -1;
+      currentMatches = [];
+    };
+
+    const renderSuggest = (matches) => {
+      currentMatches = matches;
+      activeIndex = -1;
+      if (!matches.length) {
+        suggest.innerHTML = '<div class="nav-search-empty">无匹配</div>';
+        suggest.hidden = false;
+        return;
+      }
+      suggest.innerHTML = matches.map((m, i) => `
+        <div class="nav-search-item" data-idx="${i}" data-symbol="${m.symbol}">
+          <span class="ns-sym">${escapeHtml(m.symbol)}</span>
+          <span class="ns-name">${escapeHtml(m.name || '')}</span>
+        </div>
+      `).join('');
+      suggest.hidden = false;
+      // 点击 item 跳转
+      suggest.querySelectorAll('.nav-search-item').forEach(el => {
+        el.addEventListener('mousedown', (e) => {
+          e.preventDefault();  // 防 input blur
+          location.href = '/stock/' + el.dataset.symbol;
+        });
+      });
+    };
+
+    const highlight = () => {
+      suggest.querySelectorAll('.nav-search-item').forEach((el, i) => {
+        el.classList.toggle('active', i === activeIndex);
+      });
+    };
+
+    const doSearch = async (q) => {
+      if (!q) { closeSuggest(); return; }
+      try {
+        const r = await fetch('/api/stock/search?q=' + encodeURIComponent(q) + '&limit=8');
+        if (!r.ok) { closeSuggest(); return; }
+        const d = await r.json();
+        renderSuggest(d.matches || []);
+      } catch (e) { closeSuggest(); }
+    };
+
+    input.addEventListener('input', () => {
+      const q = input.value.trim();
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => doSearch(q), 200);
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (suggest.hidden) {
+        if (e.key === 'Enter' && input.value.trim()) {
+          // 直接输入 6 位代码 + Enter 允许跳（不联想）
+          const v = input.value.trim();
+          if (/^\d{6}$/.test(v)) { e.preventDefault(); location.href = '/stock/' + v; return; }
+        }
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        activeIndex = Math.min(activeIndex + 1, currentMatches.length - 1);
+        highlight();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        activeIndex = Math.max(activeIndex - 1, 0);
+        highlight();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const chosen = activeIndex >= 0 ? currentMatches[activeIndex] : currentMatches[0];
+        if (chosen) location.href = '/stock/' + chosen.symbol;
+      } else if (e.key === 'Escape') {
+        closeSuggest();
+        input.blur();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (e.target === input) return;
+      if (suggest.contains(e.target)) return;
+      closeSuggest();
+    });
+
+    input.addEventListener('focus', () => {
+      const q = input.value.trim();
+      if (q) doSearch(q);
+    });
+  })();
   </script>
 </body>
 </html>

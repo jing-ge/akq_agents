@@ -82,6 +82,47 @@ _CATALOG: list[ApiSpec] = [
         display_hint="table",
         head=200,
     ),
+    ApiSpec(
+        api="stock_zh_a_hist_min_em",
+        label="个股分钟 K 线（东方财富）",
+        category="个股行情",
+        desc="A 股分钟级 K 线，支持 1/5/15/30/60/120 分周期。仅返回近几日数据，不复权。",
+        params=[
+            ParamSpec("symbol", "string", "代码", required=True, default="002131",
+                     help="6 位裸代码，例如 002131 / 600519 / 300750"),
+            ParamSpec("period", "enum", "周期", default="5",
+                     options=["1", "5", "15", "30", "60", "120"]),
+        ],
+        display_hint="chart_kline",
+        kline_cols={"date": "时间", "open": "开盘", "close": "收盘",
+                    "low": "最低", "high": "最高", "volume": "成交量"},
+        head=500,
+    ),
+    ApiSpec(
+        api="stock_a_lg_indicator",
+        label="个股估值指标（乐咕）",
+        category="个股行情",
+        desc="A 股 PE / PB / PS / 股息率历史，来自乐咕数据源。",
+        params=[
+            ParamSpec("symbol", "string", "代码", required=True, default="600519",
+                     help="6 位裸代码，例如 600519 / 002131"),
+        ],
+        display_hint="chart_line",
+        chart_x="trade_date",
+        chart_y=["pe", "pb"],
+        head=250,
+    ),
+    ApiSpec(
+        api="stock_individual_info_em",
+        label="个股基础信息（东方财富）",
+        category="个股行情",
+        desc="个股基本资料：总股本、流通股、总市值、行业、上市日期等。东财源在部分本地网络可能不稳定。",
+        params=[
+            ParamSpec("symbol", "string", "代码", required=True, default="600519",
+                     help="6 位裸代码"),
+        ],
+        display_hint="table",
+    ),
 
     # ============ 指数 ============
     ApiSpec(

@@ -1,0 +1,796 @@
+{% extends "base.html.j2" %}
+{% block title %}个股 {{ symbol }}{% endblock %}
+
+{% block content %}
+<div class="stock-page">
+  <!-- ================ Hero 卡 ================ -->
+  <div class="stock-hero" id="stock-hero">
+    <div class="stock-hero-top">
+      <span class="stock-hero-name" id="hero-name">{{ symbol }}</span>
+      <span class="stock-hero-code" id="hero-code">{{ symbol }}</span>
+      <span class="stock-hero-price" id="hero-price">-</span>
+      <span class="stock-hero-chg" id="hero-chg">-</span>
+      <span class="stock-hero-industry" id="hero-industry"></span>
+      <span class="stock-hero-links">
+        <a href="#" id="link-dfcf" target="_blank" rel="noopener">东财 F10</a>
+        <a href="#" id="link-xueqiu" target="_blank" rel="noopener">雪球</a>
+      </span>
+    </div>
+    <div class="stock-hero-grid">
+      <div class="kv"><span class="kv-k">今开</span><span class="kv-v" id="hero-open">-</span></div>
+      <div class="kv"><span class="kv-k">最高</span><span class="kv-v" id="hero-high">-</span></div>
+      <div class="kv"><span class="kv-k">成交量</span><span class="kv-v" id="hero-volume">-</span></div>
+      <div class="kv"><span class="kv-k">总市值</span><span class="kv-v" id="hero-cap">-</span></div>
+      <div class="kv"><span class="kv-k">昨收</span><span class="kv-v" id="hero-prev">-</span></div>
+      <div class="kv"><span class="kv-k">最低</span><span class="kv-v" id="hero-low">-</span></div>
+      <div class="kv"><span class="kv-k">成交额</span><span class="kv-v" id="hero-amount">-</span></div>
+      <div class="kv"><span class="kv-k">市盈率</span><span class="kv-v" id="hero-pe">-</span></div>
+      <div class="kv"><span class="kv-k">换手率</span><span class="kv-v" id="hero-turnover">-</span></div>
+      <div class="kv"><span class="kv-k">市净率</span><span class="kv-v" id="hero-pb">-</span></div>
+      <div class="kv"><span class="kv-k">至今涨幅</span><span class="kv-v" id="hero-since">-</span></div>
+      <div class="kv"><span class="kv-k">上市日期</span><span class="kv-v dim" id="hero-listing">-</span></div>
+    </div>
+    <div id="hero-degraded" class="stock-degraded-tip" style="display:none;margin-top:10px"></div>
+    <div id="hero-missing-banner" class="stock-missing-banner" style="display:none;margin-top:10px"></div>
+  </div>
+
+  <!-- ================ 主图区 ================ -->
+  <div class="stock-chart-card">
+    <div id="chart-hint" class="chart-hint" style="display:none"></div>
+    <div id="stock-chart" class="stock-chart"></div>
+  </div>
+
+  <!-- ================ 周期切换 ================ -->
+  <div class="stock-period-tabs" id="period-tabs">
+    <button data-mode="intraday" data-days="1">分时</button>
+    <button data-mode="intraday" data-days="5">五日</button>
+    <button data-mode="kline" data-period="D" class="active">日 K</button>
+    <button data-mode="kline" data-period="W">周 K</button>
+    <button data-mode="kline" data-period="M">月 K</button>
+    <button data-mode="kline" data-period="Y">年 K</button>
+    <button data-mode="kline" data-period="120m">120 分</button>
+    <button data-mode="kline" data-period="60m">60 分</button>
+    <button data-mode="kline" data-period="30m">30 分</button>
+    <button data-mode="kline" data-period="15m">15 分</button>
+    <button data-mode="kline" data-period="5m">5 分</button>
+  </div>
+</div>
+
+<!-- AI 分析悬浮按钮（commit 3 实现交互，样式先出 UI 骨架） -->
+<button id="ai-analyze-btn" class="ai-drawer-toggle" type="button">🤖 AI 分析</button>
+
+<!-- AI 抽屉（commit 3 实现内容加载） -->
+<div id="ai-drawer-backdrop" class="ai-drawer-backdrop"></div>
+<aside id="ai-drawer" class="ai-drawer" aria-hidden="true">
+  <div class="ai-drawer-head">
+    <span class="ai-drawer-title">🤖 AI 综合分析 <span class="small" id="ai-drawer-sym"></span></span>
+    <button class="ai-drawer-close" id="ai-drawer-close" type="button" aria-label="关闭">×</button>
+  </div>
+  <div class="ai-drawer-body" id="ai-drawer-body">
+    <div class="ai-drawer-loading">
+      <span>点下方按钮开始分析</span>
+    </div>
+  </div>
+  <div class="ai-drawer-input" id="ai-drawer-input" style="display:none">
+    <textarea id="ai-drawer-textarea" rows="1" placeholder="继续追问... Enter 发送，Shift+Enter 换行"></textarea>
+    <button id="ai-drawer-send">发送</button>
+  </div>
+</aside>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STOCK_SYMBOL = "{{ symbol }}";
+let currentMode = { mode: 'kline', period: 'D' };
+let currentKlineData = null;
+let currentIntradayData = null;
+
+// ---------------------------------------------------------------
+// 生命周期
+// ---------------------------------------------------------------
+window.addEventListener('load', () => {
+  document.getElementById('link-dfcf').href = 'https://emweb.securities.eastmoney.com/PC_HSF10/pages/index.html?type=web&code=' + guessMarket(STOCK_SYMBOL) + STOCK_SYMBOL;
+  document.getElementById('link-xueqiu').href = 'https://xueqiu.com/S/' + guessMarket(STOCK_SYMBOL).toUpperCase() + STOCK_SYMBOL;
+  loadOverview();
+  loadKline('D');
+  bindTabs();
+});
+
+window.addEventListener('hotkey:refresh', () => {
+  window.dispatchEvent(new CustomEvent('hotkey:refresh:ack'));
+  loadOverview();
+  if (currentMode.mode === 'kline') loadKline(currentMode.period);
+  else loadIntraday(currentMode.days);
+  if (typeof toast === 'function') toast('已刷新', 'ok', { duration: 1200 });
+});
+
+function guessMarket(sym) {
+  if (sym.startsWith('6')) return 'sh';
+  if (sym.startsWith('0') || sym.startsWith('3')) return 'sz';
+  return 'bj';
+}
+
+// ---------------------------------------------------------------
+// 加载 overview
+// ---------------------------------------------------------------
+async function loadOverview() {
+  try {
+    const r = await fetch('/api/stock/overview/' + STOCK_SYMBOL);
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    renderHero(d);
+  } catch (e) {
+    if (typeof toast === 'function') toast('overview 加载失败: ' + e.message, 'error');
+  }
+}
+
+function renderHero(d) {
+  document.title = (d.name || d.symbol) + ' ' + d.symbol + ' - AKQ Agents';
+  document.getElementById('hero-name').textContent = d.name || '未知名称';
+  document.getElementById('hero-code').textContent = d.symbol;
+  const q = d.quote || {};
+  const price = q.price;
+  const pct = q.pct_change;
+
+  const priceEl = document.getElementById('hero-price');
+  const chgEl = document.getElementById('hero-chg');
+  priceEl.textContent = fmtNum(price, 2);
+  const dir = classifyDir(pct);
+  priceEl.className = 'stock-hero-price ' + dir;
+  chgEl.textContent = fmtPct(pct);
+  chgEl.className = 'stock-hero-chg ' + dir;
+
+  // 行业信息
+  const indEl = document.getElementById('hero-industry');
+  if (d.industry) {
+    const ipct = d.industry_pct_change;
+    const idir = classifyDir(ipct);
+    indEl.innerHTML = '<span class="ind-name">' + escapeHtml(d.industry) + '</span>'
+      + (ipct != null ? '<span class="ind-pct ' + idir + '">' + fmtPct(ipct) + '</span>' : '');
+  } else {
+    indEl.textContent = '';
+  }
+
+  const setV = (id, v, dirClass) => {
+    const el = document.getElementById(id);
+    el.textContent = (v === null || v === undefined || v === '-') ? '-' : v;
+    if (dirClass) el.className = 'kv-v ' + dirClass;
+    else el.className = 'kv-v';
+  };
+  setV('hero-open', fmtNum(q.open, 2), classifyByRef(q.open, q.prev_close));
+  setV('hero-prev', fmtNum(q.prev_close, 2), 'dim');
+  setV('hero-high', fmtNum(q.high, 2), classifyByRef(q.high, q.prev_close));
+  setV('hero-low', fmtNum(q.low, 2), classifyByRef(q.low, q.prev_close));
+  setV('hero-volume', fmtWan(q.volume) + '手');
+  setV('hero-amount', fmtYi(q.amount));
+  setV('hero-turnover', fmtPct(q.turnover_ratio));
+  setV('hero-cap', fmtYi(d.market_cap));
+  setV('hero-pe', fmtNum(d.pe_ratio, 2));
+  setV('hero-pb', fmtNum(d.pb_ratio, 2));
+  setV('hero-since', fmtPct(q.since_listing_pct), classifyDir(q.since_listing_pct));
+  setV('hero-listing', d.listing_date || '-', 'dim');
+
+  // degraded 提示
+  const degraded = d.degraded_fields || [];
+  const degradedEl = document.getElementById('hero-degraded');
+  if (degraded.length > 0) {
+    degradedEl.style.display = '';
+    degradedEl.textContent = '⚠️ 以下字段本次获取失败，显示为 "-"：' + degraded.join(', ');
+  } else {
+    degradedEl.style.display = 'none';
+  }
+}
+
+// ---------------------------------------------------------------
+// 加载 K 线
+// ---------------------------------------------------------------
+async function loadKline(period) {
+  currentMode = { mode: 'kline', period };
+  try {
+    const r = await fetch('/api/stock/kline/' + STOCK_SYMBOL + '?period=' + encodeURIComponent(period) + '&limit=250');
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || ('HTTP ' + r.status));
+    }
+    const d = await r.json();
+    currentKlineData = d;
+    renderMissingBanner(d.bars.length === 0 && ['D', 'W', 'M', 'Y'].includes(period));
+    renderStockKline(d);
+  } catch (e) {
+    if (typeof toast === 'function') toast('K 线加载失败: ' + e.message, 'error');
+    console.error(e);
+  }
+}
+
+async function loadIntraday(days) {
+  currentMode = { mode: 'intraday', days };
+  try {
+    const r = await fetch('/api/stock/intraday/' + STOCK_SYMBOL + '?days=' + days);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || ('HTTP ' + r.status));
+    }
+    const d = await r.json();
+    currentIntradayData = d;
+    renderIntraday(d);
+  } catch (e) {
+    if (typeof toast === 'function') toast('分时数据加载失败: ' + e.message, 'error');
+    console.error(e);
+  }
+}
+
+// ---------------------------------------------------------------
+// 周期 tab 事件
+// ---------------------------------------------------------------
+function bindTabs() {
+  const tabs = document.getElementById('period-tabs');
+  tabs.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (btn.dataset.mode === 'kline') loadKline(btn.dataset.period);
+      else loadIntraday(parseInt(btn.dataset.days, 10));
+    });
+  });
+}
+
+function renderMissingBanner(show) {
+  const el = document.getElementById('hero-missing-banner');
+  if (!show) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML =
+    '📁 本地 parquet 里没有该股票的历史数据。可执行以下命令回填：<br>'
+    + '<code>PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app data bootstrap --lookback 250</code>';
+}
+
+// ---------------------------------------------------------------
+// MA / MACD 前端计算
+// ---------------------------------------------------------------
+function computeMA(closes, window) {
+  const out = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (i + 1 < window) { out.push(null); continue; }
+    let sum = 0;
+    for (let j = i + 1 - window; j <= i; j++) sum += closes[j];
+    out.push(sum / window);
+  }
+  return out;
+}
+
+function computeEMA(vals, period) {
+  const out = [];
+  const k = 2 / (period + 1);
+  let prev = null;
+  for (let i = 0; i < vals.length; i++) {
+    if (i + 1 < period) { out.push(null); continue; }
+    if (i + 1 === period) {
+      let sum = 0;
+      for (let j = 0; j < period; j++) sum += vals[j];
+      prev = sum / period;
+    } else {
+      prev = vals[i] * k + prev * (1 - k);
+    }
+    out.push(prev);
+  }
+  return out;
+}
+
+function computeMACD(closes) {
+  const fastEMA = computeEMA(closes, 12);
+  const slowEMA = computeEMA(closes, 26);
+  const dif = closes.map((_, i) => {
+    if (fastEMA[i] == null || slowEMA[i] == null) return null;
+    return fastEMA[i] - slowEMA[i];
+  });
+  const difForDEA = dif.map(v => v == null ? 0 : v);
+  const dea = computeEMA(difForDEA, 9);
+  const macd = closes.map((_, i) => {
+    if (dif[i] == null || dea[i] == null) return null;
+    return (dif[i] - dea[i]) * 2;
+  });
+  return { dif, dea, macd };
+}
+
+// ---------------------------------------------------------------
+// ECharts 主渲染（3 grid: K + MA / 成交量 / MACD）
+// ---------------------------------------------------------------
+function renderStockKline(data) {
+  const el = document.getElementById('stock-chart');
+  el.className = 'stock-chart';  // 移除 intraday 类
+  // 未复权提示：分钟 K 走 akshare 实时源、不复权，与主图前复权日 K 会有跳跃
+  const hintEl = document.getElementById('chart-hint');
+  if (data.source === 'akshare_realtime') {
+    hintEl.style.display = '';
+    hintEl.innerHTML = 'ⓘ 分钟 K 由 akshare 实时提供，<b>不复权</b>；与日/周/月 K（前复权）价格可能有跳跃。';
+  } else {
+    hintEl.style.display = 'none';
+  }
+  const bars = data.bars || [];
+  if (!bars.length) {
+    if (typeof echarts !== 'undefined') {
+      const old = echarts.getInstanceByDom(el);
+      if (old) old.dispose();
+    }
+    el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">∅</div>'
+      + '<div class="em-title">该周期无数据</div>'
+      + '<div class="em-hint">分钟级需要 akshare 网络可达；日线周期检查本地 parquet 是否已回填</div></div>';
+    return;
+  }
+  el.innerHTML = '';
+
+  const dates = bars.map(b => b.t);
+  const ohlc = bars.map(b => [b.o, b.c, b.l, b.h]);
+  const closes = bars.map(b => b.c);
+  const prevCloses = [null].concat(closes.slice(0, -1));
+  const volumes = bars.map((b, i) => ({
+    value: b.v,
+    itemStyle: { color: b.c >= b.o ? '#ef4444' : '#10b981' }
+  }));
+
+  const ma5 = computeMA(closes, 5);
+  const ma10 = computeMA(closes, 10);
+  const ma30 = computeMA(closes, 30);
+  const ma60 = computeMA(closes, 60);
+  const macdVals = computeMACD(closes);
+  const macdBars = macdVals.macd.map(v => ({
+    value: v,
+    itemStyle: { color: (v || 0) >= 0 ? '#ef4444' : '#10b981' }
+  }));
+
+  if (typeof echarts === 'undefined') return;
+  const old = echarts.getInstanceByDom(el);
+  if (old) old.dispose();
+  const chart = echarts.init(el);
+
+  const option = {
+    backgroundColor: 'transparent',
+    animation: false,
+    axisPointer: { link: [{ xAxisIndex: 'all' }], label: { backgroundColor: '#334155' } },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross' },
+      backgroundColor: 'rgba(17,20,27,0.96)',
+      borderColor: '#334155',
+      textStyle: { color: '#e2e8f0' },
+      formatter: function (params) {
+        return buildTooltip(params, bars, prevCloses, ma5, ma10, ma30, ma60, macdVals);
+      },
+    },
+    legend: {
+      data: ['MA5', 'MA10', 'MA30', 'MA60', 'DIF', 'DEA'],
+      textStyle: { color: '#94a3b8', fontSize: 11 },
+      top: 2,
+    },
+    grid: [
+      { left: 56, right: 16, top: 30, height: '55%' },
+      { left: 56, right: 16, top: '68%', height: '12%' },
+      { left: 56, right: 16, top: '82%', height: '15%' },
+    ],
+    xAxis: [
+      { type: 'category', data: dates, scale: true, boundaryGap: false,
+        axisLine: { lineStyle: { color: '#334155' } },
+        axisLabel: { color: '#94a3b8', fontSize: 10 },
+        splitLine: { show: false } },
+      { type: 'category', gridIndex: 1, data: dates, boundaryGap: false,
+        axisLine: { lineStyle: { color: '#334155' } },
+        axisLabel: { show: false } },
+      { type: 'category', gridIndex: 2, data: dates, boundaryGap: false,
+        axisLine: { lineStyle: { color: '#334155' } },
+        axisLabel: { color: '#94a3b8', fontSize: 10 } },
+    ],
+    yAxis: [
+      { scale: true, splitLine: { lineStyle: { color: '#1e293b', type: 'dashed' } },
+        axisLabel: { color: '#94a3b8', fontSize: 10 } },
+      { gridIndex: 1, scale: true, splitNumber: 2,
+        splitLine: { show: false },
+        axisLabel: { color: '#94a3b8', fontSize: 10 } },
+      { gridIndex: 2, scale: true, splitNumber: 2,
+        splitLine: { lineStyle: { color: '#1e293b', type: 'dashed' } },
+        axisLabel: { color: '#94a3b8', fontSize: 10 } },
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: [0, 1, 2], start: 60, end: 100 },
+      { show: true, type: 'slider', xAxisIndex: [0, 1, 2], bottom: 2, start: 60, end: 100, height: 16,
+        borderColor: '#334155', fillerColor: 'rgba(94,234,212,0.14)' },
+    ],
+    series: [
+      { name: 'K线', type: 'candlestick', data: ohlc,
+        itemStyle: { color: '#ef4444', color0: '#10b981', borderColor: '#ef4444', borderColor0: '#10b981' } },
+      { name: 'MA5', type: 'line', data: ma5, showSymbol: false, smooth: false, lineStyle: { width: 1, color: '#fbbf24' } },
+      { name: 'MA10', type: 'line', data: ma10, showSymbol: false, smooth: false, lineStyle: { width: 1, color: '#60a5fa' } },
+      { name: 'MA30', type: 'line', data: ma30, showSymbol: false, smooth: false, lineStyle: { width: 1, color: '#c084fc' } },
+      { name: 'MA60', type: 'line', data: ma60, showSymbol: false, smooth: false, lineStyle: { width: 1, color: '#5eead4' } },
+      { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volumes },
+      { name: 'MACD', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: macdBars },
+      { name: 'DIF', type: 'line', xAxisIndex: 2, yAxisIndex: 2, data: macdVals.dif,
+        showSymbol: false, lineStyle: { width: 1, color: '#fbbf24' } },
+      { name: 'DEA', type: 'line', xAxisIndex: 2, yAxisIndex: 2, data: macdVals.dea,
+        showSymbol: false, lineStyle: { width: 1, color: '#60a5fa' } },
+    ],
+  };
+  chart.setOption(option, true);
+  bindChartResize(chart);
+}
+
+function buildTooltip(params, bars, prevCloses, ma5, ma10, ma30, ma60, macdVals) {
+  if (!params || !params.length) return '';
+  const idx = params[0].dataIndex;
+  const bar = bars[idx];
+  const prev = prevCloses[idx];
+  const chg = prev != null && bar.c != null ? (bar.c - prev) / prev * 100 : null;
+  const firstClose = bars[0] && bars[0].c ? bars[0].c : null;
+  const sinceStart = firstClose && bar.c != null ? (bar.c - firstClose) / firstClose * 100 : null;
+
+  const row = (k, v, cls) =>
+    '<div class="tip-row"><span class="tip-k">' + escapeHtml(k) + '</span>'
+    + '<span class="tip-v ' + (cls || '') + '">' + v + '</span></div>';
+
+  const chgCls = classifyDir(chg);
+  const sinceCls = classifyDir(sinceStart);
+
+  let html = '<div class="kline-tip">';
+  html += row('时间', bar.t);
+  html += row('涨跌幅', fmtPct(chg), chgCls);
+  html += row('至今涨幅', fmtPct(sinceStart), sinceCls);
+  html += row('开盘', fmtNum(bar.o, 2), classifyByRef(bar.o, prev));
+  html += row('收盘', fmtNum(bar.c, 2), classifyByRef(bar.c, prev));
+  html += row('最高', fmtNum(bar.h, 2), classifyByRef(bar.h, prev));
+  html += row('最低', fmtNum(bar.l, 2), classifyByRef(bar.l, prev));
+  html += row('MA5', fmtNum(ma5[idx], 2));
+  html += row('MA10', fmtNum(ma10[idx], 2));
+  html += row('MA30', fmtNum(ma30[idx], 2));
+  html += row('MA60', fmtNum(ma60[idx], 2));
+  html += row('MACD', fmtNum(macdVals.macd[idx], 3));
+  html += row('DIF', fmtNum(macdVals.dif[idx], 3));
+  html += row('DEA', fmtNum(macdVals.dea[idx], 3));
+  html += row('成交量', fmtWan(bar.v) + '手');
+  html += row('成交额', fmtYi(bar.a || 0));
+  html += '</div>';
+  return html;
+}
+
+// ---------------------------------------------------------------
+// 分时图渲染（单折线 + 均价 + 成交量）
+// ---------------------------------------------------------------
+function renderIntraday(data) {
+  const el = document.getElementById('stock-chart');
+  el.className = 'stock-chart intraday';
+  // 分时数据同样不复权，但语义上"就是今日/近几日实时价"，不需要额外提示
+  const hintEl = document.getElementById('chart-hint');
+  if (hintEl) hintEl.style.display = 'none';
+  const points = data.points || [];
+  if (typeof echarts !== 'undefined') {
+    const old = echarts.getInstanceByDom(el);
+    if (old) old.dispose();
+  }
+  if (!points.length) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">∅</div>'
+      + '<div class="em-title">分时数据不可用</div>'
+      + '<div class="em-hint">akshare 分时接口需要网络可达；请检查连接</div></div>';
+    return;
+  }
+  el.innerHTML = '';
+  const times = points.map(p => (p.t || '').slice(11, 16));
+  const prices = points.map(p => p.price);
+  const avgs = points.map(p => p.avg);
+  const vols = points.map(p => p.volume);
+
+  const chart = echarts.init(el);
+  chart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' },
+      backgroundColor: 'rgba(17,20,27,0.96)', borderColor: '#334155',
+      textStyle: { color: '#e2e8f0' } },
+    legend: { data: ['现价', '均价'], textStyle: { color: '#94a3b8' }, top: 4 },
+    grid: [
+      { left: 56, right: 16, top: 30, height: '65%' },
+      { left: 56, right: 16, top: '76%', height: '18%' },
+    ],
+    xAxis: [
+      { type: 'category', data: times, axisLine: { lineStyle: { color: '#334155' } },
+        axisLabel: { color: '#94a3b8', fontSize: 10 } },
+      { type: 'category', gridIndex: 1, data: times,
+        axisLine: { lineStyle: { color: '#334155' } },
+        axisLabel: { show: false } },
+    ],
+    yAxis: [
+      { scale: true, splitLine: { lineStyle: { color: '#1e293b', type: 'dashed' } },
+        axisLabel: { color: '#94a3b8', fontSize: 10 } },
+      { gridIndex: 1, splitNumber: 2, splitLine: { show: false },
+        axisLabel: { color: '#94a3b8', fontSize: 10 } },
+    ],
+    series: [
+      { name: '现价', type: 'line', data: prices, showSymbol: false, smooth: false,
+        lineStyle: { color: '#5eead4', width: 1.5 },
+        areaStyle: { color: 'rgba(94,234,212,0.08)' } },
+      { name: '均价', type: 'line', data: avgs, showSymbol: false, smooth: false,
+        lineStyle: { color: '#fbbf24', width: 1 } },
+      { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vols,
+        itemStyle: { color: '#5eead4', opacity: 0.5 } },
+    ],
+  }, true);
+  bindChartResize(chart);
+}
+
+// ---------------------------------------------------------------
+// 格式化辅助
+// ---------------------------------------------------------------
+function fmtNum(v, digits) {
+  if (v === null || v === undefined) return '-';
+  const n = parseFloat(v);
+  if (isNaN(n)) return '-';
+  const d = digits === undefined ? 2 : digits;
+  if (Math.abs(n) >= 100) return n.toLocaleString('en', { maximumFractionDigits: d, minimumFractionDigits: 0 });
+  return n.toFixed(d);
+}
+function fmtPct(v) {
+  if (v === null || v === undefined) return '-';
+  const n = parseFloat(v);
+  if (isNaN(n)) return '-';
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+function fmtYi(v) {
+  if (v === null || v === undefined) return '-';
+  const n = parseFloat(v);
+  if (isNaN(n)) return '-';
+  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿';
+  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + '万';
+  return n.toFixed(2);
+}
+function fmtWan(v) {
+  if (v === null || v === undefined) return '-';
+  const n = parseFloat(v);
+  if (isNaN(n)) return '-';
+  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + '万';
+  return n.toFixed(0);
+}
+function classifyDir(v) {
+  if (v === null || v === undefined) return 'flat';
+  const n = parseFloat(v);
+  if (isNaN(n) || Math.abs(n) < 1e-9) return 'flat';
+  return n > 0 ? 'up' : 'down';
+}
+function classifyByRef(v, ref) {
+  if (v === null || v === undefined || ref === null || ref === undefined) return '';
+  const a = parseFloat(v), b = parseFloat(ref);
+  if (isNaN(a) || isNaN(b) || Math.abs(a - b) < 1e-9) return '';
+  return a > b ? 'up' : 'down';
+}
+
+// ---------------------------------------------------------------
+// AI 抽屉交互
+// ---------------------------------------------------------------
+let AI_SESSION_ID = null;
+let AI_LOADING = false;
+
+document.getElementById('ai-analyze-btn').addEventListener('click', () => {
+  openDrawer();
+  if (!AI_SESSION_ID) startAnalyze();
+});
+
+document.getElementById('ai-drawer-close').addEventListener('click', closeDrawer);
+document.getElementById('ai-drawer-backdrop').addEventListener('click', closeDrawer);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('ai-drawer').classList.contains('is-open')) {
+    closeDrawer();
+  }
+});
+
+// 追问 textarea Enter 发送 / Shift+Enter 换行
+const askInput = document.getElementById('ai-drawer-textarea');
+askInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendFollowup();
+  }
+});
+document.getElementById('ai-drawer-send').addEventListener('click', sendFollowup);
+
+// textarea 自动增高
+askInput.addEventListener('input', () => {
+  askInput.style.height = 'auto';
+  askInput.style.height = Math.min(askInput.scrollHeight, 120) + 'px';
+});
+
+function openDrawer() {
+  document.getElementById('ai-drawer').classList.add('is-open');
+  document.getElementById('ai-drawer').setAttribute('aria-hidden', 'false');
+  document.getElementById('ai-drawer-backdrop').classList.add('is-open');
+  document.getElementById('ai-drawer-sym').textContent = '· ' + STOCK_SYMBOL;
+}
+
+function closeDrawer() {
+  document.getElementById('ai-drawer').classList.remove('is-open');
+  document.getElementById('ai-drawer').setAttribute('aria-hidden', 'true');
+  document.getElementById('ai-drawer-backdrop').classList.remove('is-open');
+}
+
+async function startAnalyze() {
+  if (AI_LOADING) return;
+  AI_LOADING = true;
+  const btn = document.getElementById('ai-analyze-btn');
+  btn.disabled = true;
+  const body = document.getElementById('ai-drawer-body');
+  const period = currentMode.mode === 'kline' ? currentMode.period : 'D';
+
+  body.innerHTML =
+    '<div class="ai-drawer-loading">'
+    + '<span class="lo-spinner"></span>'
+    + '<span>AI 正在分析 ' + escapeHtml(STOCK_SYMBOL) + '，大约需要 20-60 秒…</span>'
+    + '</div>';
+  const startTs = Date.now();
+  const tickerEl = body.querySelector('.ai-drawer-loading span:last-child');
+  const ticker = setInterval(() => {
+    const s = Math.floor((Date.now() - startTs) / 1000);
+    tickerEl.textContent = 'AI 正在分析 ' + STOCK_SYMBOL + '，已用时 ' + s + ' 秒…';
+  }, 1000);
+
+  try {
+    const r = await fetch('/api/stock/analyze/' + STOCK_SYMBOL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ period_context: period }),
+    });
+    clearInterval(ticker);
+    if (!r.ok) {
+      let err = null;
+      try { err = await r.json(); } catch (_) {}
+      const msg = err && err.detail
+        ? (typeof err.detail === 'object' ? JSON.stringify(err.detail) : err.detail)
+        : ('HTTP ' + r.status);
+      renderAnalyzeError(msg);
+      return;
+    }
+    const d = await r.json();
+    AI_SESSION_ID = d.session_id;
+    renderAnalyzeResult(d);
+    document.getElementById('ai-drawer-input').style.display = '';
+  } catch (e) {
+    clearInterval(ticker);
+    renderAnalyzeError(e.message || String(e));
+  } finally {
+    AI_LOADING = false;
+    btn.disabled = false;
+  }
+}
+
+function renderAnalyzeResult(d) {
+  const body = document.getElementById('ai-drawer-body');
+  body.innerHTML = '';
+  const first = document.createElement('div');
+  first.className = 'ai-turn ai-turn-assistant';
+  first.innerHTML = renderMarkdown(d.content || '');
+  body.appendChild(first);
+  body.scrollTop = body.scrollHeight;
+}
+
+function renderAnalyzeError(msg) {
+  const body = document.getElementById('ai-drawer-body');
+  body.innerHTML =
+    '<div class="stock-degraded-tip">🤖 AI 分析失败：' + escapeHtml(msg) + '<br>'
+    + '<span class="small" style="color:var(--fg-dim)">请稍后重试；若持续失败，检查本地 LLM 代理（默认 127.0.0.1:18931）是否可达。</span>'
+    + '</div>'
+    + '<button class="primary" style="margin-top:12px" onclick="AI_SESSION_ID=null;startAnalyze()">重试</button>';
+}
+
+async function sendFollowup() {
+  if (AI_LOADING || !AI_SESSION_ID) return;
+  const textarea = document.getElementById('ai-drawer-textarea');
+  const content = textarea.value.trim();
+  if (!content) return;
+
+  AI_LOADING = true;
+  document.getElementById('ai-drawer-send').disabled = true;
+
+  // 追加用户气泡
+  const body = document.getElementById('ai-drawer-body');
+  const userTurn = document.createElement('div');
+  userTurn.className = 'ai-turn ai-turn-user';
+  userTurn.textContent = content;
+  body.appendChild(userTurn);
+
+  const asstTurn = document.createElement('div');
+  asstTurn.className = 'ai-turn ai-turn-assistant';
+  asstTurn.innerHTML = '<span class="lo-spinner"></span> AI 思考中…';
+  body.appendChild(asstTurn);
+  body.scrollTop = body.scrollHeight;
+
+  textarea.value = '';
+  textarea.style.height = 'auto';
+
+  try {
+    // 复用 /api/chat 的 SSE endpoint
+    const r = await fetch('/api/chat/sessions/' + AI_SESSION_ID + '/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!r.ok || !r.body) {
+      asstTurn.innerHTML = '<span style="color:var(--err)">追问失败：HTTP ' + r.status + '</span>';
+      return;
+    }
+    await consumeSSE(r.body, {
+      onAssistant: (txt) => { asstTurn.innerHTML = renderMarkdown(txt); body.scrollTop = body.scrollHeight; },
+      onError: (payload) => {
+        asstTurn.innerHTML = '<span style="color:var(--err)">追问失败：' + escapeHtml(payload.message || JSON.stringify(payload)) + '</span>';
+      },
+      onToolUse: (payload) => {
+        // 在 assistant 气泡上方插一行 🔧 工具调用记录
+        const tool = document.createElement('div');
+        tool.className = 'small';
+        tool.style.color = 'var(--fg-dim)';
+        tool.style.margin = '4px 0';
+        tool.textContent = '🔧 ' + (payload.name || '工具调用');
+        body.insertBefore(tool, asstTurn);
+      },
+    });
+  } catch (e) {
+    asstTurn.innerHTML = '<span style="color:var(--err)">网络异常：' + escapeHtml(e.message || String(e)) + '</span>';
+  } finally {
+    AI_LOADING = false;
+    document.getElementById('ai-drawer-send').disabled = false;
+  }
+}
+
+// 最简 SSE 消费：按 event/data 行切分
+async function consumeSSE(readableStream, handlers) {
+  const reader = readableStream.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const eventLine = chunk.split('\n').find(l => l.startsWith('event: '));
+      const dataLine = chunk.split('\n').find(l => l.startsWith('data: '));
+      if (!eventLine || !dataLine) continue;
+      const eventName = eventLine.slice(7).trim();
+      const rawData = dataLine.slice(6);
+      let payload = {};
+      try { payload = JSON.parse(rawData); } catch (_) {}
+      if (eventName === 'assistant' && handlers.onAssistant) handlers.onAssistant(payload.content || '');
+      else if (eventName === 'tool_use' && handlers.onToolUse) handlers.onToolUse(payload);
+      else if (eventName === 'error' && handlers.onError) handlers.onError(payload);
+    }
+  }
+}
+
+// 最简 markdown（复用 chat.html.j2 里的实现思路，简化版）
+function renderMarkdown(text) {
+  let s = String(text || '');
+  // 代码块
+  const blocks = [];
+  s = s.replace(/```([\s\S]*?)```/g, (_m, code) => {
+    blocks.push('<pre class="md-code">' + escapeHtml(code.trim()) + '</pre>');
+    return `\x00BLOCK${blocks.length - 1}\x00`;
+  });
+  // 转义
+  s = escapeHtml(s);
+  // 标题 ## / ###
+  s = s.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  s = s.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  // 粗体
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // 行内代码
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // 列表
+  s = s.replace(/^-\s+(.+)$/gm, '<li>$1</li>');
+  s = s.replace(/(<li>.*<\/li>)(\n<li>.*<\/li>)+/gs, m => '<ul>' + m + '</ul>');
+  // 分割线
+  s = s.replace(/^---$/gm, '<hr>');
+  // 换行
+  s = s.replace(/\n{2,}/g, '</p><p>');
+  s = s.replace(/\n/g, '<br>');
+  s = '<p>' + s + '</p>';
+  // 还原代码块
+  s = s.replace(/\x00BLOCK(\d+)\x00/g, (_m, i) => blocks[parseInt(i, 10)] || '');
+  return s;
+}
+</script>
+{% endblock %}
