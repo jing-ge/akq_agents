@@ -94,6 +94,11 @@
     </div>
   </div>
 
+  <!-- ================ 数据结论卡 (本地即时算, 常驻可见) ================ -->
+  <!-- 5 条基本面速览: 估值/均线/近期表现/成交动能/市值分档. 用户不必展开
+       AI 面板就能一眼看清基本面; AI 面板保留 LLM 综合判断 (追问). -->
+  <div id="quick-insights-panel" class="stock-insights-panel"></div>
+
   <!-- ================ 周期切换 ================ -->
   <div class="stock-period-tabs" id="period-tabs">
     <button data-mode="intraday" data-days="1">分时</button>
@@ -176,7 +181,7 @@ async function loadOverview() {
   // quick: 立即出首屏可见的部分字段
   const quickPromise = fetch('/api/stock/overview/' + STOCK_SYMBOL + '?fast=1')
     .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-    .then(d => { currentOverview = d; renderHero(d, { partial: true }); return d; })
+    .then(d => { currentOverview = d; renderHero(d, { partial: true }); refreshInsightsPanel(); return d; })
     .catch(e => {
       console.warn('overview quick 失败:', e);
       return null;  // quick 失败不阻断 full, 让 full 兜底
@@ -185,7 +190,7 @@ async function loadOverview() {
   // full: 并行拉全套 (慢), 回来后覆盖 quick
   const fullPromise = fetch('/api/stock/overview/' + STOCK_SYMBOL)
     .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-    .then(d => { currentOverview = d; renderHero(d, { partial: false }); return d; })
+    .then(d => { currentOverview = d; renderHero(d, { partial: false }); refreshInsightsPanel(); return d; })
     .catch(e => {
       if (typeof toast === 'function') toast('overview 加载失败: ' + e.message, 'error');
       return null;
@@ -313,6 +318,7 @@ async function loadKline(period) {
     renderMissingBanner(d.bars.length === 0 && ['D', 'W', 'M', 'Y'].includes(period));
     renderStockKline(d);
     renderMaBadges(d);  // 均线速览条 (本地算, 秒出)
+    refreshInsightsPanel();  // 数据结论卡 (常驻)
   } catch (e) {
     if (typeof toast === 'function') toast('K 线加载失败: ' + e.message, 'error');
     console.error(e);
@@ -718,6 +724,19 @@ function renderMaBadges(kline) {
   badgesEl.innerHTML = html.join('');
 }
 
+// 数据结论卡刷新: overview 或 kline 更新后调用一次, 在 K 线下方常驻显示.
+// 无 overview + 无 kline 时 hide, 有任何一个就显示 (会跳过缺数据的那几行).
+function refreshInsightsPanel() {
+  const el = document.getElementById('quick-insights-panel');
+  if (!el) return;
+  if (currentOverview == null && currentKlineData == null) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  el.innerHTML = buildQuickInsightsCard(currentOverview, currentKlineData);
+}
+
 // AI 数据结论卡: 展开 AI 面板时, 在 LLM 请求出结果前先展示这一卡结构化结论,
 // 用户第一秒就有可读内容. 全部本地算, 不请求任何后端.
 //   - 估值位置: PE/PB 5y 分位 → 便宜/中位/偏贵
@@ -951,15 +970,13 @@ async function startAnalyze() {
   const body = document.getElementById('ai-content');
   const period = currentMode.mode === 'kline' ? currentMode.period : 'D';
 
-  // 1) 先塞'数据结论卡'(本地立即算, 无需等 LLM). 用户展开面板第一秒
-  //    就有 5-6 条结构化基本面速览可读, 不再对着 spinner 干等.
-  const quickCard = buildQuickInsightsCard(currentOverview, currentKlineData);
+  // 1) AI 面板 loading. 数据结论卡已在 K 线下方常驻, AI 面板专注 LLM 综合判断.
   const loadingCard =
     '<div class="stock-ai-loading" id="ai-loading-placeholder">'
     + '<span class="lo-spinner"></span>'
-    + '<span>AI 综合判断生成中, 大约需要 20-60 秒…</span>'
+    + '<span>AI 综合判断生成中, 大约需要 20-60 秒… (上方"数据结论"已给出本地即时结论)</span>'
     + '</div>';
-  body.innerHTML = quickCard + loadingCard;
+  body.innerHTML = loadingCard;
 
   const startTs = Date.now();
   const tickerEl = body.querySelector('#ai-loading-placeholder span:last-child');

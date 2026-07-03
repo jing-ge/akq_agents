@@ -3585,6 +3585,11 @@ tbody tr:hover td { background: var(--accent-soft); transition: background 120ms
 .ma-badge.flat  { }  /* 差异 <0.5% 保持中性 */
 
 /* ==== AI 面板数据结论卡 (LLM 前先展示的本地结构化结论) ==================== */
+/* 也是 K 线下方 #quick-insights-panel 用的样式. 复用同一 CSS. */
+.stock-insights-panel {
+  margin-top: 10px;
+}
+.stock-insights-panel:empty { display: none; }
 .quick-insights-card {
   padding: 12px 14px;
   background: rgba(94, 234, 212, 0.03);
