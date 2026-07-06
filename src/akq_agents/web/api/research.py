@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from datetime import date as _date
 from typing import Any
@@ -12,6 +13,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from akq_agents.web.deps import ServiceContainer, get_services
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -912,3 +915,73 @@ def _latest_ohlcv_partition(repo) -> _date | None:
             except ValueError:
                 continue
     return max(candidates) if candidates else None
+
+
+@router.get("/factors/ic-diagnostics")
+async def factors_ic_diagnostics(
+    only_selected: bool = Query(default=True, description="只跑当前入选组合的因子 (14 只), False 会跑全体 active 因子 (慢)"),
+) -> dict[str, Any]:
+    """P2-4 Step 1: 因子 IC 诊断 (离线, 不改评估器).
+
+    对当前入选因子, 分别用 4 种方式算最近 30 天平均 spearman IC:
+      - baseline: 原始 (与现在评估器一致)
+      - winsor: 因子值 5%/95% winsorize
+      - industry_neutral: 因子值行业内 demean
+      - combined: winsor + industry_neutral
+
+    返回每因子 4 组 IC + 汇总 (mean|IC|) 与相对基线的 lift %.
+    用于评估: 是否值得改评估器 (P2-4 Step 2).
+    """
+    svc: ServiceContainer = get_services()
+    if svc.repo is None or svc.factor_registry is None:
+        raise HTTPException(503, "repo or registry not ready")
+
+    # industry_map (P0 加过, 走 ServiceContainer)
+    industry_map: dict[str, str] = {}
+    try:
+        industry_store = svc.workflow.services.get("industry_map_store") if svc.workflow else None
+        if industry_store is not None:
+            industry_map = industry_store.load_names()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ic_diagnostics: industry_map load failed: %s", exc)
+
+    # 当前入选因子: 用 composite_scorer 算的 weights > 0. 无 weights 时 fallback 到
+    # registry 里最新 IR 前 20 名 (仍是聚焦'当前认为好的因子', 而不是全 359 只一起跑)
+    selected_names: list[str] | None = None
+    if only_selected:
+        registry_factors = svc.factor_registry.list_all()
+        try:
+            if registry_factors and svc.composite_scorer is not None:
+                names_all = [f.name for f in registry_factors]
+                weights = svc.composite_scorer.compute_weights_for(names_all)
+                selected_names = [n for n, w in weights.items() if w and float(w) > 0]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ic_diagnostics: composite_weights lookup failed: %s", exc)
+        # fallback: 拿不到 composite weights → registry 里按最新 IR 排序取 top 8
+        if not selected_names and registry_factors and svc.factor_evaluator is not None:
+            scored: list[tuple[str, float]] = []
+            for f in registry_factors:
+                try:
+                    m = svc.factor_evaluator.get_latest(f.name, f.factor_version)
+                    if m and m.ir is not None:
+                        scored.append((f.name, abs(float(m.ir))))
+                except Exception:  # noqa: BLE001
+                    continue
+            scored.sort(key=lambda x: -x[1])
+            selected_names = [n for n, _ in scored[:8]]
+            logger.info("ic_diagnostics: composite unavailable, fallback to top-8 by |IR| (%d picked)", len(selected_names))
+        if not selected_names:
+            logger.info("ic_diagnostics: falling back to full registry (may be slow)")
+
+    # 走线程池, 避免阻塞 event loop
+    from akq_agents.services.factors.ic_diagnostics import diagnose_selected_factors
+    result = await asyncio.to_thread(
+        diagnose_selected_factors,
+        repo=svc.repo,
+        registry=svc.factor_registry,
+        industry_map=industry_map,
+        selected_names=selected_names,
+    )
+    result["only_selected"] = only_selected
+    result["n_selected_input"] = len(selected_names) if selected_names else 0
+    return result
