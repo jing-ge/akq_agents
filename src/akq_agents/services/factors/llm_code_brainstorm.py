@@ -268,6 +268,7 @@ class LLMCodeFactorBrainstormer:
             "unsafe_code": 0,
             "timeout": 0,
             "duplicate": 0,
+            "duplicate_by_value": 0,  # P1-3: 计算值与已有因子 spearman > threshold
             "invalid": 0,
             "errors": 0,
         }
@@ -286,6 +287,13 @@ class LLMCodeFactorBrainstormer:
             logger.exception("LLM code brainstorm failed: %s", exc)
             stats["errors"] += 1
             return stats
+
+        # P1-3: 预备冗余检查上下文 - 一次性 build 现有活因子的 factor_history
+        # 值级冗余: LLM 常写出'代码不同但计算值等价'的因子 (如 llm_pct_change_close_60 与 momentum_60
+        # corr=+1.0), 这些走 code_hash 去重查不出, 会浪费 30s IS-IC backfill.
+        # 在入库前用 spearman 相关性检查一次, |corr|>0.85 就当'值级重复'跳过.
+        active_hist_map = self._build_active_factor_history()  # 可能失败, None 表示跳过冗余检查
+        redundancy_threshold = 0.85
 
         ts = now_iso()
         for s in suggestions[:n]:
@@ -321,7 +329,7 @@ class LLMCodeFactorBrainstormer:
                 stats["compile_failed"] += 1
                 continue
 
-            # 2) 跨 session 去重 (code_hash)
+            # 2) 跨 session 去重 (code_hash) - 代码级
             if self._store.exists_code_hash(ch) is not None:
                 logger.info("LLM code duplicate (code_hash=%s)", ch[:8])
                 stats["duplicate"] += 1
@@ -331,6 +339,19 @@ class LLMCodeFactorBrainstormer:
             concept = (description or "x").lower().replace(" ", "_")[:20]
             concept = "".join(c for c in concept if c.isalnum() or c == "_") or "x"
             name = f"code_{concept}_{ch[:6]}"
+
+            # 3.5) P1-3: 值级冗余检查 (与现有活因子对比)
+            if active_hist_map:
+                is_redundant, worst_corr, worst_peer = self._is_redundant_by_value(
+                    fn, direction, name, active_hist_map, redundancy_threshold,
+                )
+                if is_redundant:
+                    logger.info(
+                        "LLM code redundant-by-value: %s ~ %s (spearman=%.3f > %.2f)",
+                        name, worst_peer, worst_corr, redundancy_threshold,
+                    )
+                    stats["duplicate_by_value"] += 1
+                    continue
 
             # 4) 入库
             # recipe_json 留个摘要 (description + direction), 真正的 source 在 recipe_code
@@ -437,3 +458,89 @@ class LLMCodeFactorBrainstormer:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("backfill_one(%s) failed: %s", stored_match.factor_name, exc)
         stats["backfilled"] = n_backfilled
+
+    # ---------------------------------------------------------------- P1-3: 值级冗余检查
+    def _build_active_factor_history(self) -> dict[str, Any] | None:
+        """一次性算所有 active 因子的 factor_history (dict[name -> DataFrame]).
+
+        返回 None 表示 ctx 或数据不可用, 冗余检查降级跳过 (不影响原有 code_hash 去重).
+        缓存到 self._active_hist_cache 让多次 brainstorm 之间不重算 (5min TTL).
+        """
+        if self._repo is None:
+            return None
+        try:
+            from akq_agents.services.factors.history_backfill import HistoryBackfillContext
+            from akq_agents.services.factors.history_backfill import (
+                _default_compute_factor_history as _compute_hist,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("redundancy check import failed: %s", exc)
+            return None
+
+        ctx = HistoryBackfillContext.build(
+            repo=self._repo, evaluator=self._evaluator, days=90, step=1,
+        )
+        if ctx is None:
+            logger.debug("redundancy check ctx build failed")
+            return None
+
+        active_map: dict[str, Any] = {}
+        # registry.list_all() 是当前活跃 (builtin + accepted) 因子, 不含 shadow/rejected
+        try:
+            for f in self._registry.list_all():
+                try:
+                    hist = _compute_hist(f, ctx.ohlcv, ctx.close.index)
+                    if hist is not None and not hist.empty:
+                        active_map[f.name] = hist
+                except Exception:
+                    continue
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("redundancy check active_map build failed: %s", exc)
+            return None
+        # 保留 self._compute_hist 供候选因子计算使用
+        self._compute_hist_fn = _compute_hist
+        self._ctx_for_redundancy = ctx
+        return active_map
+
+    def _is_redundant_by_value(
+        self,
+        fn: Any,
+        direction: str,
+        name: str,
+        active_hist_map: dict[str, Any],
+        threshold: float,
+    ) -> tuple[bool, float, str]:
+        """算候选因子 factor_history, 与现有 active 因子取 max |spearman|.
+
+        Returns (is_redundant, worst_corr, worst_peer_name).
+        """
+        try:
+            from akq_agents.services.factors.base import CodeFactor
+            from akq_agents.services.factors.discovery import DiscoveryEngine
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("redundancy check discovery import failed: %s", exc)
+            return False, 0.0, ""
+        try:
+            factor = CodeFactor(
+                name=name, source_code="",  # source 不影响 compute (fn 已传)
+                fn=fn, factor_version=1, direction=direction,
+                code_hash="temp", description="temp",
+            )
+            hist = self._compute_hist_fn(
+                factor, self._ctx_for_redundancy.ohlcv,
+                self._ctx_for_redundancy.close.index,
+            )
+            if hist is None or hist.empty:
+                return False, 0.0, ""
+            # 全量 vs 所有 active 找最大, 顺便记 worst peer
+            worst_corr = 0.0
+            worst_peer = ""
+            for peer_name, peer_hist in active_hist_map.items():
+                c = DiscoveryEngine._max_abs_corr(hist, {peer_name: peer_hist})
+                if c is not None and abs(c) > abs(worst_corr):
+                    worst_corr = c
+                    worst_peer = peer_name
+            return abs(worst_corr) > threshold, worst_corr, worst_peer
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("redundancy check compute failed for %s: %s", name, exc)
+            return False, 0.0, ""
