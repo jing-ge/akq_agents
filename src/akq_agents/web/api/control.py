@@ -38,6 +38,8 @@ _SUPPORTED_JOBS = {
     "portfolio.trade_list_recompute", "portfolio.nav_rebuild",
     # LLM 因子接受 (改 status + 90 天回填) 下沉 daemon, 不阻塞 web.
     "factor.llm_accept",
+    # P0-A: shadow → accepted 晋升评估. cron 每日 17:30 跑, 允许手动触发方便排查.
+    "factor.promote_shadows",
 }
 
 # M24: 这些 job_id 走 picker 时 payload 字段映射, control.trigger 透传给 daemon.
