@@ -159,6 +159,17 @@
 </div>
 
 <!-- Factors (factors tab) -->
+<!-- P2-A: 因子池健康度总览 (置顶) -->
+<div class="card" id="factors-health-card" data-tab="factors">
+  <h2>因子池健康度 <span class="small">Health Dashboard</span>
+    <button onclick="loadFactorsHealth()" style="margin-left:12px;font-size:12px;padding:2px 8px">刷新</button>
+    <span id="factors-health-updated" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
+  </h2>
+  <div id="factors-health-body" class="small">
+    <p style="color:var(--fg-mute)">加载中...</p>
+  </div>
+</div>
+
 <div class="card" data-tab="factors">
   <h2>因子表现 <span class="small">Factor</span></h2>
   <div class="toolbar" style="margin-bottom: 12px;">
@@ -1006,7 +1017,8 @@ function loadTabIfNeeded(tabKey) {
       if (typeof loadNav === 'function') loadNav();
       if (typeof loadPaperTracking === 'function') loadPaperTracking();
     } else if (tabKey === 'factors') {
-      // factors tab: 因子全集总览 + 单因子 + 自动发现流水 + 相关性
+      // factors tab: 健康度总览 + 因子全集总览 + 单因子 + 自动发现流水 + 相关性
+      if (typeof loadFactorsHealth === 'function') loadFactorsHealth();
       if (typeof loadFactorsOverview === 'function') loadFactorsOverview();
       const factorSel = document.getElementById('factor-name');
       if (factorSel && factorSel.value && typeof loadFactor === 'function') loadFactor();
@@ -1448,6 +1460,173 @@ async function backtestSingleFactor() {
 }
 
 // M19: 因子全集总览 — 每个因子每天的 ICIR + 是否入选权重
+// ================ 因子池健康度总览 (P2-A) ================
+// 一次拉 /api/research/factors/health-dashboard 画 7 个维度. ~170ms.
+async function loadFactorsHealth() {
+  const body = document.getElementById('factors-health-body');
+  const updated = document.getElementById('factors-health-updated');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/research/factors/health-dashboard');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    body.innerHTML = renderFactorsHealth(d);
+    if (updated) updated.textContent = '更新于 ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    body.innerHTML = `<p style="color:var(--err)">加载失败: ${escapeHtml(e.message || String(e))}</p>`;
+  }
+}
+
+function renderFactorsHealth(d) {
+  const cnt = d.status_counts || {};
+  const oos = d.shadow_oos_buckets || {};
+  const sm = d.selected_metrics || {};
+  const decayG = d.decay_global || {};
+  const fresh = d.freshness || [];
+  const rej = d.reject_reasons || {};
+
+  // helper
+  const num = v => v == null ? '—' : Number(v).toLocaleString();
+  const pct = v => v == null ? '—' : (v * 100).toFixed(2) + '%';
+  const fmtNum = (v, digits=3) => v == null ? '—' : Number(v).toFixed(digits);
+
+  // 1. 规模条: 全池 status
+  const statusOrder = [
+    ['accepted', '#34d399', 'accepted (入选)'],
+    ['shadow',   '#fbbf24', 'shadow (评估中)'],
+    ['demoted',  '#fb7185', 'demoted (已降级)'],
+    ['rejected', '#94a3b8', 'rejected (已淘汰)'],
+    ['llm_suggested', '#a78bfa', 'llm_suggested (待审)'],
+  ];
+  const totalN = statusOrder.reduce((s, [k]) => s + (cnt[k] || 0), 0) || 1;
+
+  // 2. OOS 分桶条
+  const oosOrder = [['0-5', '#94a3b8'], ['6-10', '#fbbf24'], ['11-19', '#a78bfa'], ['已达标(≥20)', '#34d399']];
+  const oosTotal = oosOrder.reduce((s, [k]) => s + (oos[k] || 0), 0) || 1;
+
+  // 3. 数据鲜度: job 标签
+  const freshHtml = fresh.map(r => {
+    const statusColor = r.status === 'ok' ? '#34d399' : r.status === 'skipped' ? '#94a3b8' :
+                        r.status === 'running' ? '#60a5fa' : '#fb7185';
+    const time = r.started_at ? r.started_at.replace('T', ' ').slice(5, 19) : '—';
+    return `<span class="fh-freshness-chip" title="${escapeHtml(r.reason_code || '')}">
+      <span class="fh-freshness-name">${r.job_id.replace('.', ' → ')}</span>
+      <span style="color:${statusColor};font-weight:600">${r.status || '?'}</span>
+      <span class="small" style="color:var(--fg-mute);margin-left:6px">${time}</span>
+    </span>`;
+  }).join(' ');
+
+  // 4. shadow 最接近达标 top 5
+  const nearReady = (d.shadow_top_near_ready || []).map(r => {
+    return `<tr>
+      <td><code>${escapeHtml(r.name)}</code></td>
+      <td>${r.oos_observations}</td>
+      <td style="color:${r.days_to_ready <= 5 ? '#34d399' : '#fbbf24'}">${r.days_to_ready} 天</td>
+      <td class="small" style="color:var(--fg-mute)">${r.shadow_started_at ? r.shadow_started_at.slice(0, 10) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // 5. reject 原因分布 (bar)
+  const rejEntries = Object.entries(rej).sort((a, b) => b[1] - a[1]);
+  const rejTotal = rejEntries.reduce((s, [, n]) => s + n, 0) || 1;
+
+  // 6. 入选组合 by_decay
+  const decayColors = {
+    '稳定': '#34d399', '已离峰值': '#fbbf24', '轻微衰减': '#f97316',
+    '⚠️ 显著衰减': '#fb7185', '未评估': '#6b748a',
+  };
+  const selDecayHtml = Object.entries(sm.by_decay || {}).map(([k, v]) => {
+    const c = decayColors[k] || '#94a3b8';
+    return `<span class="fh-chip" style="border-color:${c};color:${c}">${k}: ${v}</span>`;
+  }).join(' ');
+  const globalDecayHtml = Object.entries(decayG).map(([k, v]) => {
+    const c = decayColors[k] || '#94a3b8';
+    return `<span class="fh-chip" style="border-color:${c};color:${c}">${k}: ${v}</span>`;
+  }).join(' ');
+
+  return `
+<div class="fh-grid">
+  <!-- 规模 -->
+  <div class="fh-panel">
+    <div class="fh-panel-title">因子池规模 <span class="small">共 ${totalN}</span></div>
+    <div class="fh-bar">
+      ${statusOrder.map(([k, c, label]) => {
+        const n = cnt[k] || 0;
+        if (n === 0) return '';
+        const w = (n / totalN * 100).toFixed(1);
+        return `<div class="fh-bar-seg" style="width:${w}%;background:${c}" title="${label}: ${n}">${n}</div>`;
+      }).join('')}
+    </div>
+    <div class="fh-legend">
+      ${statusOrder.map(([k, c, label]) => {
+        const n = cnt[k] || 0;
+        return `<span><span class="fh-dot" style="background:${c}"></span>${label}: <b>${n}</b></span>`;
+      }).join(' ')}
+    </div>
+  </div>
+
+  <!-- 入选组合 -->
+  <div class="fh-panel">
+    <div class="fh-panel-title">入选组合 <span class="small">当前 composite ≠ 0 的因子</span></div>
+    <div class="fh-kpi-row">
+      <div class="fh-kpi"><div class="fh-kpi-v">${sm.n || 0}</div><div class="fh-kpi-k">因子数</div></div>
+      <div class="fh-kpi"><div class="fh-kpi-v">${fmtNum(sm.mean_abs_ir, 3)}</div><div class="fh-kpi-k">mean |IR|</div></div>
+      <div class="fh-kpi"><div class="fh-kpi-v">${fmtNum(sm.mean_abs_ic, 4)}</div><div class="fh-kpi-k">mean |IC|</div></div>
+    </div>
+    <div style="margin-top:6px">${selDecayHtml || '<span class="small" style="color:var(--fg-mute)">无衰减数据</span>'}</div>
+  </div>
+
+  <!-- Shadow OOS 分桶 -->
+  <div class="fh-panel">
+    <div class="fh-panel-title">Shadow OOS 累计 <span class="small">共 ${oosTotal}, 门槛 20 交易日</span></div>
+    <div class="fh-bar">
+      ${oosOrder.map(([k, c]) => {
+        const n = oos[k] || 0;
+        if (n === 0) return '';
+        const w = (n / oosTotal * 100).toFixed(1);
+        return `<div class="fh-bar-seg" style="width:${w}%;background:${c}" title="${k}: ${n}">${n}</div>`;
+      }).join('')}
+    </div>
+    <div class="fh-legend">
+      ${oosOrder.map(([k, c]) => `<span><span class="fh-dot" style="background:${c}"></span>${k}: <b>${oos[k] || 0}</b></span>`).join(' ')}
+    </div>
+    <div style="margin-top:8px">
+      <div class="small" style="color:var(--fg-mute);margin-bottom:4px">最接近达标 Top 5</div>
+      <table class="snapshot" style="font-size:12px">
+        <thead><tr><th>因子</th><th>OOS 天</th><th>差</th><th>shadow 起始</th></tr></thead>
+        <tbody>${nearReady || '<tr><td colspan="4" class="small" style="color:var(--fg-mute)">无</td></tr>'}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 全局衰减 -->
+  <div class="fh-panel">
+    <div class="fh-panel-title">全体因子衰减态 <span class="small">registry 所有 active</span></div>
+    <div>${globalDecayHtml || '<span class="small" style="color:var(--fg-mute)">无</span>'}</div>
+  </div>
+
+  <!-- Rejected 原因 -->
+  <div class="fh-panel">
+    <div class="fh-panel-title">Rejected 原因分布 <span class="small">共 ${rejTotal}</span></div>
+    ${rejEntries.map(([k, n]) => {
+      const w = (n / rejTotal * 100).toFixed(1);
+      return `<div class="fh-reason-row">
+        <span class="fh-reason-k">${escapeHtml(k)}</span>
+        <div class="fh-reason-bar"><div class="fh-reason-fill" style="width:${w}%"></div></div>
+        <span class="fh-reason-v">${n} (${w}%)</span>
+      </div>`;
+    }).join('')}
+  </div>
+
+  <!-- 数据鲜度 -->
+  <div class="fh-panel fh-panel-full">
+    <div class="fh-panel-title">关键 job 数据鲜度</div>
+    <div class="fh-freshness">${freshHtml || '<span class="small">无</span>'}</div>
+  </div>
+</div>
+  `;
+}
+
 let _factorsOverviewCache = null;
 async function loadFactorsOverview() {
   const tableEl = document.getElementById('factors-overview-table');
