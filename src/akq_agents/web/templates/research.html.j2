@@ -693,7 +693,13 @@ window.addEventListener('load', () => {
     <button class="primary" onclick="runBrainstorm()" id="btn-brainstorm"
             title="让大模型基于现状提出 10 个新因子方向（约 5-15 秒）">让 LLM 提 10 个方向</button>
     <button onclick="loadLLMSuggestions()">刷新列表</button>
+    <span class="sep"></span>
+    <button class="primary" id="btn-batch-accept" onclick="batchReviewLLM('accept')"
+            title="逐条入队 daemon (factor.llm_accept), 每条约 30 秒串行. 会先弹确认框.">✅ 全部接受</button>
+    <button class="warn" id="btn-batch-reject" onclick="batchReviewLLM('reject')"
+            title="并行走 SQL, 瞬间完成. 会先弹确认框.">❌ 全部拒绝</button>
     <span id="brainstorm-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
+    <span id="batch-review-status" class="small" style="margin-left:8px;color:var(--fg-mute)"></span>
   </div>
   <div id="llm-suggestions-table" class="small"></div>
 </div>
@@ -839,6 +845,104 @@ async function reviewLLMAcceptAsync(name) {
   // 超时: 后台可能仍在跑, 刷新列表让用户看最新状态
   toast(`${name} 评估耗时较长，请稍后刷新查看`, 'warn');
   loadLLMSuggestions();
+}
+
+// ---------------------------------------------------------------
+// 一键批量接受 / 拒绝 LLM 因子建议
+// ---------------------------------------------------------------
+//   全部拒绝: 并行调 reject endpoint, 每条 <100ms SQL, 秒完成.
+//   全部接受: 逐条入队 daemon (factor.llm_accept, ~30s 每条 backfill),
+//              串行 (避免并发 backfill 抢 CPU), 带进度提示, 中间可停.
+let BATCH_REVIEW_RUNNING = false;
+let BATCH_REVIEW_CANCEL = false;
+
+async function batchReviewLLM(action) {
+  if (BATCH_REVIEW_RUNNING) {
+    // 二次点击 = 取消
+    if (confirm('批量任务进行中. 停止后已入队的仍会跑完. 确定停止吗?')) {
+      BATCH_REVIEW_CANCEL = true;
+    }
+    return;
+  }
+  // 先拉一次最新列表, 拿到当前待审 factor_name 列表
+  let names = [];
+  try {
+    const r = await fetch('/api/research/factors/llm-suggestions?limit=200');
+    const d = await r.json();
+    names = (d.suggestions || []).map(x => x.factor_name);
+  } catch (e) {
+    toast('拉列表失败: ' + e.message, 'error');
+    return;
+  }
+  if (names.length === 0) {
+    toast('当前无待审建议', 'info');
+    return;
+  }
+
+  const actionCn = action === 'accept' ? '接受' : '拒绝';
+  const estimateMin = action === 'accept' ? Math.ceil(names.length * 30 / 60) : 0;
+  const tip = action === 'accept'
+    ? `将逐条入队 daemon 评估, ${names.length} 条约需 ${estimateMin} 分钟 (串行 backfill).\n\n中途可点按钮取消 (已入队的仍会跑完).\n\n确定全部接受?`
+    : `将并行批量拒绝 ${names.length} 条待审建议 (SQL 秒完成).\n\n确定全部拒绝?`;
+  if (!confirm(tip)) return;
+
+  BATCH_REVIEW_RUNNING = true;
+  BATCH_REVIEW_CANCEL = false;
+  const statusEl = document.getElementById('batch-review-status');
+  const btnAccept = document.getElementById('btn-batch-accept');
+  const btnReject = document.getElementById('btn-batch-reject');
+  btnAccept.disabled = action !== 'accept';  // 保留活动 action 按钮可作为'取消'入口
+  btnReject.disabled = action !== 'reject';
+  const activeBtn = action === 'accept' ? btnAccept : btnReject;
+  const origLabel = activeBtn.innerHTML;
+  activeBtn.innerHTML = `⏹ 停止 (进行中…)`;
+
+  try {
+    if (action === 'reject') {
+      // reject 是纯 SQL 秒完, 并行发出去
+      statusEl.textContent = `批量拒绝 ${names.length} 条…`;
+      const results = await Promise.allSettled(names.map(n =>
+        fetch(`/api/research/factors/llm-suggestions/${encodeURIComponent(n)}/reject`, {method: 'POST'})
+          .then(r => r.ok ? {ok: true, name: n} : r.json().then(d => ({ok: false, name: n, err: formatErrorDetail(d)})))
+      ));
+      const ok = results.filter(r => r.status === 'fulfilled' && r.value.ok).length;
+      const fail = results.length - ok;
+      toast(`批量拒绝完成: ${ok} 成功${fail ? `, ${fail} 失败` : ''}`, fail ? 'warn' : 'ok');
+      statusEl.textContent = '';
+      loadLLMSuggestions();
+    } else {
+      // accept 是 daemon job, 逐条入队 + 等结果 (串行避免并发 backfill 抢 CPU)
+      let done = 0, ok = 0, fail = 0;
+      const startTs = Date.now();
+      for (const name of names) {
+        if (BATCH_REVIEW_CANCEL) {
+          toast(`已取消. 完成 ${done}/${names.length}`, 'warn');
+          break;
+        }
+        done++;
+        const elapsedS = Math.floor((Date.now() - startTs) / 1000);
+        const avgS = done > 1 ? elapsedS / (done - 1) : 30;
+        const remainS = Math.round(avgS * (names.length - done + 1));
+        statusEl.textContent = `进度 ${done}/${names.length} · 当前 ${name} · 预计剩余 ${Math.ceil(remainS / 60)} 分钟`;
+        try {
+          await reviewLLMAcceptAsync(name);
+          ok++;
+        } catch (e) {
+          fail++;
+          console.warn('accept fail:', name, e);
+        }
+      }
+      toast(`批量接受完成: ${ok} 成功, ${fail} 失败`, fail ? 'warn' : 'ok');
+      statusEl.textContent = '';
+      loadLLMSuggestions();
+    }
+  } finally {
+    BATCH_REVIEW_RUNNING = false;
+    BATCH_REVIEW_CANCEL = false;
+    btnAccept.disabled = false;
+    btnReject.disabled = false;
+    activeBtn.innerHTML = origLabel;
+  }
 }
 
 // loadLLMSuggestions 已搬到 llm tab 懒加载器 (loadTabIfNeeded('llm')). 不再 window.load 主动触发.
