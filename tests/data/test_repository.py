@@ -19,6 +19,30 @@ from akq_agents.services.data.schemas import UniverseSnapshot
 from akq_agents.services.data.universe import UniverseManager
 
 
+def _wrap_with_index_skip(inner_fn):
+    """让任意 side_effect 对指数返回空 DF (M27 refresh_daily 自动拉指数, 测试不关心)."""
+    import pandas as pd
+    def _fn(symbol, start, end):
+        if symbol in {"000300", "000905", "000016", "000852", "399006", "399005", "899050"}:
+            return pd.DataFrame()  # 空 df, 主流程 continue 掉, 不污染 fetch_errors
+        return inner_fn(symbol, start, end)
+    return _fn
+
+
+def _fetch_only_stocks(target_date, symbols_map=None):
+    """M27 test helper: gateway.fetch_ohlcv side_effect - 只对个股返 mock 数据, 指数返回空.
+    refresh_daily 现在会自动拉 _BENCHMARK_INDICES (000300 等), 但 test 不关心指数,
+    让 mock 对指数抛 FetchError 让主流程 skip 掉即可."""
+    import pandas as _pd
+    def _fn(symbol, start, end):
+        if symbol in {"000300", "000905", "000016", "000852", "399006", "399005", "899050"}:
+            return _pd.DataFrame()  # 空 df, 主流程 continue 掉
+        if symbols_map is not None and symbol in symbols_map:
+            return symbols_map[symbol]
+        return _make_ohlcv(symbol, target_date)
+    return _fn
+
+
 def _make_snapshot(d: date, symbols: list[str]) -> UniverseSnapshot:
     return UniverseSnapshot(date=d, symbols=symbols, excluded={})
 
@@ -80,7 +104,7 @@ def test_refresh_daily_happy_path(
     target_date = date(2026, 6, 17)
     symbols = [f"00000{i}" for i in range(5)]
     universe_mgr.build_snapshot.return_value = _make_snapshot(target_date, symbols)
-    gateway.fetch_ohlcv.side_effect = lambda symbol, start, end: _make_ohlcv(symbol, target_date)
+    gateway.fetch_ohlcv.side_effect = _fetch_only_stocks(target_date)
 
     result = repository.refresh_daily(target_date)
 
@@ -130,7 +154,7 @@ def test_refresh_daily_partial_failure(
             raise FetchError(reason_code="NETWORK", message="boom", symbol=symbol)
         return _make_ohlcv(symbol, target_date)
 
-    gateway.fetch_ohlcv.side_effect = fetch
+    gateway.fetch_ohlcv.side_effect = _wrap_with_index_skip(fetch)
 
     result = repository.refresh_daily(target_date)
 
@@ -148,7 +172,7 @@ def test_refresh_daily_quality_fail_no_parquet_write(
     repository, gateway, _, universe_mgr, quality_gate = repo
     target_date = date(2026, 6, 17)
     universe_mgr.build_snapshot.return_value = _make_snapshot(target_date, ["000001", "000002"])
-    gateway.fetch_ohlcv.side_effect = lambda symbol, start, end: _make_ohlcv(symbol, target_date)
+    gateway.fetch_ohlcv.side_effect = _fetch_only_stocks(target_date)
     quality_gate.check.side_effect = QualityCheckFailed({"row_count": False, "null_rate": True})
 
     result = repository.refresh_daily(target_date)
@@ -170,7 +194,7 @@ def test_refresh_daily_idempotent(
     repository, gateway, _, universe_mgr, _ = repo
     target_date = date(2026, 6, 17)
     universe_mgr.build_snapshot.return_value = _make_snapshot(target_date, ["000001", "000002"])
-    gateway.fetch_ohlcv.side_effect = lambda symbol, start, end: _make_ohlcv(symbol, target_date)
+    gateway.fetch_ohlcv.side_effect = _fetch_only_stocks(target_date)
 
     first = repository.refresh_daily(target_date)
     second = repository.refresh_daily(target_date)
@@ -178,7 +202,8 @@ def test_refresh_daily_idempotent(
     assert first.fetched == 2
     assert second.cached_hit == 2
     assert second.fetched == 0
-    assert gateway.fetch_ohlcv.call_count == 2
+    # M27: 首次拉 2 股票 + 1 个 benchmark 指数 (000300) = 3 次; 第二次全 cache hit 不再拉
+    assert gateway.fetch_ohlcv.call_count == 3
 
 
 def test_get_ohlcv_returns_cached_frame(
@@ -189,7 +214,7 @@ def test_get_ohlcv_returns_cached_frame(
     symbols = ["000001", "000002"]
     calendar.trading_days_between.return_value = days
     universe_mgr.build_snapshot.side_effect = lambda d: _make_snapshot(d, symbols)
-    gateway.fetch_ohlcv.side_effect = lambda symbol, start, end: _make_ohlcv(symbol, start)
+    gateway.fetch_ohlcv.side_effect = _wrap_with_index_skip(lambda symbol, start, end: _make_ohlcv(symbol, start))
 
     for day in days:
         repository.refresh_daily(day)
@@ -217,7 +242,7 @@ def test_get_ohlcv_missing_raises_data_not_ready(
     symbols = ["000001", "000002"]
     calendar.trading_days_between.return_value = [target_date, next_date]
     universe_mgr.build_snapshot.return_value = _make_snapshot(target_date, symbols)
-    gateway.fetch_ohlcv.side_effect = lambda symbol, start, end: _make_ohlcv(symbol, target_date)
+    gateway.fetch_ohlcv.side_effect = _fetch_only_stocks(target_date)
     repository.refresh_daily(target_date)
 
     with pytest.raises(DataNotReady) as exc_info:
@@ -247,7 +272,7 @@ def test_quality_report_ok_after_recent_refresh(
     today = date(2026, 6, 17)
     symbols = ["000001", "000002", "000003", "000004"]
     universe_mgr.build_snapshot.return_value = _make_snapshot(today, symbols)
-    gateway.fetch_ohlcv.side_effect = lambda symbol, start, end: _make_ohlcv(symbol, today)
+    gateway.fetch_ohlcv.side_effect = _wrap_with_index_skip(lambda symbol, start, end: _make_ohlcv(symbol, today))
 
     with freeze_time("2026-06-17 18:00:00"):
         repository.refresh_daily(today)

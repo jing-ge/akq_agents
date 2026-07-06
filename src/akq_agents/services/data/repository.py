@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS refresh_state (
 _OHLCV_COLUMNS = ["date", "symbol", "open", "high", "low", "close", "volume", "amount"]
 _OHLCV_FILE_COLUMNS = ["symbol", "open", "high", "low", "close", "volume", "amount"]
 
+# M27: refresh_daily 每日除了拉 universe 里的个股, 还要拉这些 benchmark 指数,
+# 用于 portfolio_nav.benchmark_nav 计算和净值图对比. 指数不在 universe 里所以主循环拉不到,
+# refresh_daily 里单独走 gateway.fetch_ohlcv (内部会走 stock_zh_index_daily 分支).
+_BENCHMARK_INDICES = ["000300"]  # 沪深 300, 未来需要中证 500 (000905) 等再加
+
 
 def open_meta_db(path: Path) -> sqlite3.Connection:
     """打开 ``meta.db`` 连接并应用 P1 附录 B §6 承诺的 PRAGMA。
@@ -223,6 +228,28 @@ class DataRepository:
             current_frame = frame.loc[:, _OHLCV_COLUMNS].copy()
             frames.append(current_frame)
             self._insert_fetch_log(timestamp, "ohlcv", symbol, d, "ok", None)
+
+        # M27: 单独拉指数 (000300 沪深 300 等 benchmark), 不在 universe 里所以主循环拉不到.
+        # 用 gateway.fetch_ohlcv 走同一 API 契约, gateway 内部走 stock_zh_index_daily 分支.
+        # 拉失败不影响主流程 (仅 benchmark_nav 缺失), 只 log 一条 error 而已.
+        for index_sym in _BENCHMARK_INDICES:
+            try:
+                frame = self._gateway.fetch_ohlcv(index_sym, d, d).copy()
+            except Exception as exc:  # noqa: BLE001
+                self._insert_fetch_log(timestamp, "ohlcv", index_sym, d, "failed", str(exc)[:200])
+                self._insert_fetch_error(
+                    timestamp, index_sym, "ohlcv",
+                    getattr(exc, "reason_code", "UNKNOWN"),
+                    getattr(exc, "message", None) or str(exc)[:200],
+                )
+                continue
+            if frame is None or frame.empty:
+                # 指数拉到但当天数据缺 (可能是非交易日边界或数据延迟), 不算失败
+                continue
+            frame["symbol"] = index_sym
+            frame["date"] = pd.to_datetime(frame["date"]).dt.date
+            frames.append(frame.loc[:, _OHLCV_COLUMNS].copy())
+            self._insert_fetch_log(timestamp, "ohlcv", index_sym, d, "ok", None)
 
         combined = (
             pd.concat(frames, ignore_index=True)

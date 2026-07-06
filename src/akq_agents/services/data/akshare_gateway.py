@@ -29,11 +29,29 @@ from akq_agents.services.data.exceptions import FetchError
 
 ReasonCode = Literal["RATE_LIMITED", "SCHEMA_DRIFT", "NETWORK", "UNKNOWN"]
 
+# A 股主流指数白名单 (symbol → 新浪源前缀). 白名单专注 A 股宽基指数, 用作 benchmark.
+# 注意: 000001 会与个股 '平安银行' 冲突 — 000001 上证指数不放白名单, 个股优先.
+_INDEX_PREFIX_MAP: dict[str, str] = {
+    "000300": "sh",  # 沪深 300 (上交所)
+    "000905": "sh",  # 中证 500
+    "000016": "sh",  # 上证 50
+    "000852": "sh",  # 中证 1000
+    "399006": "sz",  # 创业板指
+    "399005": "sz",  # 中小 100
+    "899050": "bj",  # 北证 50
+}
+
+
+def _is_index_symbol(symbol: str) -> bool:
+    """symbol 是否为已知主流指数. 只识别显式白名单, 避免误判个股."""
+    return symbol in _INDEX_PREFIX_MAP
+
 
 def _with_market_prefix(symbol: str) -> str:
     """把裸 symbol（如 '600519'）转换为新浪格式的带前缀符号（如 'sh600519'）。
 
     规则（覆盖沪深主板/创业板/科创板/北交所）：
+    - 优先匹配指数白名单 (_INDEX_PREFIX_MAP), 000300 → sh000300, 399006 → sz399006
     - 6 开头         → sh
     - 0 / 3 开头     → sz
     - 4 / 8 开头     → bj （北交所，注意新浪源对 bj 支持不全）
@@ -41,6 +59,9 @@ def _with_market_prefix(symbol: str) -> str:
     """
     if not symbol or not symbol[0].isdigit():
         raise ValueError(f"invalid symbol: {symbol!r}")
+    # 指数白名单优先 (000300 属沪市, 但 head 是 '0', 不走个股 sz 规则)
+    if symbol in _INDEX_PREFIX_MAP:
+        return f"{_INDEX_PREFIX_MAP[symbol]}{symbol}"
     head = symbol[0]
     if head == "6":
         return f"sh{symbol}"
@@ -83,11 +104,17 @@ class AKShareGateway:
         return combined
 
     def fetch_ohlcv(self, symbol: str, start: date, end: date) -> pd.DataFrame:
-        """单股日线（新浪 ``stock_zh_a_daily``，前复权）。
+        """单股日线（新浪 ``stock_zh_a_daily``，前复权）；指数走 ``stock_zh_index_daily``.
 
         返回字段：``date, open, high, low, close, volume, amount``（其它字段如
-        ``outstanding_share``/``turnover`` 由新浪源额外提供但本层只取核心列）。
+        ``outstanding_share``/``turnover`` 由新浪源额外提供但本层只取核心列）.
+
+        symbol 判断: 000300/000905/000016/399006 等 A 股主流指数走 index 分支
+        (个股 API 拉不到指数, 返回空导致 SCHEMA_DRIFT). 指数无 amount 字段,
+        自动用 volume × close 估算填充, 保持列 schema 一致.
         """
+        if _is_index_symbol(symbol):
+            return self._fetch_index_ohlcv(symbol, start, end)
         ak = self._get_ak_module()
         prefixed = _with_market_prefix(symbol)
         df = self._call(
@@ -105,6 +132,32 @@ class AKShareGateway:
         out = df.loc[:, required].copy()
         out["date"] = pd.to_datetime(out["date"])
         return out
+
+    def _fetch_index_ohlcv(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+        """A 股指数日线 (新浪 stock_zh_index_daily). 无 amount 字段, 用 volume×close 估算.
+
+        symbol 格式: 000300 (无前缀), 内部按 _with_market_prefix 判定 sh/sz 前缀.
+        新浪指数 API 一次返回全历史 (~6000 行), 后续按 [start, end] 过滤.
+        """
+        ak = self._get_ak_module()
+        prefixed = _with_market_prefix(symbol)
+        df = self._call(
+            "stock_zh_index_daily",
+            ak.stock_zh_index_daily,
+            symbol=prefixed,
+        )
+        required = ["date", "open", "high", "low", "close", "volume"]
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            raise FetchError(reason_code="SCHEMA_DRIFT", message=f"missing index cols: {', '.join(missing)}")
+        out = df.loc[:, required].copy()
+        out["date"] = pd.to_datetime(out["date"])
+        # 只保留 [start, end] 区间
+        mask = (out["date"] >= pd.Timestamp(start)) & (out["date"] <= pd.Timestamp(end))
+        out = out.loc[mask].copy()
+        # 补 amount 列 (指数 API 无 amount, 用 volume × close 估算)
+        out["amount"] = out["volume"] * out["close"]
+        return out.loc[:, ["date", "open", "high", "low", "close", "volume", "amount"]]
 
     def fetch_market_snapshot_today(self) -> pd.DataFrame:
         """一次性拉今日全市场快照（~13s vs 单股逐拉 ~30min）。
