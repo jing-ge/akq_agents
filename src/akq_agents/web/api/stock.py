@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -77,10 +78,9 @@ async def get_overview(
 ) -> dict[str, Any]:
     symbol = _clean_symbol(symbol)
     service = _get_service()
-    if fast:
-        overview = service.fetch_overview_quick(symbol)
-    else:
-        overview = service.fetch_overview(symbol)
+    # 同步 pandas/akshare 调用 → 走线程池, 不阻塞 event loop, 让多个 endpoint 真并发
+    fn = service.fetch_overview_quick if fast else service.fetch_overview
+    overview = await asyncio.to_thread(fn, symbol)
     return overview.to_dict()
 
 
@@ -93,7 +93,7 @@ async def get_kline(
     symbol = _clean_symbol(symbol)
     service = _get_service()
     try:
-        return service.fetch_kline(symbol, period, limit)
+        return await asyncio.to_thread(service.fetch_kline, symbol, period, limit)
     except RuntimeError as exc:
         # akshare 分钟接口失败 → 502
         raise HTTPException(502, detail=f"upstream failed: {exc}") from exc
@@ -114,7 +114,7 @@ async def get_intraday(
     symbol = _clean_symbol(symbol)
     service = _get_service()
     try:
-        return service.fetch_intraday(symbol, days)
+        return await asyncio.to_thread(service.fetch_intraday, symbol, days)
     except RuntimeError as exc:
         # 上游降级: 返回 200 + 空点 + error, 前端友好展示
         return {
@@ -138,7 +138,7 @@ async def get_industry_peers(
     """
     symbol = _clean_symbol(symbol)
     service = _get_service()
-    return service.fetch_industry_peers(symbol, lookback_days=lookback_days)
+    return await asyncio.to_thread(service.fetch_industry_peers, symbol, lookback_days)
 
 
 class AnalyzeRequest(BaseModel):

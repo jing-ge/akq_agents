@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -842,34 +843,41 @@ async def factors_correlation(
     max_lookback = max((f.lookback_days for f in factors), default=60)
     start = target_d - _td(days=max(lookback_days, max_lookback * 2))
 
-    try:
-        universe = svc.repo.get_universe(target_d)
-    except Exception:  # noqa: BLE001
-        universe = None
+    # 所有 heavy 计算 (universe / ohlcv 拉 / factor 计算 / corr) 打包一个同步函数,
+    # 走线程池执行, 不阻塞 event loop → 让其它 endpoint (即使冷) 也能真并发.
+    def _compute_sync():
+        try:
+            universe = svc.repo.get_universe(target_d)
+        except Exception:  # noqa: BLE001
+            universe = None
 
-    symbols = list(universe.symbols) if universe is not None else []
-    if symbols:
-        ohlcv = svc.repo.get_ohlcv_loose(symbols, start, target_d)
-    else:
-        ohlcv = svc.repo.get_ohlcv_loose([], start, target_d)
-    if ohlcv.empty:
+        symbols = list(universe.symbols) if universe is not None else []
+        if symbols:
+            ohlcv = svc.repo.get_ohlcv_loose(symbols, start, target_d)
+        else:
+            ohlcv = svc.repo.get_ohlcv_loose([], start, target_d)
+        if ohlcv.empty:
+            return None  # 上层转 404
+
+        df = factor_engine.compute(ohlcv, factors)
+        if df.empty:
+            return {"factors": [], "matrix": [], "n_observations": 0}
+
+        corr = df.corr()
+        return {
+            "as_of_date": target_d.isoformat(),
+            "factors": list(corr.columns),
+            "matrix": corr.values.tolist(),
+            "n_observations": int(df.dropna(how="any").shape[0]),
+            "n_total_symbols": int(df.shape[0]),
+        }
+
+    result = await asyncio.to_thread(_compute_sync)
+    if result is None:
         raise HTTPException(404, f"无可用 OHLCV 数据 ({target_d.isoformat()})；可能尚未拉取或解析失败")
+    if not result.get("factors"):
+        return result  # 空 factors 直接返回, 不塞缓存
 
-    df = factor_engine.compute(ohlcv, factors)
-    if df.empty:
-        return {"factors": [], "matrix": [], "n_observations": 0}
-
-    corr = df.corr()
-    factor_names = list(corr.columns)
-    matrix = corr.values.tolist()
-
-    result = {
-        "as_of_date": target_d.isoformat(),
-        "factors": factor_names,
-        "matrix": matrix,
-        "n_observations": int(df.dropna(how="any").shape[0]),
-        "n_total_symbols": int(df.shape[0]),
-    }
     _correlation_cache_put(cache_key, result)
     return {**result, "cache_hit": False}
 
