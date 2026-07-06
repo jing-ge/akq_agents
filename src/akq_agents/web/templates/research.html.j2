@@ -1503,6 +1503,22 @@ function renderFactorsOverview() {
     const color = n >= 0.15 ? '#34d399' : (n <= -0.15 ? '#fb7185' : (Math.abs(n) < 0.05 ? '#94a3b8' : '#fbbf24'));
     return `<span style="color:${color}">${n.toFixed(3)}</span>`;
   };
+  // decay 显示: null=未评估 灰色; stable=稳定 绿; off_peak=离峰 黄; mild=轻衰 橙; severe=显著衰减 红
+  const fmtDecay = (d) => {
+    if (!d || !d.label) return '<span style="color:#6b748a" title="因子历史不足 6 天, 无法评估">— 未评估</span>';
+    const colors = {
+      stable: '#34d399', off_peak: '#fbbf24', mild: '#f97316', severe: '#fb7185',
+    };
+    const c = colors[d.level] || '#94a3b8';
+    // hover 详情: 显示峰值/当前/近段
+    const tipParts = [];
+    if (d.ir_now != null) tipParts.push(`IR 当前 ${d.ir_now.toFixed(3)}`);
+    if (d.ir_peak != null) tipParts.push(`峰值 ${d.ir_peak.toFixed(3)}`);
+    if (d.ir_recent != null) tipParts.push(`近段均 ${d.ir_recent.toFixed(3)}`);
+    if (d.ir_earlier != null) tipParts.push(`早段均 ${d.ir_earlier.toFixed(3)}`);
+    const tip = tipParts.join(' · ');
+    return `<span style="color:${c};font-weight:600" title="${tip}">${d.label}</span>`;
+  };
 
   // 排序: selected_top50 优先 → composite_weight DESC → ir DESC
   rows.sort((a, b) => {
@@ -1517,7 +1533,7 @@ function renderFactorsOverview() {
 
   let html = '<table class="snapshot"><thead><tr>';
   html += '<th>因子名</th><th>状态</th><th>入选?</th><th>权重</th>';
-  html += '<th>最新 IC</th><th>最新 IR</th><th>评估日</th>';
+  html += '<th>最新 IC</th><th>最新 IR</th><th>评估日</th><th>衰减</th>';
   html += '<th>OOS 天数</th><th>OOS IR</th>';
   html += '</tr></thead><tbody>';
   for (const r of rows) {
@@ -1532,6 +1548,7 @@ function renderFactorsOverview() {
       <td>${fmtNum(lm.ic_mean, 4)}</td>
       <td>${fmtIR(lm.ir)}</td>
       <td><span class="small">${lm.as_of_date || '—'}</span></td>
+      <td>${fmtDecay(r.decay)}</td>
       <td>${r.oos_observations ?? '<span style="color:#6b748a">—</span>'}</td>
       <td>${fmtIR(r.oos_ir)}</td>
     </tr>`;

@@ -290,6 +290,8 @@ async def factors_list() -> dict[str, Any]:
             continue
         # 这类因子不在 registry, 没有 Factor 实例, lookback_days/direction 用 proposal 信息兜底
         latest = _read_latest_metric(svc, name, factor_version=1)
+        # shadow/rejected 也算衰减, 有历史就有 verdict (稳定/衰减/离峰), 让 UI 一致.
+        decay_verdict = _compute_decay_verdict(svc, name)
         rows.append({
             "name": name,
             "factor_version": 1,
@@ -297,7 +299,7 @@ async def factors_list() -> dict[str, Any]:
             "lookback_days": None,
             "status": _classify(name, False, p_row),
             "last_metric": latest,
-            "decay": None,
+            "decay": decay_verdict,
             "composite_weight": None,  # 不参与组合
             "selected_top50": False,
             "oos_observations": p_row["oos_observations"],
@@ -342,14 +344,25 @@ def _read_latest_metric(svc: ServiceContainer, name: str, factor_version: int) -
 
 
 def _compute_decay_verdict(svc: ServiceContainer, name: str) -> dict[str, Any] | None:
-    """P1-4: 30 天 IR 历史算衰减判定; 没数据返回 None."""
+    """P1-4: 30 天 IR 历史算衰减判定; 数据不足 (<6 天) 返回 None.
+
+    有足够数据时**总返回一个 verdict**, 语义:
+      - severe   ⚠️ 显著衰减    (recent < 60% of earlier)
+      - mild     轻微衰减       (recent < 80% of earlier)
+      - off_peak 已离峰值       (now < 60% of peak, peak >0.2)
+      - stable   稳定           (以上都不触发 → 因子仍在正常区间)
+
+    之前后 3 个分支都不匹配时返回 None, 前端把它当'未评估', 96% 因子 UI 显示
+    'decay=null' 用户无法区分'没数据'vs'评估通过'. 现在加 stable 兜底后
+    覆盖率从 4% → 100% (只要有 >=6 天历史), 用户能明确看到'已评估 → 稳定'.
+    """
     if svc.factor_evaluator is None:
         return None
     try:
         history = svc.factor_evaluator.list_history(name, limit=30)
         irs = [float(m.ir) for m in history if m.ir is not None]
         if len(irs) < 6:
-            return None
+            return None  # 真的没数据, 不给 verdict
         mid = len(irs) // 2
         ir_recent = sum(abs(x) for x in irs[:mid]) / mid
         ir_earlier = sum(abs(x) for x in irs[mid:]) / max(len(irs) - mid, 1)
@@ -364,9 +377,11 @@ def _compute_decay_verdict(svc: ServiceContainer, name: str) -> dict[str, Any] |
         if ir_now < 0.6 * ir_peak and ir_peak > 0.2:
             return {"level": "off_peak", "label": "已离峰值",
                     "ir_now": ir_now, "ir_peak": ir_peak}
+        # 上面三个分支都不匹配 → 稳定. 覆盖之前会返回 None 的多数正常情况.
+        return {"level": "stable", "label": "稳定",
+                "ir_now": ir_now, "ir_peak": ir_peak, "ir_recent": ir_recent, "ir_earlier": ir_earlier}
     except Exception:
-        pass
-    return None
+        return None
 
 
 @router.get("/factors/{name}/metrics")
