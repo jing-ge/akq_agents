@@ -70,6 +70,10 @@ class TradeListSectionConfig(BaseModel):
     # M25: 权重变化 < 0.5% (500 元 / 10 万本金) 且非建仓/清仓 → 强制 HOLD,
     # 避免每日堆一堆微调噪音单.
     min_weight_change: float = 0.005
+    # M26: 每日交易硬上限, 按 |权重变化| 降序取 top N, 其余强制 HOLD.
+    # 散户执行力有限一天 3-5 单最舒适, 未执行的调仓因 turnover_aversion 慢慢累计
+    # 下一日仍有变化, 不会永远错过. None = 不限.
+    max_daily_trades: int | None = 5
 
 
 class BacktestConfig(BaseModel):

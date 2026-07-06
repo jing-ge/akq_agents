@@ -75,6 +75,10 @@ class TradeListConfig:
     # 才会进 BUY/SELL. 默认 0.005 = 0.5pct 权重变化, 相当于 500 元 / 10 万本金.
     # 新进 (yest_w == 0) 和清仓 (target_w == 0) 不受此阈值约束, 该动还得动.
     min_weight_change: float = 0.005
+    # M26: 每日交易硬上限 - 按 |权重变化| 降序取 top N BUY/SELL, 其余强制 HOLD.
+    # 散户手工执行力有限, 一天 3-5 单最舒适; None = 不限.
+    # 建仓/清仓与调仓都受此限制约束, 优先执行权重变化最大的.
+    max_daily_trades: int | None = 5
 
 
 @dataclass
@@ -454,5 +458,33 @@ def generate_trade_list(
             industry=industry_map.get(sym),
             composite_score=composite_scores.get(sym),
         ))
+
+    # M26: 每日交易硬上限 — 若 BUY/SELL 数 > max_daily_trades, 只保留
+    # |权重变化 | 最大的 top N, 其余强制变 HOLD.
+    # 散户执行力有限, 一天 3-5 单最舒适, 其余明天再动 (turnover_aversion 会让
+    # 未执行的调仓在下一日仍有变化, 不会永远错过).
+    if cfg.max_daily_trades is not None and cfg.max_daily_trades > 0:
+        bs_items = [it for it in items if it.action in ("BUY", "SELL")]
+        if len(bs_items) > cfg.max_daily_trades:
+            def _weight_delta(it: TradeItem) -> float:
+                yest = float(yesterday_weights.get(it.symbol, 0.0))
+                target = float(it.target_weight or 0.0)
+                return abs(target - yest)
+            # 按 |权重变化| 排序, 前 N 保留 BUY/SELL, 后面全变 HOLD
+            bs_sorted = sorted(bs_items, key=_weight_delta, reverse=True)
+            keep_symbols = {it.symbol for it in bs_sorted[: cfg.max_daily_trades]}
+            skipped = 0
+            for it in items:
+                if it.action in ("BUY", "SELL") and it.symbol not in keep_symbols:
+                    it.action = "HOLD"
+                    it.target_shares = it.current_shares
+                    it.delta_shares = 0.0
+                    it.delta_amount = 0.0
+                    it.reason = f"每日上限 {cfg.max_daily_trades} 单, 权重变化较小推后执行 (原: {it.reason})"
+                    skipped += 1
+            logger.info(
+                "trade_list: max_daily_trades cap applied - kept %d BUY/SELL, forced %d to HOLD",
+                cfg.max_daily_trades, skipped,
+            )
 
     return items
