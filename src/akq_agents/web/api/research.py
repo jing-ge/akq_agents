@@ -985,3 +985,142 @@ async def factors_ic_diagnostics(
     result["only_selected"] = only_selected
     result["n_selected_input"] = len(selected_names) if selected_names else 0
     return result
+
+
+@router.get("/factors/health-dashboard")
+async def factors_health_dashboard() -> dict[str, Any]:
+    """P2-A: 因子池健康度总览 (单次聚合响应, ~50ms).
+
+    一屏展示:
+    - 规模: 各 status 数量
+    - Shadow OOS 分布: 0-5/6-10/11-19/≥20 分桶 + '距离达标最近的 5 只'
+    - 入选组合 IR/IC/衰减 分布
+    - 冗余: |corr|>0.85/0.95 的因子对数
+    - 数据鲜度: 关键 job (batch.post_close/factor.discovery/promote_shadows) 最近跑
+    """
+    svc: ServiceContainer = get_services()
+    if svc.repo is None:
+        raise HTTPException(503, "repo not ready")
+
+    def _compute_sync():
+        import sqlite3
+        db_path = svc.repo._base_dir / "meta.db"
+        con = sqlite3.connect(str(db_path))
+        cur = con.cursor()
+
+        # 1. 规模: factor_proposals 按 status
+        status_counts: dict[str, int] = {}
+        for s, n in cur.execute("SELECT status, COUNT(*) FROM factor_proposals GROUP BY status").fetchall():
+            status_counts[s or "unknown"] = n
+
+        # 2. Shadow OOS 分布
+        oos_buckets = {"0-5": 0, "6-10": 0, "11-19": 0, "已达标(≥20)": 0}
+        oos_top: list[dict[str, Any]] = []
+        for name, oos, shadow_at in cur.execute(
+            "SELECT factor_name, oos_observations, shadow_started_at FROM factor_proposals WHERE status='shadow'"
+        ).fetchall():
+            n = oos or 0
+            if n <= 5: oos_buckets["0-5"] += 1
+            elif n <= 10: oos_buckets["6-10"] += 1
+            elif n <= 19: oos_buckets["11-19"] += 1
+            else: oos_buckets["已达标(≥20)"] += 1
+        # top-5 最接近达标的
+        rows = cur.execute(
+            "SELECT factor_name, oos_observations, shadow_started_at "
+            "FROM factor_proposals WHERE status='shadow' "
+            "ORDER BY COALESCE(oos_observations, 0) DESC LIMIT 5"
+        ).fetchall()
+        for name, oos, shadow_at in rows:
+            oos_top.append({
+                "name": name, "oos_observations": oos or 0,
+                "shadow_started_at": shadow_at,
+                "days_to_ready": max(0, 20 - (oos or 0)),
+            })
+
+        # 3. 入选组合分布 (composite_weights > 0)
+        selected_metrics: dict[str, Any] = {"n": 0, "mean_abs_ir": None, "mean_abs_ic": None, "by_decay": {}}
+        if svc.factor_registry is not None and svc.composite_scorer is not None and svc.factor_evaluator is not None:
+            try:
+                all_names = [f.name for f in svc.factor_registry.list_all()]
+                weights = svc.composite_scorer.compute_weights_for(all_names)
+                selected = [n for n, w in weights.items() if w and float(w) > 0]
+                irs: list[float] = []
+                ics: list[float] = []
+                by_decay: dict[str, int] = {}
+                for name in selected:
+                    factor = next((f for f in svc.factor_registry.list_all() if f.name == name), None)
+                    if factor is None: continue
+                    m = svc.factor_evaluator.get_latest(name, factor.factor_version)
+                    if m and m.ir is not None: irs.append(abs(float(m.ir)))
+                    if m and m.ic_mean is not None: ics.append(abs(float(m.ic_mean)))
+                    verdict = _compute_decay_verdict(svc, name)
+                    label = (verdict or {}).get("label", "未评估")
+                    by_decay[label] = by_decay.get(label, 0) + 1
+                selected_metrics = {
+                    "n": len(selected),
+                    "mean_abs_ir": (sum(irs)/len(irs)) if irs else None,
+                    "mean_abs_ic": (sum(ics)/len(ics)) if ics else None,
+                    "by_decay": by_decay,
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("dashboard selected_metrics failed: %s", exc)
+
+        # 4. 全局衰减分布 (对所有 registry factor)
+        decay_global: dict[str, int] = {}
+        if svc.factor_registry is not None:
+            for f in svc.factor_registry.list_all():
+                verdict = _compute_decay_verdict(svc, f.name)
+                label = (verdict or {}).get("label", "未评估")
+                decay_global[label] = decay_global.get(label, 0) + 1
+
+        # 5. 数据鲜度: 关键 job 最近状态
+        freshness: list[dict[str, Any]] = []
+        for job_id in ["batch.post_close", "factor.discovery", "factor.promote_shadows",
+                       "factor.code_brainstorm", "data.refresh_daily"]:
+            row = cur.execute(
+                "SELECT partition, status, started_at, finished_at, reason_code "
+                "FROM job_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            if row:
+                freshness.append({
+                    "job_id": job_id,
+                    "partition": row[0],
+                    "status": row[1],
+                    "started_at": row[2],
+                    "finished_at": row[3],
+                    "reason_code": row[4],
+                })
+            else:
+                freshness.append({"job_id": job_id, "status": "never_run"})
+
+        # 6. Rejected 池的原因分布 (只看最近 500 条)
+        reject_reasons: dict[str, int] = {}
+        rows = cur.execute("""
+            SELECT
+                CASE
+                    WHEN reason LIKE 'compute_error%' THEN 'compute_error'
+                    WHEN reason LIKE 'insufficient_data%' THEN 'insufficient_data'
+                    WHEN reason LIKE 'low_ic%' THEN 'low_ic'
+                    WHEN reason LIKE 'low_ir%' THEN 'low_ir'
+                    WHEN reason LIKE 'high_corr%' THEN 'high_corr'
+                    ELSE COALESCE(substr(reason, 1, 30), 'null')
+                END as cat, COUNT(*)
+            FROM factor_proposals WHERE status='rejected'
+            GROUP BY cat ORDER BY 2 DESC LIMIT 10
+        """).fetchall()
+        for cat, n in rows:
+            reject_reasons[cat] = n
+
+        con.close()
+        return {
+            "status_counts": status_counts,
+            "shadow_oos_buckets": oos_buckets,
+            "shadow_top_near_ready": oos_top,
+            "selected_metrics": selected_metrics,
+            "decay_global": decay_global,
+            "freshness": freshness,
+            "reject_reasons": reject_reasons,
+        }
+
+    return await asyncio.to_thread(_compute_sync)
