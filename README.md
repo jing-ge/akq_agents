@@ -103,6 +103,7 @@ PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app \
        └─ AnalystAgent (LLM 盘后总结，写 reports/*.md)
 
 17:00  batch_deep_research       cron → 深度归因 / 长报告（每日）
+16:35  board_refresh             cron → 抓当日行业板块快照（同花顺），历史随天累积
 17:30  factor_promote_shadows    cron → 把符合门槛的 shadow 因子转 accepted
 03:00  factor_eviction (周一)    cron → 周度淘汰衰减因子
 
@@ -186,6 +187,20 @@ python:    3.10.20
   - 单条 ✓ → mark executed + 同步 holdings
   - "📦 全部执行" 一键标记 → 同步 holdings 到 target
 
+### 板块看板（`/board`）
+
+独立页面，行业板块行情分析（数据源同花顺行业板块 —— 东财 `_em` 系列本地网络不可用）：
+
+- **大盘云图** — Treemap，面积=成交额、颜色=涨跌幅（A 股红涨绿跌），一眼看板块强弱与权重
+- **板块排行榜** — 涨跌幅/成交额/资金净流入/涨跌家数/领涨股，内嵌 diverging 涨跌条，表头点击排序
+- **板块轮动热力图** — 近 N 日 × 波动最大 Top30 板块，色阶按分位数动态，看板块轮动
+- **板块 K 线** — 点排行榜板块名或云图方块 → 弹出该板块日 K（candlestick + MA5/10/20）
+- **历史回填** — 一键拉近 N 日**真实**板块历史（同花顺行业指数日线，~20 秒，后台线程 + 进度）
+- **自动增量** — `board.refresh_daily` daemon job 每交易日 16:35 抓当日快照，历史随天累积
+
+存储照抄数据层模式：parquet 按日 hive 分区（`data/parquet/board/`）+ meta.db `board_refresh_state` 表。
+当前为**板块级单层**云图（个股级需个股→板块映射 + 流通市值，本地网络暂不可得）。
+
 ### LLM Agent
 
 | Agent | 角色 |
@@ -211,11 +226,12 @@ daemon 每 30 分钟巡检 3 条规则，触发时写 `events.alert.*` + 调 `os
 
 ### Web 控制台
 
-5 个页面（`localhost:8765`，导航顺序按使用频率）：
+6 个页面（`localhost:8765`，导航顺序按使用频率）：
 
 | 路径 | 内容 |
 |---|---|
 | `/research` | **主工作面**：今日交易清单 + 真实持仓 + 今日组合 + **因子相关性热力图** + **今日异动诊断** + 因子表现 + 净值回测 + Paper Trading + 因子归因 + 自动发现流水 + **Shadow 战况看板** + LLM 因子建议审核。顶部有 KPI 总览 + "今日待办"结论条，4-tab 分组（交易 / 组合 / 因子 / LLM Lab） |
+| `/board` | **板块看板**：大盘云图（Treemap）+ 板块排行榜（可排序）+ 轮动热力图 + 板块 K 线弹窗 + 历史回填 |
 | `/ops` | 系统健康度、job_runs 历史、events 流、手动 trigger 按钮 |
 | `/data` | AKShare 数据浏览器（17 个接口） |
 | `/chat` | LLM 对话 + tool use（实时 SSE） |
@@ -264,12 +280,12 @@ daemon 每 30 分钟巡检 3 条规则，触发时写 `events.alert.*` + 调 `os
 
 - 启动脚本：`start.sh`
 - 入口：`src/akq_agents/cli/app.py`（CLI）、`src/akq_agents/web/app.py`（FastAPI）
-- 数据层：`src/akq_agents/services/data/`
+- 数据层：`src/akq_agents/services/data/`（含 `board_repository.py` 板块快照/历史）
 - 因子：`src/akq_agents/services/factors/`（base / engine / discovery / llm_brainstorm / proposal_store）
 - 组合：`src/akq_agents/services/portfolio/`（composite / optimizer / backtester / paper_trading / trade_list）
 - LLM：`src/akq_agents/services/llm/`、`src/akq_agents/agents/analyst_agent.py`、`chat_agent.py`
-- 调度：`src/akq_agents/orchestrator/`（scheduler / job_runner / jobs/）
-- Web：`src/akq_agents/web/`（api/ + templates/）
+- 调度：`src/akq_agents/orchestrator/`（scheduler / job_runner / jobs/，含 `jobs/board_refresh.py`）
+- Web：`src/akq_agents/web/`（api/ + templates/，含板块看板 `api/board.py` + `templates/board.html.j2`）
 
 ## 辅助脚本（`scripts/`）
 
@@ -346,6 +362,7 @@ $PY -m ruff check src/ tests/                        # lint
 | m23 | web → daemon 手动触发通道 picker（web 进程零 CPU 消耗） |
 | m24 | user-facing job 结果流（`job_results` 表，前端异步取回） |
 | m25 | LLM 自由 Python 代码因子（下线 DSL LLM 路径）+ picker fire-and-forget（消除告警 + 4 并发）+ 组合/交易清单参数配置化（`portfolio:` / `trade_list:` 段全中文注释）+ 前端 error_code/event kind i18n + trade list 空清单友好提示 + 快捷键 CSS 收官 + ruff 全绿 |
+| board | 板块看板 `/board`：大盘云图（Treemap）+ 板块排行榜（可排序）+ 轮动热力图 + 板块 K 线弹窗 + 一键真实历史回填 + `board.refresh_daily` daemon 每日 16:35 自动抓（数据源同花顺行业板块） |
 
 详细设计文档（部分已是历史档案，以代码为准）：`docs/superpowers/specs/`、`docs/superpowers/plans/`。
 </content>
