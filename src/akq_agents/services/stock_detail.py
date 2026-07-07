@@ -859,7 +859,6 @@ def _guess_market(symbol: str) -> str:
     - 8/4 开头 → bj (北交所)
     - 其他 (0/3) → sz (深交所)
     """
-    s = str(symbol).lstrip("0") or "0"
     first = str(symbol)[0] if symbol else "0"
     if first == "6":
         return "sh"
