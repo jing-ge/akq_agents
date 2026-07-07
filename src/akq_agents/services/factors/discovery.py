@@ -662,7 +662,9 @@ class DiscoveryEngine:
                 payload={"error": error_msg[:300]},
             )
         except Exception:  # noqa: BLE001
-            pass
+            # events 记账是 best-effort 附加功能, 写失败不能影响主发现流程;
+            # 降到 debug 避免"记账失败又刷 warning"的日志噪音.
+            logger.debug("_write_event_safe 写 event 失败 (kind=%s), 已忽略", kind, exc_info=True)
 
     # ------------------------------------------------------------------
 

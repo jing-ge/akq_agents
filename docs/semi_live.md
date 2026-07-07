@@ -34,8 +34,12 @@ PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app run-o
 ## 查询与分析
 
 ```bash
-PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app query --section all --limit 5
-PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app analyze
+# 查看今日交易清单
+PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app trade-list
+# 解释当前组合构成
+PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app portfolio explain
+# 列出已上线因子
+PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app factors list
 ```
 
 ## 当前增强

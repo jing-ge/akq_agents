@@ -114,8 +114,8 @@ PYTHONPATH=src /opt/anaconda3/envs/akq310/bin/python -m akq_agents.cli.app \
            - 满 60 天且 |IR|<0.10  → demote (rejected)
            - 中间                  → 继续观察
 
-每天 20:00 factor_brainstorm
-       → LLM 看现状 (DSL 能力圈 + 历史拒绝率 + 已上线因子) → 提议 20 个新 recipe
+每天 21:00 factor.code_brainstorm
+       → LLM 看现状 (sandbox 能力圈 + 历史拒绝率 + 已上线因子) → 提议 10 个新 code recipe
        → 写 factor_proposals status='llm_suggested'
        → 等用户在 /research 页 ✓接受 / ✗拒绝
 
@@ -156,7 +156,7 @@ python:    3.10.20
 |---|---|---|
 | 预置 | `momentum_5/20/60`, `reversal_5`, `volatility_20`, `amount_20`, `log_amount_20` | 手工实现在 `services/factors/*.py`，7 个 |
 | DSL 自动发现 | `auto_{op}_{base}_{window}_{direction}_{hash}` | daemon 每 120 分钟跑 `DiscoveryEngine`，从 `46 base × 37 op × 12 window × 2 direction` 抽样评估 |
-| LLM 自由代码 | `code_{concept}_{hash6}` | 每天 20:00 `LLMCodeFactorBrainstormer` 让 LLM 直接写 Python compute 函数走 sandbox 编译，不限 DSL 空间 |
+| LLM 自由代码 | `code_{concept}_{hash6}` | 每天 21:00 `LLMCodeFactorBrainstormer` 让 LLM 直接写 Python compute 函数走 sandbox 编译，不限 DSL 空间 |
 
 > **注**：历史 DSL 受限的 LLM 提议路径 (`factor.brainstorm`) 已下线（LLM 撞库率 100%）。现在 LLM 只走 `factor.code_brainstorm` 自由代码路径。
 
@@ -192,7 +192,7 @@ python:    3.10.20
 |---|---|
 | AnalystAgent | 盘后跑一次 LLM，写 markdown 报告（context 已经齐备 portfolio + attribution + data_health） |
 | ChatAgent | `/chat` 页面对话，14 个只读 tool（`get_data_health` / `list_factors` / `get_portfolio_snapshot` / `get_today_trade_list` / `factor_postmortem` / `attribute_nav_drop` / ...） |
-| LLMCodeFactorBrainstormer | 每天 20:00 让 LLM 直接写 Python compute 函数（走 sandbox 编译，不限 DSL 空间） |
+| LLMCodeFactorBrainstormer | 每天 21:00 让 LLM 直接写 Python compute 函数（走 sandbox 编译，不限 DSL 空间） |
 
 LLM 网关：本地 Anthropic gateway `http://127.0.0.1:18931`（需另行启动）。
 

@@ -27,7 +27,7 @@ services:
 并确保环境安装：
 
 ```bash
-/opt/anaconda3/envs/ab/bin/python -m pip install akshare
+/opt/anaconda3/envs/akq310/bin/python -m pip install akshare
 ```
 
 ## 下一步建议补充的真实因子

@@ -19,7 +19,7 @@ from akq_agents.web.api.research import router as research_router
 from akq_agents.web.api.stock import router as stock_router
 from akq_agents.web.api.trading import router as trading_router
 from akq_agents.web.deps import get_services
-from akq_agents.web.guard import LocalhostOnlyMiddleware
+from akq_agents.web.guard import CSRFOriginMiddleware, LocalhostOnlyMiddleware
 
 _WEB_DIR = Path(__file__).resolve().parent
 _TEMPLATES_DIR = _WEB_DIR / "templates"
@@ -32,6 +32,8 @@ def create_app() -> FastAPI:
     """构造 FastAPI app；所有路由 + middleware 在此注册。"""
     app = FastAPI(title="AKQ Agents Console", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(LocalhostOnlyMiddleware)
+    # CSRF: 对写方法校验 Origin/Referer (即使绑 loopback 也防本地恶意页跨站写)
+    app.add_middleware(CSRFOriginMiddleware)
 
     # static
     if _STATIC_DIR.exists():

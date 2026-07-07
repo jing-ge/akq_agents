@@ -1,5 +1,12 @@
 # 系统设计
 
+> ⚠️ **历史设计稿（已过时）**：本文档描述的是项目早期设想的 6-Agent 流水线
+> （DataAgent → FactorAgent → BacktestAgent → ResearchAgent → PortfolioAgent → AdvisorAgent），
+> 这些装饰性 Agent 在 m15 里程碑已被删除。当前**实际架构**是 web + daemon 双进程
+> + SQLite/Parquet 存储，实际存在的 Agent 只有 `BaseAgent` / `AnalystAgent` /
+> `PortfolioAgent` / `ChatAgent` / `StockAnalystAgent`。
+> **以 README.md「系统架构」章节为准**，下文仅作历史归档参考。
+
 ## 目标
 
 构建一个长期运行的多 Agent 量化研究系统，使其可以：

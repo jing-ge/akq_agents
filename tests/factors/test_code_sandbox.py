@@ -85,6 +85,50 @@ def test_dangerous_attribute_rejected():
         compile_code_factor(source, timeout_s=2.0)
 
 
+# ---------------- 经典沙箱逃逸链 (RCE 关键防线) ----------------
+
+
+@pytest.mark.parametrize(
+    ("name", "source"),
+    [
+        # (1) 经典子类逃逸: (1).__class__.__bases__[0].__subclasses__() → object 子类树 → RCE
+        (
+            "subclass_escape",
+            "def compute(ohlcv):\n    return (1).__class__.__bases__[0].__subclasses__()\n",
+        ),
+        # (2) str.format 逃逸: '{0.__class__}'.format(x) 里 __class__ 在字符串常量里, AST 属性检查看不到
+        (
+            "str_format_escape",
+            "def compute(ohlcv):\n    return '{0.__class__}'.format(ohlcv)\n",
+        ),
+        # (3) 字符串拼接 dunder: 'a' + '__class__' 试图绕过字面量检查
+        (
+            "concat_dunder_string",
+            "def compute(ohlcv):\n    a = '__cla' + 'ss__'\n    return a\n",
+        ),
+        # (4) f-string 内联 dunder
+        (
+            "fstring_dunder",
+            "def compute(ohlcv):\n    return f'{ohlcv.__class__}'\n",
+        ),
+        # (5) __globals__ 拉全局
+        (
+            "globals_via_dunder",
+            "def compute(ohlcv):\n    return compute.__globals__\n",
+        ),
+        # (6) __builtins__ 直接访问
+        (
+            "builtins_via_dunder",
+            "def compute(ohlcv):\n    return ohlcv.__builtins__\n",
+        ),
+    ],
+)
+def test_classic_escape_payloads_rejected(name, source):
+    """确保经典逃逸链在编译期就被静态拦截 (安全关键路径, 回归防线)."""
+    with pytest.raises(UnsafeCodeError):
+        compile_code_factor(source, timeout_s=2.0)
+
+
 # ---------------- 超时 ----------------
 
 
