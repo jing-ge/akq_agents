@@ -32,7 +32,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from akq_agents.services.factors.base import CodeFactor, Factor, FactorRegistry
+from akq_agents.services.factors.base import CodeFactor, Factor, FactorRegistry, compute_forward_returns
 from akq_agents.services.factors.proposal_store import (
     FactorProposal,
     FactorProposalStore,
@@ -692,7 +692,7 @@ class DiscoveryEngine:
         close = ohlcv.pivot_table(
             index="date", columns="symbol", values="close", aggfunc="last"
         ).sort_index()
-        forward_returns = close.pct_change(fill_method=None).shift(-1)
+        forward_returns = compute_forward_returns(close)
 
         # 2) 已 active 因子的完整历史矩阵（用于时间序列相关性筛选）
         active_factor_history = self._compute_active_factor_history(ohlcv, close.index)
@@ -1095,7 +1095,7 @@ class DiscoveryEngine:
         close = ohlcv.pivot_table(
             index="date", columns="symbol", values="close", aggfunc="last"
         ).sort_index()
-        forward_returns = close.pct_change(fill_method=None).shift(-1)
+        forward_returns = compute_forward_returns(close)
         all_dates = close.index
 
         for p in shadow_list:
@@ -1155,7 +1155,7 @@ class DiscoveryEngine:
                 self.proposal_store.upsert(p)
                 continue
             # 复用 evaluator._rolling_ic 算 IR
-            from akq_agents.services.portfolio.evaluator import _rolling_ic
+            from akq_agents.services.portfolio.evaluator import _effective_sample_size, _rolling_ic
             ic_series = _rolling_ic(oos_hist, oos_ret, window=min(len(oos_hist), 60))
             ic_clean = ic_series.dropna()
             if len(ic_clean) < 5:
@@ -1170,33 +1170,34 @@ class DiscoveryEngine:
             oos_ir = (oos_ic_mean / oos_ic_std) if oos_ic_std else None
             # M19 review: t_stat = IR * sqrt(N), 自然带样本量归一化, 防止小样本假阳
             import math as _math
-            oos_t_stat = (oos_ir * _math.sqrt(len(ic_clean))) if oos_ir is not None else None
 
-            # M19 review: 同时检查 IR 和 t_stat — IR>=0.15 + |t_stat|>=2.0 才 promote.
-            # |t_stat|<2.0 (相当于 p>0.05) 说明 OOS 这段 IR 大概率是噪音, 不该 promote 进组合。
-            ir_pass = oos_ir is not None and abs(oos_ir) >= self.th.shadow_min_oos_ir
-            t_pass = oos_t_stat is not None and abs(oos_t_stat) >= self.th.shadow_min_oos_t_stat
+            # ── 前视偏差修复 (P3 review #3) ──────────────────────────────
+            # direction 必须在 IS 阶段冻结, OOS 只验证"冻结方向"的显著性.
+            # 旧逻辑用 abs(oos_ir) 判显著 + 事后翻转 direction, 等于在同一段
+            # OOS 样本上"既挑方向又判显著" → 噪音因子靠事后翻转制造假阳.
+            # 现在: 按冻结 direction 把 IR 对齐成"方向正确时应为正"的 signed_ir,
+            # 只用带符号值判定, 负 signed_ir = 冻结方向在 OOS 被证伪, 不翻转.
+            frozen_direction = recipe.get("direction", "long")
+            signed_ir = None
+            if oos_ir is not None:
+                signed_ir = oos_ir if frozen_direction == "long" else -oos_ir
+            signed_t_stat = (
+                signed_ir * _math.sqrt(_effective_sample_size(ic_clean))
+                if signed_ir is not None
+                else None
+            )
+
+            # 带符号判定: signed_ir >= 门槛 (正值) 且 signed_t_stat >= 2.0 才 promote.
+            # 用带符号而非 abs → 冻结方向在 OOS 上收益为负的因子无法通过 (被证伪).
+            ir_pass = signed_ir is not None and signed_ir >= self.th.shadow_min_oos_ir
+            t_pass = (
+                signed_t_stat is not None and signed_t_stat >= self.th.shadow_min_oos_t_stat
+            )
             if ir_pass and t_pass:
-                assert oos_ir is not None  # ir_pass 已保证, 给 type checker
-                # Promote → accepted + register
-                # M9-B: 如果 OOS IR 为负，说明原 direction 反了，自动反转
-                if oos_ir < 0:
-                    new_direction = "short" if recipe["direction"] == "long" else "long"
-                    flipped_recipe = dict(recipe)
-                    flipped_recipe["direction"] = new_direction
-                    # 注意：name 是 hash 包含 direction 的，反转后 name 也变。
-                    # 但我们不希望生成新条目（会失去 OOS 历史），所以保留原 factor_name，
-                    # 只更新 recipe_json + direction，使 make_factor 用反转后的版本。
-                    factor = make_factor(flipped_recipe)
-                    # 强制把 factor.name 改回原 name（保持 db 主键）
-                    factor.name = p.factor_name  # type: ignore[attr-defined]
-                    p.recipe_json = recipe_to_json(flipped_recipe)
-                    p.direction = new_direction
-                    effective_ir = -oos_ir  # 反向后等价于正 IR
-                    flip_note = f", direction_flipped (was {recipe['direction']})"
-                else:
-                    effective_ir = oos_ir
-                    flip_note = ""
+                assert signed_ir is not None  # ir_pass 已保证, 给 type checker
+                # 冻结方向在 OOS 得到验证 (方向不变), effective_ir 即对齐后的正 IR
+                effective_ir = signed_ir
+                flip_note = ""
                 # 保持 registry 里的 factor.name 与 db 主键 factor_name 一致
                 # （否则 LLM 提议的 llm_* 因子在 promote 时会以 auto_* 注册到 registry，
                 # 与 proposal_store 中的 llm_* 分裂，下游 factor_metrics 历史断裂）
@@ -1206,8 +1207,8 @@ class DiscoveryEngine:
                 except ValueError:
                     pass
                 p.status = "accepted"
-                p.reason = f"promoted_after_{len(oos_dates)}d_oos_ir={oos_ir:.3f}{flip_note}"
-                p.ir = effective_ir  # 把 IR 也更新成"有效方向后"的正值
+                p.reason = f"promoted_after_{len(oos_dates)}d_signed_ir={signed_ir:.3f}{flip_note}"
+                p.ir = effective_ir  # 把 IR 也更新成"方向对齐后"的正值
                 p.oos_observations = len(oos_dates)
                 p.oos_ir = effective_ir
                 p.evaluated_at = now_iso()
@@ -1215,41 +1216,42 @@ class DiscoveryEngine:
                 stats.accepted_names.append(p.factor_name + " (promoted)")
                 stats.promoted += 1
                 logger.info(
-                    "discovery: shadow %s PROMOTED (oos_ir=%.3f over %d days%s)",
-                    p.factor_name, oos_ir, len(oos_dates), flip_note,
+                    "discovery: shadow %s PROMOTED (signed_ir=%.3f over %d days%s)",
+                    p.factor_name, signed_ir, len(oos_dates), flip_note,
                 )
             else:
                 # M15-A: 不立刻 demote — 看时长 + IR 决定
-                # - oos_days >= shadow_max_days (60) 且 |IR| < shadow_min_keep_ir (0.10):
-                #     真的不行 → demote
+                # - oos_days >= shadow_max_days (60) 且 signed_ir < shadow_min_keep_ir:
+                #     冻结方向在 OOS 上收益不足 (含方向被证伪的负 signed_ir) → demote
                 # - 否则: 继续观察（更新 oos_observations / oos_ir，status 仍 'shadow'）
-                ir_too_low = oos_ir is None or abs(oos_ir) < self.th.shadow_min_keep_ir
+                # 注: 用 signed_ir 而非 abs(oos_ir) — 冻结方向为负的因子不该靠"反向也行"续命.
+                ir_too_low = signed_ir is None or signed_ir < self.th.shadow_min_keep_ir
                 if len(oos_dates) >= self.th.shadow_max_days and ir_too_low:
                     p.status = "demoted"
                     p.reason = (
-                        f"demoted_after_{len(oos_dates)}d_oos_ir={oos_ir:.3f}"
-                        if oos_ir is not None
-                        else f"demoted_after_{len(oos_dates)}d_oos_ir=None"
+                        f"demoted_after_{len(oos_dates)}d_signed_ir={signed_ir:.3f}"
+                        if signed_ir is not None
+                        else f"demoted_after_{len(oos_dates)}d_signed_ir=None"
                     )
-                    p.ir = oos_ir
+                    p.ir = signed_ir
                     p.oos_observations = len(oos_dates)
-                    p.oos_ir = oos_ir
+                    p.oos_ir = signed_ir
                     p.evaluated_at = now_iso()
                     self.proposal_store.upsert(p)
                     stats.demoted += 1
                     logger.info(
-                        "discovery: shadow %s DEMOTED (oos_ir=%s over %d days)",
-                        p.factor_name, oos_ir, len(oos_dates),
+                        "discovery: shadow %s DEMOTED (signed_ir=%s over %d days)",
+                        p.factor_name, signed_ir, len(oos_dates),
                     )
                 else:
                     # 继续观察
                     p.oos_observations = len(oos_dates)
-                    p.oos_ir = oos_ir
+                    p.oos_ir = signed_ir
                     p.evaluated_at = now_iso()
                     self.proposal_store.upsert(p)
                     logger.info(
-                        "discovery: shadow %s 继续观察 (oos_days=%d, oos_ir=%s)",
-                        p.factor_name, len(oos_dates), oos_ir,
+                        "discovery: shadow %s 继续观察 (oos_days=%d, signed_ir=%s)",
+                        p.factor_name, len(oos_dates), signed_ir,
                     )
 
 
@@ -1285,7 +1287,7 @@ def restore_accepted_factors(
                     name=p.factor_name,
                     source_code=p.recipe_code,
                     fn=fn,
-                    factor_version=p.factor_name and 1 or 1,  # code 路径暂无 version 概念, 默认 1
+                    factor_version=1,  # code 路径暂无 version 概念, 默认 1
                     direction=p.direction,
                     code_hash=ch or p.code_hash or "",
                 )

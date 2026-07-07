@@ -63,6 +63,31 @@ class FactorMetric:
     reason: str | None
 
 
+def _effective_sample_size(ic_series: pd.Series) -> float:
+    """IC 序列的有效样本量 N_eff = N * (1-ρ)/(1+ρ), ρ 为一阶自相关。
+
+    逐日 Spearman IC 高度自相关 (因子值日间持续), 直接用 N 算 t_stat=IR*sqrt(N)
+    会系统性高估显著性 → 大量噪音因子被误判显著而 promote。用 AR(1) 近似的有效
+    样本量修正: ρ>0 (正自相关, 常见) 时 N_eff < N, t_stat 相应缩小。
+
+    - ρ 只取正值方向的修正 (clip 到 [0, 0.99)); ρ<=0 时不放大, N_eff=N。
+    - N<3 无法估自相关, 直接返回 N。
+    返回浮点有效样本量, 调用方用 sqrt(N_eff) 替代 sqrt(N)。
+    """
+    ic = ic_series.dropna()
+    n = len(ic)
+    if n < 3:
+        return float(n)
+    # 一阶自相关 ρ = corr(ic[t], ic[t-1])
+    rho = float(ic.autocorr(lag=1)) if ic.std(ddof=1) > 0 else 0.0
+    if not np.isfinite(rho) or rho <= 0:
+        return float(n)
+    rho = min(rho, 0.99)  # 防除零/爆炸
+    n_eff = n * (1.0 - rho) / (1.0 + rho)
+    # 至少保留 2, 避免极端自相关把有效样本压到 <1 使 t_stat 失真
+    return max(2.0, n_eff)
+
+
 def _rolling_ic(
     factor_history: pd.DataFrame,
     forward_returns: pd.DataFrame,
@@ -201,7 +226,8 @@ class FactorEvaluator:
             ic_mean = float(ic_clean.mean())
             ic_std = float(ic_clean.std(ddof=1))
             ir = ic_mean / ic_std if ic_std > 0 else None
-            t_stat = ir * np.sqrt(len(ic_clean)) if ir is not None else None
+            # M19+P3: t_stat 用有效样本量 N_eff (修正 IC 自相关导致的显著性高估)
+            t_stat = ir * np.sqrt(_effective_sample_size(ic_clean)) if ir is not None else None
             # M3 + 改进：单点低 IR 不立即 disable，需要"连续 N 期"低才标 inactive
             # 避免单日数据精度问题（如 spot 数据）导致核心因子瞬间被 disable
             status = "active"
@@ -290,37 +316,36 @@ class FactorEvaluator:
         _upsert_many (会改变 _read_recent_history 结果). 严格串行执行.
         """
         results: list = []
-        try:
-            for as_of_date in as_of_dates:
-                fh_sub = factor_history.loc[:as_of_date]
-                fr_sub = forward_returns.loc[:as_of_date]
-                common_idx = fh_sub.index.intersection(fr_sub.index)
-                if len(common_idx) < self._window:
-                    metric = FactorMetric(
-                        factor_name=factor.name,
-                        factor_version=factor.factor_version,
-                        as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
-                        window_days=self._window,
-                        ic_mean=None, ic_std=None, ir=None, t_stat=None,
-                        status="active", reason="insufficient_data",
-                    )
-                else:
-                    metric = self._compute_metric(
-                        factor=factor,
-                        factor_history=fh_sub.loc[common_idx],
-                        forward_returns=fr_sub.loc[common_idx],
-                        as_of_date=as_of_date,
-                    )
-                # 不立即写, 暂存到 instance buffer
-                self._pending_metrics.append(metric)
-                results.append(metric)
-            # 一次 commit
-            if self._pending_metrics:
-                self._upsert_many(self._pending_metrics)
-                self._pending_metrics = []
-        finally:
-            # 异常路径清理 buffer, 避免下次误用
-            self._pending_metrics = []
+        # 局部 buffer 累积本次批量的 metrics; 循环结束一次性 _upsert_many commit.
+        # (不用 self._pending_metrics() thread-local buffer: 那是 batch() context
+        #  manager 的语义, 与本方法"严格串行 + 单次 flush"独立, 混用会互相污染)
+        pending: list = []
+        for as_of_date in as_of_dates:
+            fh_sub = factor_history.loc[:as_of_date]
+            fr_sub = forward_returns.loc[:as_of_date]
+            common_idx = fh_sub.index.intersection(fr_sub.index)
+            if len(common_idx) < self._window:
+                metric = FactorMetric(
+                    factor_name=factor.name,
+                    factor_version=factor.factor_version,
+                    as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
+                    window_days=self._window,
+                    ic_mean=None, ic_std=None, ir=None, t_stat=None,
+                    status="active", reason="insufficient_data",
+                )
+            else:
+                metric = self._compute_metric(
+                    factor=factor,
+                    factor_history=fh_sub.loc[common_idx],
+                    forward_returns=fr_sub.loc[common_idx],
+                    as_of_date=as_of_date,
+                )
+            # 不立即写, 暂存到局部 buffer
+            pending.append(metric)
+            results.append(metric)
+        # 一次 commit (无异常时才写; 异常直接向上抛, 不残留半批)
+        if pending:
+            self._upsert_many(pending)
         return results
 
     def _compute_metric(
@@ -346,7 +371,8 @@ class FactorEvaluator:
         ic_mean = float(ic_clean.mean())
         ic_std = float(ic_clean.std(ddof=1))
         ir = ic_mean / ic_std if ic_std > 0 else None
-        t_stat = ir * np.sqrt(len(ic_clean)) if ir is not None else None
+        # M19+P3: t_stat 用有效样本量 N_eff (修正 IC 自相关导致的显著性高估)
+        t_stat = ir * np.sqrt(_effective_sample_size(ic_clean)) if ir is not None else None
         status = "active"
         reason: str | None = None
         if ir is None or abs(ir) < 0.15:
