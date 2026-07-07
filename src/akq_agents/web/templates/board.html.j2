@@ -1,0 +1,488 @@
+{% extends "base.html.j2" %}
+{% block title %}板块 Board{% endblock %}
+
+{% block content %}
+<h1>板块看板 <span class="small" style="font-weight:400">Sector Board</span></h1>
+<p class="page-intro">
+  盘后抓取的 <b>行业板块行情</b>（同花顺源）：涨跌幅排行、资金净流入、领涨股，
+  以及近 N 日 <b>板块轮动热力图</b>。
+  <span class="small">数据仅供研究参考，不构成投资建议。</span>
+</p>
+
+<div class="card">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <h2 style="margin:0">大盘云图 <span class="small" style="font-weight:400">面积=成交额 · 颜色=涨跌幅（红涨绿跌）</span></h2>
+  </div>
+  <div id="board-treemap-status" class="small" style="margin:6px 0 0"></div>
+  <div id="board-treemap-chart" style="width:100%;height:560px;margin-top:10px"></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <h2 style="margin:0">今日板块排行 <span class="small" id="board-date">—</span></h2>
+    <span style="flex:1"></span>
+    <button class="btn" id="board-refresh-btn" title="板块接口只给当日数据，点此立即抓取今天的快照并落地">立即抓取今日</button>
+  </div>
+  <div id="board-ranking-status" class="small" style="margin:6px 0 0"></div>
+  <div style="max-height:520px;overflow:auto;margin-top:10px;border:1px solid var(--border,#232838);border-radius:8px">
+    <table class="data-table" id="board-ranking-table" style="margin:0">
+      <thead>
+        <tr>
+          <th style="position:sticky;top:0;background:var(--bg-2,#161a23);z-index:1">#</th>
+          <th style="position:sticky;top:0;background:var(--bg-2,#161a23);z-index:1">板块</th>
+          <th class="sortable" data-key="pct_chg" style="position:sticky;top:0;background:var(--bg-2,#161a23);z-index:1;text-align:right;cursor:pointer" title="点击按涨跌幅排序">涨跌幅%<span class="sort-ind"></span></th>
+          <th class="sortable" data-key="amount" style="position:sticky;top:0;background:var(--bg-2,#161a23);z-index:1;text-align:right;cursor:pointer" title="点击按成交额排序">成交额(亿)<span class="sort-ind"></span></th>
+          <th class="sortable" data-key="net_inflow" style="position:sticky;top:0;background:var(--bg-2,#161a23);z-index:1;text-align:right;cursor:pointer" title="点击按净流入排序">净流入(亿)<span class="sort-ind"></span></th>
+          <th style="position:sticky;top:0;background:var(--bg-2,#161a23);z-index:1;text-align:right">涨/跌家数</th>
+          <th style="position:sticky;top:0;background:var(--bg-2,#161a23);z-index:1">领涨股</th>
+          <th class="sortable" data-key="leader_pct" style="position:sticky;top:0;background:var(--bg-2,#161a23);z-index:1;text-align:right;cursor:pointer" title="点击按领涨股涨幅排序">领涨%<span class="sort-ind"></span></th>
+        </tr>
+      </thead>
+      <tbody id="board-ranking-body">
+        <tr><td colspan="8" class="small" style="text-align:center;padding:20px">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <h2 style="margin:0">板块轮动热力图</h2>
+    <span class="small">近</span>
+    <select id="board-heatmap-lookback" style="width:auto">
+      <option value="10">10</option>
+      <option value="20" selected>20</option>
+      <option value="40">40</option>
+    </select>
+    <span class="small">个交易日 · 颜色=当日涨跌幅（红涨绿跌）· 仅显示波动最大 Top30</span>
+    <span style="flex:1"></span>
+    <button class="btn" id="board-backfill-btn" title="重新拉取近 N 日真实板块历史（同花顺，约 20 秒）">重新回填</button>
+  </div>
+  <div id="board-heatmap-status" class="small" style="margin:6px 0 0"></div>
+  <div id="board-heatmap-chart" style="width:100%;height:600px;margin-top:10px"></div>
+</div>
+
+<p class="small" style="color:var(--fg-dim);margin-top:12px">
+  数据来源：同花顺行业板块（东方财富接口本地网络不可用）· 涨跌幅由行业指数日线自算 ·
+  <span id="board-data-footer">—</span>
+</p>
+
+<div id="board-kline-modal" class="modal-backdrop hidden" onclick="closeBoardKlineOnBackdrop(event)">
+  <div class="modal-window" role="dialog" aria-modal="true" aria-labelledby="board-kline-title">
+    <div class="modal-head">
+      <span class="title" id="board-kline-title">板块 K 线</span>
+      <span style="flex:1"></span>
+      <button class="close-btn" onclick="closeBoardKline()" title="关闭（ESC）">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="board-kline-status" class="small" style="margin-bottom:8px"></div>
+      <div id="board-kline-chart" style="width:100%;height:420px"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _boardHeatmapChart = null;
+let _rankRows = [];                       // 缓存排行榜数据，排序时不重拉
+let _sortKey = 'pct_chg', _sortDir = -1;  // 默认按涨跌幅降序
+
+const RED = 'var(--err)', GREEN = 'var(--ok)', DIM = 'var(--fg-dim)';
+
+function renderRankBody() {
+  const body = document.getElementById('board-ranking-body');
+  if (!_rankRows.length) {
+    body.innerHTML = `<tr><td colspan="8" class="small" style="text-align:center;padding:20px">暂无数据</td></tr>`;
+    return;
+  }
+  // 排序（null 值永远沉底）
+  const rows = _rankRows.slice().sort((a, b) => {
+    const av = a[_sortKey], bv = b[_sortKey];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return (av - bv) * _sortDir;
+  });
+  const maxAbs = Math.max(1, ..._rankRows.map(r => Math.abs(r.pct_chg || 0)));
+  body.innerHTML = rows.map((row, i) => {
+    const v = row.pct_chg;
+    const pc = v == null ? '-' : (v > 0 ? '+' : '') + v.toFixed(2);
+    const color = v > 0 ? RED : (v < 0 ? GREEN : DIM);
+    const lpc = row.leader_pct == null ? '-' : (row.leader_pct > 0 ? '+' : '') + row.leader_pct.toFixed(2);
+    const amt = row.amount == null ? '-' : row.amount.toFixed(1);
+    const inflow = row.net_inflow == null ? '-' : (row.net_inflow > 0 ? '+' : '') + row.net_inflow.toFixed(2);
+    const inflowColor = row.net_inflow > 0 ? RED : (row.net_inflow < 0 ? GREEN : DIM);
+    const w = v == null ? 0 : Math.min(50, Math.abs(v) / maxAbs * 50);
+    const bar = v == null ? '' : (v >= 0
+      ? `<span style="position:absolute;left:50%;top:0;bottom:0;width:${w}%;background:${RED};opacity:.28;border-radius:0 3px 3px 0"></span>`
+      : `<span style="position:absolute;right:50%;top:0;bottom:0;width:${w}%;background:${GREEN};opacity:.28;border-radius:3px 0 0 3px"></span>`);
+    return `<tr>
+      <td class="small" style="color:${DIM}">${i + 1}</td>
+      <td><b class="board-link" data-board="${esc(row.board_name)}" style="cursor:pointer;border-bottom:1px dashed var(--fg-dim)" title="点击看 K 线">${esc(row.board_name)}</b></td>
+      <td style="position:relative;text-align:right;min-width:120px">
+        ${bar}<span style="position:relative;color:${color};font-variant-numeric:tabular-nums">${pc}</span>
+      </td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${amt}</td>
+      <td style="text-align:right;color:${inflowColor};font-variant-numeric:tabular-nums">${inflow}</td>
+      <td style="text-align:right" class="small"><span style="color:${RED}">${row.up_count ?? '-'}</span>/<span style="color:${GREEN}">${row.down_count ?? '-'}</span></td>
+      <td class="small">${esc(row.leader_name || '-')}</td>
+      <td class="small" style="text-align:right;font-variant-numeric:tabular-nums">${lpc}</td>
+    </tr>`;
+  }).join('');
+  // 更新表头排序指示箭头
+  document.querySelectorAll('#board-ranking-table th.sortable').forEach(th => {
+    const ind = th.querySelector('.sort-ind');
+    if (ind) ind.textContent = (th.dataset.key === _sortKey) ? (_sortDir < 0 ? ' ↓' : ' ↑') : '';
+  });
+}
+
+let _boardTreemapChart = null;
+
+// 大盘云图：面积=成交额，颜色=涨跌幅(diverging 红涨绿跌)。数据复用 ranking rows。
+function renderBoardTreemap(rows) {
+  const el = document.getElementById('board-treemap-chart');
+  const statusEl = document.getElementById('board-treemap-status');
+  if (!rows || !rows.length) {
+    statusEl.textContent = '暂无数据，请点击「立即抓取今日」';
+    if (_boardTreemapChart) { _boardTreemapChart.dispose(); _boardTreemapChart = null; }
+    el.innerHTML = `<div class="empty-state" style="padding:44px"><div class="empty-state-icon">🗺️</div><div style="margin-top:8px">暂无板块数据</div></div>`;
+    return;
+  }
+  // 颜色范围按涨跌幅 p75 动态定（收紧，避免多数板块挤在高饱和区糊成一片）
+  const absVals = rows.map(r => Math.abs(r.pct_chg || 0)).sort((a, b) => a - b);
+  const bound = Math.max(1.0, Number((absVals[Math.round((absVals.length - 1) * 0.75)] || 2).toFixed(1)));
+
+  const data = rows
+    .filter(r => (r.amount || 0) > 0)
+    .map(r => ({
+      name: r.board_name,
+      value: [r.amount, r.pct_chg == null ? 0 : r.pct_chg],  // [0]=面积(成交额), [1]=上色(涨跌幅)
+      leader: r.leader_name,
+    }));
+
+  statusEl.textContent = `${data.length} 个板块 · 色阶 ±${bound}%`;
+  el.innerHTML = '';
+  if (_boardTreemapChart) _boardTreemapChart.dispose();
+  _boardTreemapChart = echarts.init(el);
+  _boardTreemapChart.setOption({
+    tooltip: {
+      formatter: (p) => {
+        const pct = p.value[1], amt = p.value[0];
+        const sign = pct > 0 ? '+' : '';
+        return `<b>${esc(p.name)}</b><br>涨跌幅：${sign}${(pct ?? 0).toFixed(2)}%<br>成交额：${(amt ?? 0).toFixed(1)} 亿<br>领涨：${esc(p.data.leader || '-')}`;
+      },
+    },
+    // 按涨跌幅维度(value[1])上色（diverging）。A 股云图标准配色：
+    // 跌=绿(深→浅到近背景暗色)，涨=红(近背景暗色→深)，0 轴附近用接近背景的暗色，
+    // 避免中段插值出脏粉/脏灰。分 7 档让梯度更平滑。
+    visualMap: {
+      show: true, min: -bound, max: bound, dimension: 1,
+      calculable: true, orient: 'horizontal', left: 'center', bottom: 6,
+      inRange: {color: [
+        '#0b8f43', '#12a34e', '#37b866',   // 跌：深绿→中绿
+        '#1e2530',                          // 0 轴：接近背景的暗色
+        '#e0524a', '#d42d24', '#b31a12',    // 涨：中红→深红
+      ]},
+      textStyle: {color: '#cbd5e1'},
+    },
+    series: [{
+      type: 'treemap',
+      roam: false,
+      nodeClick: false,
+      breadcrumb: {show: false},
+      width: '100%', height: '90%', top: 0,
+      data: data,
+      label: {
+        show: true, position: 'insideTopLeft', color: '#fff', fontSize: 11,
+        overflow: 'truncate', ellipsis: '',
+        formatter: (p) => {
+          const pct = p.value[1];
+          const sign = pct > 0 ? '+' : '';
+          return `${p.name}\n${sign}${(pct ?? 0).toFixed(2)}%`;
+        },
+      },
+      itemStyle: {borderColor: '#0b0e14', borderWidth: 1, gapWidth: 1},
+      levels: [{itemStyle: {borderColor: '#0b0e14', borderWidth: 2, gapWidth: 2}}],
+    }],
+  });
+  _boardTreemapChart.off('click');
+  _boardTreemapChart.on('click', (p) => { if (p.name) openBoardKline(p.name); });
+}
+
+async function loadBoardRanking() {
+  const statusEl = document.getElementById('board-ranking-status');
+  try {
+    const r = await fetch('/api/board/ranking');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    document.getElementById('board-date').textContent = d.date || '—';
+    document.getElementById('board-data-footer').textContent =
+      d.date ? `最新数据日：${d.date} · 已落地 ${(d.available || []).length} 天` : '暂无数据';
+    if (!d.rows || d.rows.length === 0) {
+      _rankRows = [];
+      renderBoardTreemap([]);
+      document.getElementById('board-ranking-body').innerHTML =
+        `<tr><td colspan="8" class="small" style="text-align:center;padding:20px">${esc(d.note || '暂无数据，请点击「立即抓取今日」')}</td></tr>`;
+      statusEl.textContent = '';
+      return;
+    }
+    _rankRows = d.rows;
+    renderRankBody();
+    renderBoardTreemap(d.rows);
+    statusEl.textContent = `共 ${d.rows.length} 个板块 · 已落地 ${(d.available || []).length} 天`;
+  } catch (e) {
+    document.getElementById('board-ranking-body').innerHTML =
+      `<tr><td colspan="8" class="small" style="text-align:center;padding:20px;color:${RED}">加载失败：${esc(String(e))}</td></tr>`;
+  }
+}
+
+// 分位数（p ∈ [0,1]）
+function quantile(sorted, p) {
+  if (!sorted.length) return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * p)));
+  return sorted[idx];
+}
+
+async function loadBoardHeatmap() {
+  const el = document.getElementById('board-heatmap-chart');
+  const statusEl = document.getElementById('board-heatmap-status');
+  const lookback = document.getElementById('board-heatmap-lookback').value;
+  try {
+    const r = await fetch('/api/board/heatmap?lookback=' + lookback);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+
+    // < 2 天：热力图无意义，放醒目主按钮引导用户加载历史，而不是塞角落的黑话按钮。
+    if (!d.dates || d.dates.length < 2) {
+      const n = (d.dates || []).length;
+      statusEl.textContent = n === 0 ? '暂无历史' : `当前仅 ${n} 天数据`;
+      if (_boardHeatmapChart) { _boardHeatmapChart.dispose(); _boardHeatmapChart = null; }
+      el.style.height = 'auto';
+      el.innerHTML = `<div class="empty-state" style="padding:44px 24px;text-align:center">
+        <div class="empty-state-icon" style="font-size:32px">📈</div>
+        <div style="margin:10px auto 16px;max-width:480px;line-height:1.6">
+          轮动热力图需要多天数据横向对比，当前仅 ${n} 天。<br>
+          点下方按钮一次性拉取近 ${lookback} 个交易日的<b>真实</b>板块历史（约 20 秒）。
+        </div>
+        <button class="btn btn-primary" id="board-load-hist-btn">加载近 ${lookback} 日历史数据</button>
+      </div>`;
+      const b = document.getElementById('board-load-hist-btn');
+      if (b) b.addEventListener('click', backfillBoardHistory);
+      return;
+    }
+
+    // ≥ 2 天：只画波动最大的 Top-N 板块
+    const TOP_N = 30;
+    let boards = d.boards, cells = d.cells;
+    if (d.boards.length > TOP_N) {
+      const yToVals = new Map();
+      for (const c of d.cells) {
+        if (!yToVals.has(c[1])) yToVals.set(c[1], []);
+        yToVals.get(c[1]).push(c[2]);
+      }
+      const amplitude = [];
+      for (const [yi, vals] of yToVals) amplitude.push([yi, Math.max(...vals) - Math.min(...vals)]);
+      const keepYi = new Set(amplitude.sort((a, b) => b[1] - a[1]).slice(0, TOP_N).map(x => x[0]));
+      const keptOrder = d.boards.map((_, i) => i).filter(i => keepYi.has(i));
+      const remap = new Map(keptOrder.map((oldYi, newYi) => [oldYi, newYi]));
+      boards = keptOrder.map(i => d.boards[i]);
+      cells = d.cells.filter(c => keepYi.has(c[1])).map(c => [c[0], remap.get(c[1]), c[2]]);
+    }
+
+    // 配色范围按数据实际分位数动态定（p90 of |涨跌幅|），避免写死 ±5 导致大片偏灰。
+    const absVals = cells.map(c => Math.abs(c[2])).sort((a, b) => a - b);
+    const bound = Math.max(1.5, Number(quantile(absVals, 0.90).toFixed(1)));  // 至少 ±1.5
+
+    statusEl.textContent = `${boards.length}${d.boards.length > TOP_N ? `/${d.boards.length}（波动Top${TOP_N}）` : ''} 个板块 × ${d.dates.length} 天 · 色阶 ±${bound}%`;
+    const h = Math.max(360, Math.min(boards.length * 16 + 160, 1000));
+    el.style.height = h + 'px';
+    el.innerHTML = '';
+    if (_boardHeatmapChart) _boardHeatmapChart.dispose();
+    _boardHeatmapChart = echarts.init(el);
+    _boardHeatmapChart.setOption({
+      tooltip: {
+        formatter: (p) => {
+          const day = d.dates[p.value[0]];
+          const board = boards[p.value[1]];
+          const val = p.value[2];
+          const sign = val > 0 ? '+' : '';
+          return `${board}<br>${day}<br><b>${sign}${val}%</b>`;
+        },
+      },
+      grid: {top: 40, left: 100, right: 30, bottom: 80},
+      xAxis: {
+        type: 'category', data: d.dates, splitArea: {show: true},
+        axisLabel: {rotate: 45, fontSize: 10, color: '#cbd5e1'},
+      },
+      yAxis: {
+        type: 'category', data: boards, splitArea: {show: true},
+        axisLabel: {fontSize: 10, color: '#cbd5e1'},
+      },
+      visualMap: {
+        // diverging：红(涨)/灰(0)/绿(跌)，中点中性灰；范围按分位数动态。
+        min: -bound, max: bound, calculable: true, orient: 'horizontal',
+        left: 'center', bottom: 10,
+        inRange: {color: ['#22c55e', '#4b5563', '#f87171']},
+        textStyle: {color: '#cbd5e1'},
+      },
+      series: [{
+        type: 'heatmap', data: cells,
+        itemStyle: {borderColor: '#0b0e14', borderWidth: 1},
+        emphasis: {itemStyle: {shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.4)'}},
+      }],
+    });
+  } catch (e) {
+    statusEl.textContent = '加载失败：' + String(e);
+  }
+}
+
+async function refreshBoardNow() {
+  const btn = document.getElementById('board-refresh-btn');
+  const statusEl = document.getElementById('board-ranking-status');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '抓取中…';
+  try {
+    const r = await fetch('/api/board/refresh', {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    statusEl.textContent = `抓取完成：${d.rows} 个板块（${d.target_date}）`;
+    await loadBoardRanking();
+    await loadBoardHeatmap();
+  } catch (e) {
+    statusEl.textContent = '抓取失败：' + String(e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function backfillBoardHistory() {
+  const btn = document.getElementById('board-backfill-btn');
+  const statusEl = document.getElementById('board-heatmap-status');
+  const lookback = document.getElementById('board-heatmap-lookback').value;
+  const loadBtn = document.getElementById('board-load-hist-btn');
+  if (btn) btn.disabled = true;
+  if (loadBtn) { loadBtn.disabled = true; loadBtn.textContent = '回填中…'; }
+  const old = btn ? btn.textContent : '';
+  if (btn) btn.textContent = '回填中…';
+  try {
+    const r = await fetch('/api/board/backfill?lookback=' + lookback, {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    if (!d.started && d.reason === 'already_running') {
+      statusEl.textContent = '已有回填任务在跑，请稍候…';
+    }
+    await new Promise((resolve) => {
+      const timer = setInterval(async () => {
+        try {
+          const sr = await fetch('/api/board/backfill/status');
+          const s = await sr.json();
+          if (s.total > 0) {
+            const label = `回填中 ${s.done}/${s.total}`;
+            if (btn) btn.textContent = label;
+            if (loadBtn) loadBtn.textContent = label;
+            statusEl.textContent = `拉取板块历史 ${s.done}/${s.total}…`;
+          }
+          if (!s.running) {
+            clearInterval(timer);
+            if (s.error) statusEl.textContent = '回填失败：' + s.error;
+            else if (s.result) statusEl.textContent = `回填完成：新增 ${s.result.days_written} 天，共 ${s.result.days_available} 天可用`;
+            resolve();
+          }
+        } catch (e) {
+          clearInterval(timer); statusEl.textContent = '进度查询失败：' + String(e); resolve();
+        }
+      }, 1000);
+    });
+    await loadBoardHeatmap();
+    await loadBoardRanking();
+  } catch (e) {
+    statusEl.textContent = '回填失败：' + String(e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+  }
+}
+
+let _boardKlineChart = null;
+
+function closeBoardKline() {
+  document.getElementById('board-kline-modal').classList.add('hidden');
+}
+function closeBoardKlineOnBackdrop(e) {
+  if (e.target === document.getElementById('board-kline-modal')) closeBoardKline();
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeBoardKline(); });
+
+async function openBoardKline(board) {
+  const modal = document.getElementById('board-kline-modal');
+  const statusEl = document.getElementById('board-kline-status');
+  const el = document.getElementById('board-kline-chart');
+  document.getElementById('board-kline-title').textContent = `${board} · 日 K 线`;
+  modal.classList.remove('hidden');
+  statusEl.textContent = '加载中…';
+  el.innerHTML = '';
+  try {
+    const r = await fetch('/api/board/kline?board=' + encodeURIComponent(board) + '&lookback=120');
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || ('HTTP ' + r.status)); }
+    const d = await r.json();
+    if (!d.dates || !d.dates.length) { statusEl.textContent = '暂无 K 线数据'; return; }
+    statusEl.textContent = `${d.dates.length} 个交易日 · 同花顺行业指数`;
+    if (_boardKlineChart) _boardKlineChart.dispose();
+    _boardKlineChart = echarts.init(el);
+    _boardKlineChart.setOption({
+      tooltip: {trigger: 'axis', axisPointer: {type: 'cross'}},
+      legend: {data: ['日K', 'MA5', 'MA10', 'MA20'], textStyle: {color: '#cbd5e1'}, top: 0},
+      grid: {left: 60, right: 20, top: 30, bottom: 60},
+      xAxis: {type: 'category', data: d.dates, axisLabel: {color: '#cbd5e1', fontSize: 9}, scale: true},
+      yAxis: {scale: true, axisLabel: {color: '#cbd5e1', fontSize: 9}, splitLine: {lineStyle: {color: '#232838'}}},
+      dataZoom: [{type: 'inside', start: 50, end: 100}, {type: 'slider', bottom: 10, height: 16, start: 50, end: 100}],
+      series: [
+        {
+          name: '日K', type: 'candlestick', data: d.kline,
+          itemStyle: {color: '#f87171', color0: '#22c55e', borderColor: '#f87171', borderColor0: '#22c55e'},
+        },
+        {name: 'MA5', type: 'line', data: d.ma5, smooth: true, showSymbol: false, lineStyle: {width: 1, color: '#eab308'}},
+        {name: 'MA10', type: 'line', data: d.ma10, smooth: true, showSymbol: false, lineStyle: {width: 1, color: '#60a5fa'}},
+        {name: 'MA20', type: 'line', data: d.ma20, smooth: true, showSymbol: false, lineStyle: {width: 1, color: '#c084fc'}},
+      ],
+    });
+    _boardKlineChart.resize();
+  } catch (e) {
+    statusEl.textContent = 'K 线加载失败：' + String(e);
+  }
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+    {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
+  ));
+}
+
+// 表头点击排序
+document.querySelectorAll('#board-ranking-table th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    if (_sortKey === key) _sortDir = -_sortDir;   // 同列切换升降序
+    else { _sortKey = key; _sortDir = -1; }        // 换列默认降序
+    renderRankBody();
+  });
+});
+
+document.getElementById('board-ranking-body').addEventListener('click', (e) => {
+  const link = e.target.closest('.board-link');
+  if (link && link.dataset.board) openBoardKline(link.dataset.board);
+});
+document.getElementById('board-refresh-btn').addEventListener('click', refreshBoardNow);
+document.getElementById('board-backfill-btn').addEventListener('click', backfillBoardHistory);
+document.getElementById('board-heatmap-lookback').addEventListener('change', loadBoardHeatmap);
+window.addEventListener('resize', () => {
+  if (_boardHeatmapChart) _boardHeatmapChart.resize();
+  if (_boardTreemapChart) _boardTreemapChart.resize();
+});
+
+loadBoardRanking();
+loadBoardHeatmap();
+</script>
+{% endblock %}

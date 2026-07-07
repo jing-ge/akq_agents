@@ -119,6 +119,19 @@ class FactorEvictionConfig(BaseModel):
     new_factor_grace_days: int = 14       # 新因子保护期 (仅对 shadow/llm_suggested/accepted 生效)
 
 
+class BoardRefreshConfig(BaseModel):
+    """行业板块当日快照刷新 job（cron，盘后触发）。
+
+    数据源同花顺行业板块（``fetch_board_snapshot``），只给当日数据；每日抓一次
+    落地，历史随天数累积（供轮动热力图）。默认 16:35，晚于 data_refresh(16:00)。
+    """
+
+    enabled: bool = True
+    hour: int = 16
+    minute: int = 35
+    timeout_s: int = 300
+
+
 class ManualTriggerPickerConfig(BaseModel):
     """M23: web → daemon 手动触发通道 picker 配置.
 
@@ -168,6 +181,7 @@ class SchedulerJobsConfig(BaseModel):
     factor_promote_shadows: FactorPromoteShadowsConfig = Field(default_factory=FactorPromoteShadowsConfig)
     factor_eviction: FactorEvictionConfig = Field(default_factory=FactorEvictionConfig)
     data_refresh: DataRefreshConfig = Field(default_factory=DataRefreshConfig)
+    board_refresh: BoardRefreshConfig = Field(default_factory=BoardRefreshConfig)
     alerter: AlerterConfig = Field(default_factory=AlerterConfig)
     manual_trigger_picker: ManualTriggerPickerConfig = Field(
         default_factory=ManualTriggerPickerConfig

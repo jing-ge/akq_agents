@@ -31,6 +31,7 @@ from akq_agents.orchestrator.jobs import (
     alert_check,
     batch_deep_research,
     batch_post_close,
+    board_refresh,
     data_refresh,
     factor_code_brainstorm,  # 重构: LLM 自由代码路径 (DSL 受限的 factor_brainstorm 已下线)
     factor_discovery,
@@ -221,6 +222,7 @@ class QuantDaemon:
     def _register_jobs(self) -> None:
         assert self._scheduler is not None and self._runner is not None
         data_refresh.register(self._scheduler, self._runner, self._cfg, self._services)
+        board_refresh.register(self._scheduler, self._runner, self._cfg, self._services)
         batch_post_close.register(self._scheduler, self._runner, self._cfg, self._services)
         batch_deep_research.register(self._scheduler, self._runner, self._cfg, self._services)
         retry_fetch_errors.register(self._scheduler, self._runner, self._cfg, self._services)

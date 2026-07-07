@@ -219,6 +219,119 @@ class AKShareGateway:
             raise FetchError(reason_code="SCHEMA_DRIFT", message="missing cols: trade_date")
         return [pd.Timestamp(value).date() for value in df["trade_date"].tolist()]
 
+    # 同花顺行业板块汇总列名 → 标准化列。东财 _em 系列在本地网络 RemoteDisconnected 不可用
+    # (同 fetch_st_list 的处境), 故板块数据源选同花顺 stock_board_industry_summary_ths:
+    # 一次调用即给齐看板需要的全部字段 (涨跌幅 / 成交额 / 资金净流入 / 涨跌家数 / 领涨股)。
+    _BOARD_THS_RENAME: dict[str, str] = {
+        "板块": "board_name",
+        "涨跌幅": "pct_chg",
+        "总成交额": "amount",
+        "净流入": "net_inflow",
+        "上涨家数": "up_count",
+        "下跌家数": "down_count",
+        "领涨股": "leader_name",
+        "领涨股-涨跌幅": "leader_pct",
+    }
+    _BOARD_COLUMNS = [
+        "board_name", "pct_chg", "amount", "net_inflow",
+        "up_count", "down_count", "leader_name", "leader_pct",
+    ]
+
+    def fetch_board_snapshot(self) -> pd.DataFrame:
+        """当日行业板块行情快照 (同花顺 ``stock_board_industry_summary_ths``)。
+
+        返回标准化列 ``_BOARD_COLUMNS``:
+        ``[board_name, pct_chg, amount, net_inflow, up_count, down_count,
+        leader_name, leader_pct]`` —— 一行一个行业板块 (~90 个)。
+
+        - 只给**当日**快照 (接口无历史), 用于盘后落地。
+        - 走 ``_call`` 继承限流 / 超时 / 重试 / ``FetchError``。
+        - schema 缺列 → ``FetchError(SCHEMA_DRIFT)`` (照抄 ``fetch_ohlcv`` 守卫)。
+        """
+        ak = self._get_ak_module()
+        df = self._call("stock_board_industry_summary_ths", ak.stock_board_industry_summary_ths)
+        if df is None or df.empty:
+            raise FetchError(reason_code="UNKNOWN", message="stock_board_industry_summary_ths 返回空")
+
+        missing = [src for src in self._BOARD_THS_RENAME if src not in df.columns]
+        if missing:
+            raise FetchError(
+                reason_code="SCHEMA_DRIFT",
+                message=f"board summary missing cols: {', '.join(missing)}",
+            )
+        out = df.rename(columns=self._BOARD_THS_RENAME).loc[:, self._BOARD_COLUMNS].copy()
+        # 数值列清洗: 转 float, 无效 -> NaN; 名称列转 str。
+        for col in ("pct_chg", "amount", "net_inflow", "up_count", "down_count", "leader_pct"):
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        for col in ("board_name", "leader_name"):
+            out[col] = out[col].astype(str)
+        out = out.dropna(subset=["board_name", "pct_chg"]).reset_index(drop=True)
+        return out
+
+    def fetch_board_hist(self, board_name: str, start: date, end: date) -> pd.DataFrame:
+        """单个行业板块的历史日线（同花顺 ``stock_board_industry_index_ths``）。
+
+        入参是**板块名**（与 ``fetch_board_snapshot`` 的 ``board_name`` 同一命名）。
+        接口只给指数点位（无涨跌幅），故用收盘价 ``pct_change`` 自算 ``pct_chg``。
+
+        返回标准化列 ``[date, board_name, pct_chg]`` —— 一行一个交易日。
+        - ``pct_chg`` 单位 %，首日无前值 → 该行被丢弃（调用方应把窗口往前多留一天）。
+        - 走 ``_call`` 继承限流 / 超时 / 重试 / ``FetchError``。
+        - schema 缺列 → ``FetchError(SCHEMA_DRIFT)``。
+        """
+        ak = self._get_ak_module()
+        df = self._call(
+            "stock_board_industry_index_ths",
+            ak.stock_board_industry_index_ths,
+            symbol=board_name,
+            start_date=start.strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+        )
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date", "board_name", "pct_chg"])
+        if "日期" not in df.columns or "收盘价" not in df.columns:
+            raise FetchError(
+                reason_code="SCHEMA_DRIFT",
+                message=f"board hist missing cols for {board_name}: got {list(df.columns)}",
+            )
+        out = df.rename(columns={"日期": "date", "收盘价": "close"}).loc[:, ["date", "close"]].copy()
+        out["date"] = pd.to_datetime(out["date"]).dt.date
+        out["close"] = pd.to_numeric(out["close"], errors="coerce")
+        out = out.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
+        out["pct_chg"] = (out["close"].pct_change() * 100).round(3)
+        out["board_name"] = str(board_name)
+        return out.dropna(subset=["pct_chg"]).loc[:, ["date", "board_name", "pct_chg"]].reset_index(drop=True)
+
+    def fetch_board_kline(self, board_name: str, start: date, end: date) -> pd.DataFrame:
+        """单个行业板块的 OHLC 日 K（同花顺 ``stock_board_industry_index_ths``）。
+
+        与 ``fetch_board_hist`` 同一数据源，但保留完整 OHLC + 成交量，供 K 线图。
+        返回标准化列 ``[date, open, high, low, close, volume]``（按日期升序）。
+        走 ``_call`` 继承限流 / 超时 / 重试 / ``FetchError``；schema 缺列 → SCHEMA_DRIFT。
+        """
+        ak = self._get_ak_module()
+        df = self._call(
+            "stock_board_industry_index_ths",
+            ak.stock_board_industry_index_ths,
+            symbol=board_name,
+            start_date=start.strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+        )
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+        rename = {"日期": "date", "开盘价": "open", "最高价": "high", "最低价": "low", "收盘价": "close", "成交量": "volume"}
+        missing = [src for src in rename if src not in df.columns]
+        if missing:
+            raise FetchError(
+                reason_code="SCHEMA_DRIFT",
+                message=f"board kline missing cols for {board_name}: {missing}",
+            )
+        out = df.rename(columns=rename).loc[:, ["date", "open", "high", "low", "close", "volume"]].copy()
+        out["date"] = pd.to_datetime(out["date"]).dt.date
+        for col in ("open", "high", "low", "close", "volume"):
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        return out.dropna(subset=["open", "high", "low", "close"]).sort_values("date").reset_index(drop=True)
+
     def fetch_st_list(self) -> list[str]:
         """ST 列表退化为空 stub。
 

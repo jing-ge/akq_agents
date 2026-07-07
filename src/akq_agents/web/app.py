@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+from akq_agents.web.api.board import router as board_router
 from akq_agents.web.api.chat import router as chat_router
 from akq_agents.web.api.control import router as control_router
 from akq_agents.web.api.data_explorer import router as data_router
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(data_router, prefix="/api/data", tags=["data"])
     app.include_router(trading_router, prefix="/api/trading", tags=["trading"])
     app.include_router(stock_router, prefix="/api/stock", tags=["stock"])
+    app.include_router(board_router, prefix="/api/board", tags=["board"])
 
     # pages
     @app.get("/", include_in_schema=False)
@@ -98,6 +100,13 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             request=request, name="data.html.j2",
             context={"page": "data", "ctx": _page_ctx()},
+        )
+
+    @app.get("/board", response_class=HTMLResponse, include_in_schema=False)
+    async def page_board(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request, name="board.html.j2",
+            context={"page": "board", "ctx": _page_ctx()},
         )
 
     @app.get("/logs", response_class=HTMLResponse, include_in_schema=False)
