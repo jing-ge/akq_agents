@@ -43,6 +43,9 @@ class BacktestConfig:
     commission: float = 0.0003   # 单边手续费
     slippage: float = 0.0005     # 单边滑点
     benchmark_symbol: str = "000300"
+    # 涨跌停不可成交阈值 (一字板代理): 当日 close 相对前一交易日涨跌幅达此比例视为
+    # 涨/跌停, 涨停禁买 / 跌停禁卖. A 股主板 ±10%, 取 0.095 留缓冲. 设 None 关闭该约束.
+    price_limit_pct: float | None = 0.095
 
 
 @dataclass
@@ -201,6 +204,15 @@ class PortfolioBacktester:
         - 状态 = {symbol: shares}（持仓单位数）
         - 每日按 close 计算 mv = Σ shares * price，作为 nav_net
         - 在 rebalance 日，把 nav_net 按新权重重新分配 → 新 shares；同时扣 turnover 成本
+
+        **前视偏差防护 (T+1 成交)**：因子信号在 snapshot_date (T 日) 收盘后才产生，
+        实盘无法用 T 日收盘价成交。因此 rebalance 顺延到 snapshot_date 的**下一个**
+        交易日 (T+1)，用 T+1 收盘价建仓。这样「T 日信号 → T+1 成交」，消除
+        「T 日收盘信号用 T 日收盘价成交」的前视偏差。
+
+        **涨跌停不可成交**：A 股一字板无法成交。用 close 相对前一交易日 close 的
+        涨跌幅代理：当日涨幅 >= +limit 时禁买入 (该 symbol 目标权重顺延到下次)，
+        跌幅 <= -limit 时禁卖出 (维持原持仓)。limit 由 cfg.price_limit_pct 控制。
         """
         cfg = self._cfg
         trading_days = list(close.index)
@@ -208,11 +220,12 @@ class PortfolioBacktester:
             return pd.DataFrame()
         bench = close.get(cfg.benchmark_symbol)
 
-        # snapshot_date → 真实 rebalance 交易日（取 >= snapshot_date 的最近交易日）
+        # snapshot_date → 真实 rebalance 交易日 (T+1 成交, 防前视偏差)
+        # 取 **严格 > snapshot_date** 的最近交易日: 信号在 T 日收盘后产生, T+1 才成交.
         rebalance_map: dict[date, dict[str, float]] = {}
         for ds_str, w_dict in weights_by_date.items():
             sd = date.fromisoformat(ds_str)
-            real_td = next((td for td in trading_days if td >= sd), None)
+            real_td = next((td for td in trading_days if td > sd), None)
             if real_td is None:
                 continue
             # 同一交易日多个 snapshot 取最后一个（用 max snapshot_date）
@@ -276,14 +289,36 @@ class PortfolioBacktester:
                 # commission/slippage 是单边费率（见 BacktestConfig 注释）
                 cost_today = 2.0 * turnover_today * (cfg.commission + cfg.slippage)
                 nav_net = nav_net * (1.0 - cost_today)
-                # 重新建立 shares
+                # 重新建立 shares (涨停禁买 / 跌停禁卖: 受限 symbol 维持 rebalance 前持仓)
+                prev_shares = dict(shares)
+                limited = _price_limited_symbols(close, td, cfg.price_limit_pct)
                 shares = {}
                 if today_close is not None:
                     for sym, w in new_weights.items():
                         px = today_close.get(sym)
                         if px is None or pd.isna(px) or px <= 0:
                             continue
-                        shares[sym] = (w * nav_net) / float(px)
+                        target_sh = (w * nav_net) / float(px)
+                        held = prev_shares.get(sym, 0.0)
+                        state = limited.get(sym)
+                        # 涨停禁买: 若要增持 (target>held) 则维持原持仓
+                        if state == "up" and target_sh > held:
+                            if held > 0:
+                                shares[sym] = held
+                            continue
+                        # 跌停禁卖: 若要减持 (target<held) 则维持原持仓
+                        if state == "down" and target_sh < held:
+                            if held > 0:
+                                shares[sym] = held
+                            continue
+                        shares[sym] = target_sh
+                    # 跌停禁卖的补充: 原持仓里 new_weights 未提及 (目标清零) 但当日跌停的,
+                    # 也无法卖出, 维持原持仓
+                    for sym, held in prev_shares.items():
+                        if sym in shares or held <= 0:
+                            continue
+                        if limited.get(sym) == "down":
+                            shares[sym] = held
                 prev_weights = dict(new_weights)
 
             # daily_return_net: 在扣 cost 之后基于 nav_net 算，这样 cost 反映在当日 return
@@ -414,3 +449,37 @@ def _last_valid_px_before(close: pd.DataFrame, sym: str, td: date):
     if col.empty:
         return None
     return col.iloc[-1]
+
+
+def _price_limited_symbols(
+    close: pd.DataFrame, td: date, limit_pct: float | None
+) -> dict[str, str]:
+    """判定 td 当日哪些 symbol 涨停 / 跌停 (一字板代理)。
+
+    用 td 当日 close 相对 **td 之前最近有效交易日 close** 的涨跌幅近似:
+    涨幅 >= +limit_pct → "up" (涨停, 禁买); 跌幅 <= -limit_pct → "down" (跌停, 禁卖)。
+    limit_pct 为 None 时返回空 (关闭该约束)。
+
+    注意这是近似: 真实涨跌停应比对官方前收盘价且判一字板 (high==low),
+    但回测仅加载了 close, 用相邻 close 涨跌幅代理已能挡住绝大多数不可成交场景。
+    """
+    if limit_pct is None or td not in close.index:
+        return {}
+    today = close.loc[td]
+    prev_pos = close.index.get_loc(td)
+    if prev_pos <= 0:
+        return {}
+    out: dict[str, str] = {}
+    for sym in close.columns:
+        px = today.get(sym)
+        if px is None or pd.isna(px) or px <= 0:
+            continue
+        prev_px = _last_valid_px_before(close, sym, close.index[prev_pos - 1])
+        if prev_px is None or prev_px <= 0:
+            continue
+        chg = float(px) / float(prev_px) - 1.0
+        if chg >= limit_pct:
+            out[sym] = "up"
+        elif chg <= -limit_pct:
+            out[sym] = "down"
+    return out

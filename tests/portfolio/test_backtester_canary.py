@@ -22,11 +22,15 @@ def _make_close(start: date, prices_per_symbol: dict[str, list[float]]) -> pd.Da
 
 
 def test_backtester_canary_5d_compound_1pct(tmp_path: Path) -> None:
-    """5 日单只票每日涨 1%，预期 nav = 1.01^4 ≈ 1.0406。
+    """单只票每日涨 1%，T+1 成交后预期正确复利。
 
     C3 历史症状: 同样的简单场景在 bug 期能算成 +56%/+57% 单日跳变。
     这个金丝雀锁定: 任何未来 backtester 算法改动都不能让简单复利输出
     脱离已知正确值。
+
+    **T+1 语义**: 信号在 2026-01-05 (day0) 收盘后产生, 2026-01-06 (day1)
+    才建仓。建仓后持有到 day4, 期间 day1→day2→day3→day4 共 3 个 +1% 增长日,
+    故 final nav = 1.01^3。(day0 无持仓 nav=1.0; day1 建仓当日 nav 仍=1.0)
     """
     close = _make_close(
         date(2026, 1, 5),
@@ -45,11 +49,12 @@ def test_backtester_canary_5d_compound_1pct(tmp_path: Path) -> None:
     )
     nav_df = bt._replay(weights_by_date, close)
 
-    assert len(nav_df) == 5, f"应输出 5 日 nav，实际 {len(nav_df)}"
+    # T+1: 从 day1 (2026-01-06) 建仓开始输出, 共 4 日 (day1..day4)
+    assert len(nav_df) == 4, f"T+1 成交应从信号次日起输出 4 日 nav，实际 {len(nav_df)}"
     final_nav = float(nav_df.iloc[-1]["nav_net"])
-    expected = 1.01 ** 4  # 4 个 +1% 增长日（首日 rebalance 不产生 return）
+    expected = 1.01 ** 3  # T+1 建仓后 3 个 +1% 增长日 (day1建仓→day2/3/4 涨)
     assert abs(final_nav - expected) < 0.001, (
-        f"金丝雀失败: 期望 nav={expected:.4f}（5 日复利 1%），"
+        f"金丝雀失败: 期望 nav={expected:.4f}（T+1 建仓后 3 日复利 1%），"
         f"实际 nav={final_nav:.4f}（如果显著超过期望，说明 backtester 算法又坏了，"
         f"参考 C3 bug 历史症状: portfolio_nav 6/18 +56%, 6/22 +57%）"
     )
@@ -58,7 +63,7 @@ def test_backtester_canary_5d_compound_1pct(tmp_path: Path) -> None:
     max_daily = float(nav_df["daily_return_net"].abs().max())
     assert max_daily < 0.05, (
         f"单日 |daily_return| {max_daily*100:.1f}% > 5%，不合理。"
-        f"5 日每日 1%，理论上单日 return 应该 ≤ 1.5%"
+        f"每日 1%，理论上单日 return 应该 ≤ 1.5%"
     )
 
 
@@ -155,4 +160,66 @@ def test_backtester_nav_gross_diverges_from_net_when_cost(tmp_path: Path) -> Non
     # gross / net 必须分叉
     assert abs(float(day2["nav_gross"]) - float(day2["nav_net"])) > 1e-6, (
         "nav_gross 不应等于 nav_net (否则曲线重合，cost 不可见)"
+    )
+
+
+def test_backtester_no_lookahead_signal_day_not_traded(tmp_path: Path) -> None:
+    """前视偏差 canary: T 日信号绝不能用 T 日收盘价成交, 必须 T+1 建仓。
+
+    构造: 信号日 (day0) 当天该票暴涨, 次日 (day1) 起横盘。若存在前视偏差
+    (T 日信号用 T 日 close 成交), 组合会"吃到"day0 的暴涨; 正确的 T+1 成交
+    则错过 day0 涨幅、只从 day1 建仓, nav 应保持 ~1.0。
+    """
+    close = _make_close(
+        date(2026, 5, 6),
+        {
+            # day0 暴涨 (10→13, +30%), day1 起横盘在 13
+            "000001": [10.0, 13.0, 13.0, 13.0],
+            "000300": [3000.0, 3000.0, 3000.0, 3000.0],
+        },
+    )
+    weights_by_date = {"2026-05-06": {"000001": 1.0}}  # day0 收盘后的信号
+
+    bt = PortfolioBacktester(
+        meta_db_path=tmp_path / "meta.db",
+        ohlcv_dir=tmp_path / "parquet",
+        cfg=BacktestConfig(commission=0.0, slippage=0.0, benchmark_symbol="000300"),
+    )
+    nav_df = bt._replay(weights_by_date, close)
+
+    final_nav = float(nav_df.iloc[-1]["nav_net"])
+    # T+1 正确: 从 day1 (price=13) 建仓, 之后横盘 → nav 全程 ~1.0, 完全错过 +30%
+    assert abs(final_nav - 1.0) < 1e-6, (
+        f"前视偏差! final nav={final_nav:.4f} 明显 >1.0 说明组合吃到了信号日当天的 "
+        f"+30% 暴涨 —— T 日信号被用 T 日 close 成交了。正确 T+1 成交应错过该涨幅、nav≈1.0"
+    )
+
+
+def test_backtester_price_limit_up_blocks_buy(tmp_path: Path) -> None:
+    """涨跌停 canary: 目标要买入但当日涨停的票, 无法建仓 (禁买)。
+
+    day0 信号买入 000001; day1 (T+1 成交日) 000001 相对 day0 涨 +12% (>9.5% 涨停),
+    应禁止买入 → 该票不进 shares → 组合空仓, nav 保持 1.0。
+    """
+    close = _make_close(
+        date(2026, 6, 1),
+        {
+            # day0=10, day1 涨停 (10→11.2, +12%)
+            "000001": [10.0, 11.2, 11.2, 11.2],
+            "000300": [3000.0, 3000.0, 3000.0, 3000.0],
+        },
+    )
+    weights_by_date = {"2026-06-01": {"000001": 1.0}}
+
+    bt = PortfolioBacktester(
+        meta_db_path=tmp_path / "meta.db",
+        ohlcv_dir=tmp_path / "parquet",
+        cfg=BacktestConfig(commission=0.0, slippage=0.0, benchmark_symbol="000300",
+                           price_limit_pct=0.095),
+    )
+    nav_df = bt._replay(weights_by_date, close)
+    # 涨停禁买 → 首个建仓日空仓, nav 应保持 1.0 (没吃到后续任何波动)
+    final_nav = float(nav_df.iloc[-1]["nav_net"])
+    assert abs(final_nav - 1.0) < 1e-6, (
+        f"涨停禁买失效! nav={final_nav:.4f}, 应=1.0 (涨停无法建仓 → 空仓)"
     )
