@@ -56,7 +56,11 @@ _BUILTIN_DENY = frozenset({
     # 调试
     "breakpoint",
     # 内省 (LLM 用这些可以拿到 sandbox 外的对象)
-    "dir", "type", "isinstance", "issubclass", "callable", "id", "hash",
+    # 注: isinstance 已从此黑名单移除并放进 _SAFE_BUILTINS —— 真正的逃逸途径
+    # (__class__ / getattr / 字符串 dunder) 已单独拦死, isinstance(x, T) 拿不到
+    # __subclasses__, 保留它让 LLM 因子能写输入类型防御, 减少边界数据崩溃.
+    "type", "issubclass", "callable", "id", "hash",
+    "dir",
 })
 
 
@@ -109,6 +113,17 @@ def _check_source_safety(source: str) -> None:
                 raise UnsafeCodeError(
                     f"dangerous attribute {node.attr!r} not allowed (line {node.lineno})"
                 )
+        # 5) 禁止字符串字面量中出现 dunder (str.format 逃逸链):
+        #    ``'{0.__class__.__mro__}'.format(x)`` 里的 __class__ 是字符串内容,
+        #    AST 看不到, 可绕过第(2)条的 Attribute 检查拿到类对象链. 直接在
+        #    字面量层拦截任何含 '__' 的字符串, LLM 因子代码不需要 dunder.
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if "__" in node.value:
+                raise UnsafeCodeError(
+                    f"string literal containing '__' not allowed "
+                    f"(dunder in string can bypass AST checks via str.format; "
+                    f"line {getattr(node, 'lineno', '?')})"
+                )
 
     # 5) 强制存在 def compute(ohlcv)
     has_compute = any(
@@ -140,6 +155,8 @@ _SAFE_BUILTINS: dict[str, Any] = {
     # 类型转换
     "iter": iter, "next": next,
     "slice": slice,
+    # 类型判断 (安全: 逃逸链已单独拦死, isinstance 拿不到 __subclasses__)
+    "isinstance": isinstance,
     # 异常基类 (LLM 写 raise 用)
     "Exception": Exception, "ValueError": ValueError, "TypeError": TypeError,
     "KeyError": KeyError, "IndexError": IndexError, "RuntimeError": RuntimeError,
@@ -244,7 +261,6 @@ def code_hash(source: str) -> str:
 
 _SMOKE_TEST = """
 def compute(ohlcv):
-    import pandas as pd
     return ohlcv['close'].pct_change().iloc[-1]
 """
 

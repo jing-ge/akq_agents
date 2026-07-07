@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from akq_agents.services.portfolio.evaluator import _rolling_ic
+from akq_agents.services.factors.base import compute_forward_returns
 
 
 def _make_synthetic_close(n_days: int = 120, n_syms: int = 30, seed: int = 42) -> pd.DataFrame:
@@ -34,7 +35,7 @@ def test_random_factor_should_have_low_ir() -> None:
     如果 IR 高, 说明 evaluator 算法有问题 (用了未来信息 / 配对错位 / 等等)。
     """
     close = _make_synthetic_close(n_days=120, n_syms=30, seed=42)
-    forward_returns = close.pct_change(fill_method=None).shift(-1)
+    forward_returns = compute_forward_returns(close)
 
     rng = np.random.default_rng(seed=999)  # 独立 seed, 跟 close 完全无关
     factor_history = pd.DataFrame(
@@ -60,7 +61,7 @@ def test_lookahead_factor_should_have_perfect_ir() -> None:
     失败 (IR < 0.5), 说明 evaluator 把配对算错了。
     """
     close = _make_synthetic_close(n_days=120, n_syms=30, seed=7)
-    forward_returns = close.pct_change(fill_method=None).shift(-1)
+    forward_returns = compute_forward_returns(close)
 
     # 故意泄漏: 因子 = forward_returns (即"明天涨多少", today 不可能知道)
     factor_history = forward_returns.copy()
@@ -83,7 +84,7 @@ def test_lagged_factor_should_have_zero_ir() -> None:
     """
     close = _make_synthetic_close(n_days=120, n_syms=30, seed=11)
     daily_returns = close.pct_change(fill_method=None)
-    forward_returns = close.pct_change(fill_method=None).shift(-1)
+    forward_returns = compute_forward_returns(close)
 
     factor_history = -daily_returns.shift(1)  # t 时刻的因子 = -t-1 return
     # 注: random walk 下 return[t-1] 和 return[t+1] 独立, 所以 IC 应 ≈ 0
@@ -128,4 +129,41 @@ def test_evaluator_pairs_factor_t_with_return_t_plus_1() -> None:
     assert ic_at_signal > 0.95, (
         f"❌ 配对错位: signal_day={signal_day} 的 IC={ic_at_signal:.4f} 应 >0.95. "
         "evaluator 可能没把 factor[t] 跟 forward_return[t] (=close[t+1]-close[t]) 正确配对."
+    )
+
+
+def test_canonical_forward_returns_helper_semantics() -> None:
+    """🔒 单点守护: compute_forward_returns 是全项目 T+1 收益的唯一定义。
+
+    P3 测试 review #1 修复: 历史上 shift(-1) 散落在 discovery / history_backfill /
+    batch_deep_research / ic_diagnostics 4+ 处, 任一处漏写/错写 shift 都静默引入前视
+    偏差而 canary 测不到。现已收敛到 factors.base.compute_forward_returns 单点,
+    这条 canary 守住它的语义 — 一旦有人把 shift(-1) 改成 shift(1)/shift(-2)/去掉,
+    这里立即 break, 从而保护全部 4 处生产路径。
+    """
+    close = pd.DataFrame(
+        {"A": [10.0, 11.0, 12.0, 13.0], "B": [20.0, 20.0, 22.0, 22.0]},
+        index=pd.date_range("2025-01-01", periods=4, freq="B"),
+    )
+    fr = compute_forward_returns(close)
+
+    # 1) fr.loc[d] 必须 = d→d+1 收益 (不是 d-1→d, 也不是 d→d+2)
+    assert abs(float(fr["A"].iloc[0]) - 0.1) < 1e-12, (
+        f"fr[0] 应=(11-10)/10=0.1 (d→d+1 收益), 实际 {fr['A'].iloc[0]} — shift 方向/步长错了"
+    )
+    assert abs(float(fr["A"].iloc[1]) - (12 / 11 - 1)) < 1e-12
+    assert abs(float(fr["B"].iloc[1]) - 0.1) < 1e-12  # (22-20)/20
+
+    # 2) 最后一日无未来 → 必须 NaN (绝不能是 0 或用未来值)
+    assert pd.isna(fr["A"].iloc[-1]), "末日 forward_return 必须 NaN (无 T+1 数据)"
+    assert pd.isna(fr["B"].iloc[-1])
+
+    # 3) index / columns 与输入对齐 (不能错位)
+    assert list(fr.index) == list(close.index)
+    assert list(fr.columns) == list(close.columns)
+
+    # 4) 反向断言: 若误用 shift(1) (前视!), fr[0] 会变 NaN 而非 0.1 — 确保我们不是那种
+    wrong = close.pct_change(fill_method=None).shift(1)  # 故意写错方向做对照
+    assert pd.isna(wrong["A"].iloc[0]) and not pd.isna(fr["A"].iloc[0]), (
+        "compute_forward_returns 绝不能等价于 shift(1) (那会用未来数据预测过去)"
     )

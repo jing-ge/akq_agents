@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from datetime import date, datetime, timedelta
@@ -566,6 +567,27 @@ class DataRepository:
 
         return {symbol: days for symbol, days in missing_by_symbol.items() if days}
 
+    def _atomic_write_table(self, table: pa.Table, path: Path) -> None:
+        """原子写 parquet: 先写同目录临时文件, 再 os.replace 原子 rename 覆盖目标。
+
+        防止「pq.write_table 直写目标文件」时, 覆盖分区的瞬间有并发读者
+        (如 backtester/discovery 的 dataset 扫描) 命中半截断文件而崩溃。
+        os.replace 在同一文件系统上是原子操作 (POSIX rename 语义)。
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 临时文件放同目录, 保证与目标在同一文件系统 (跨 fs 的 replace 非原子)
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        try:
+            pq.write_table(table, tmp)
+            os.replace(tmp, path)  # 原子覆盖
+        finally:
+            # 异常路径清理残留临时文件, 避免污染目录 (残留会干扰 hive dataset 扫描)
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
     def _write_universe(self, snapshot: UniverseSnapshot) -> None:
         path = self._universe_path(snapshot.date)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -582,13 +604,13 @@ class DataRepository:
             }
         )
         payload = frame.drop(columns=["date"], errors="ignore")
-        pq.write_table(pa.Table.from_pandas(payload, preserve_index=False), path)
+        self._atomic_write_table(pa.Table.from_pandas(payload, preserve_index=False), path)
 
     def _write_ohlcv(self, d: date, frame: pd.DataFrame) -> None:
         path = self._ohlcv_path(d)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = frame.drop(columns=["date"], errors="ignore")
-        pq.write_table(pa.Table.from_pandas(payload, preserve_index=False), path)
+        self._atomic_write_table(pa.Table.from_pandas(payload, preserve_index=False), path)
 
     def _insert_fetch_log(
         self,

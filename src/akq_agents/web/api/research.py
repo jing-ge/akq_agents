@@ -173,7 +173,15 @@ async def factors_list() -> dict[str, Any]:
     - oos_observations / oos_ir: shadow 因子专属字段 (registry 因子留 None)
 
     用户需求: "看到每个因子每天的 ICIR 以及有没有入选权重".
+
+    修复: 本 endpoint 做大量同步阻塞 IO (registry.list_all、多次 meta.db 查询、
+    composite_scorer 计算、逐因子 _read_latest_metric/_compute_decay_verdict 查 SQLite),
+    放 async endpoint 直接跑会阻塞 event loop。整体挪到线程池执行。
     """
+    return await asyncio.to_thread(_factors_list_sync)
+
+
+def _factors_list_sync() -> dict[str, Any]:
     svc: ServiceContainer = get_services()
     if svc.factor_registry is None:
         return {"factors": [], "n": 0}
@@ -664,7 +672,8 @@ async def shadow_stats() -> dict[str, Any]:
     store = svc.proposal_store
     if store is None:
         return {"shadows": [], "n": 0}
-    rows = store.list_shadow()
+    # 修复: list_shadow() 查 SQLite 是同步阻塞 IO, 挪到线程池避免阻塞 event loop。
+    rows = await asyncio.to_thread(store.list_shadow)
     now = _dt.now()
     out = []
     for r in rows:
@@ -1016,14 +1025,18 @@ async def factors_health_dashboard() -> dict[str, Any]:
         # 2. Shadow OOS 分布
         oos_buckets = {"0-5": 0, "6-10": 0, "11-19": 0, "已达标(≥20)": 0}
         oos_top: list[dict[str, Any]] = []
-        for name, oos, shadow_at in cur.execute(
+        for _name, oos, _shadow_at in cur.execute(
             "SELECT factor_name, oos_observations, shadow_started_at FROM factor_proposals WHERE status='shadow'"
         ).fetchall():
             n = oos or 0
-            if n <= 5: oos_buckets["0-5"] += 1
-            elif n <= 10: oos_buckets["6-10"] += 1
-            elif n <= 19: oos_buckets["11-19"] += 1
-            else: oos_buckets["已达标(≥20)"] += 1
+            if n <= 5:
+                oos_buckets["0-5"] += 1
+            elif n <= 10:
+                oos_buckets["6-10"] += 1
+            elif n <= 19:
+                oos_buckets["11-19"] += 1
+            else:
+                oos_buckets["已达标(≥20)"] += 1
         # top-5 最接近达标的
         rows = cur.execute(
             "SELECT factor_name, oos_observations, shadow_started_at "
@@ -1049,10 +1062,13 @@ async def factors_health_dashboard() -> dict[str, Any]:
                 by_decay: dict[str, int] = {}
                 for name in selected:
                     factor = next((f for f in svc.factor_registry.list_all() if f.name == name), None)
-                    if factor is None: continue
+                    if factor is None:
+                        continue
                     m = svc.factor_evaluator.get_latest(name, factor.factor_version)
-                    if m and m.ir is not None: irs.append(abs(float(m.ir)))
-                    if m and m.ic_mean is not None: ics.append(abs(float(m.ic_mean)))
+                    if m and m.ir is not None:
+                        irs.append(abs(float(m.ir)))
+                    if m and m.ic_mean is not None:
+                        ics.append(abs(float(m.ic_mean)))
                     verdict = _compute_decay_verdict(svc, name)
                     label = (verdict or {}).get("label", "未评估")
                     by_decay[label] = by_decay.get(label, 0) + 1

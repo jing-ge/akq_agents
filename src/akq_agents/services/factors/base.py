@@ -28,6 +28,24 @@ FactorDirection = Literal["long", "short"]
 FactorInput = Literal["ohlcv", "industry", "financials"]
 
 
+def compute_forward_returns(close: pd.DataFrame) -> pd.DataFrame:
+    """T+1 前瞻收益的**唯一规范定义** (前视偏差防护关键点)。
+
+    ``forward_returns.loc[d]`` = 第 d 日 → 第 d+1 日的收益, 即
+    ``close.pct_change().shift(-1)``。用于 IC 计算时与"截止 d 日的因子值"配对,
+    保证「用 T 日信息预测 T→T+1 收益」, 不引入未来数据。
+
+    **务必全项目统一走此 helper**: 历史上 shift(-1) 散落在 discovery /
+    history_backfill / batch_deep_research / ic_diagnostics 等 4+ 处, 任一处
+    漏写/错写 shift 都会静默引入前视偏差, 而 canary 只测配对算法测不到。
+    收敛到单点后, 对本函数做 canary 即守住全部生产路径。
+
+    ``fill_method=None``: 不对停牌缺口做前向填充, 避免用停牌前价格虚构收益。
+    """
+    return close.pct_change(fill_method=None).shift(-1)
+
+
+
 class Factor(Protocol):
     """声明性 Factor 协议。结构化类型，不做 runtime isinstance 检查。"""
 
