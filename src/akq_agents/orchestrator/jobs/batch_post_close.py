@@ -96,7 +96,7 @@ def _make_recorder(services: dict[str, Any]):
             return None
         from akq_agents.orchestrator.step_recorder import StepRecorder
 
-        meta_db = repo._base_dir / "meta.db"
+        meta_db = repo.meta_db_path
         return StepRecorder(meta_db, parent_job_id=JOB_ID, parent_partition=date.today().isoformat())
     except Exception:
         return None

@@ -151,7 +151,7 @@ async def job_run_detail(job_id: str, partition: str) -> dict[str, Any]:
     if svc.repo is not None:
         from akq_agents.orchestrator.step_recorder import StepReader
 
-        reader = StepReader(svc.repo._base_dir / "meta.db")
+        reader = StepReader(svc.repo.meta_db_path)
         steps = reader.list_steps(job_id, partition)
 
     return {
@@ -179,7 +179,7 @@ async def data_freshness() -> dict[str, Any]:
     def _max(table: str, col: str) -> str | None:
         try:
             from akq_agents.services.data.repository import open_meta_db
-            with open_meta_db(svc.repo._base_dir / "meta.db") as conn:
+            with open_meta_db(svc.repo.meta_db_path) as conn:
                 row = conn.execute(f"SELECT MAX({col}) FROM {table}").fetchone()
             return row[0] if row else None
         except Exception:
@@ -215,7 +215,7 @@ async def data_freshness() -> dict[str, Any]:
 def _count_table(repo, table: str) -> int:
     from akq_agents.services.data.repository import open_meta_db
     try:
-        with open_meta_db(repo._base_dir / "meta.db") as conn:
+        with open_meta_db(repo.meta_db_path) as conn:
             row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         return int(row[0]) if row else 0
     except Exception:
@@ -251,7 +251,7 @@ def _attach_refresh_info(svc: ServiceContainer, data_health: dict[str, Any]) -> 
             # 看 refresh_state 表里今天有没有 status='ok'
             from akq_agents.services.data.repository import open_meta_db
 
-            with open_meta_db(repo._base_dir / "meta.db") as conn:
+            with open_meta_db(repo.meta_db_path) as conn:
                 row = conn.execute(
                     "SELECT status FROM refresh_state WHERE target_date = ?",
                     (today.isoformat(),),

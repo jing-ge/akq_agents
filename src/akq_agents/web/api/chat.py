@@ -58,7 +58,7 @@ async def delete_session(session_id: str) -> dict[str, Any]:
         raise HTTPException(503, detail="llm not configured")
     from akq_agents.services.data.repository import open_meta_db
 
-    db_path = svc.repo._base_dir / "meta.db" if svc.repo else None
+    db_path = svc.repo.meta_db_path if svc.repo else None
     if db_path is None:
         raise HTTPException(503, detail="repo not ready")
     with open_meta_db(db_path) as conn:

@@ -112,6 +112,15 @@ class DataRepository:
         self._calendar_path = self._parquet_dir / "trading_calendar.parquet"
         self._meta_db_path = self._base_dir / "meta.db"
 
+    @property
+    def meta_db_path(self) -> Path:
+        """meta.db 的 public 路径入口。
+
+        供 web / orchestrator / services 各层拿 meta.db 路径, 替代直接访问
+        私有属性 ``repo._base_dir`` / ``repo._meta_db_path`` 自行拼路径。
+        """
+        return self._meta_db_path
+
     def get_ohlcv(self, symbols: list[str], start: date, end: date) -> pd.DataFrame:
         """只读缓存中的 OHLCV；缺任一交易日时抛 ``DataNotReady``。"""
         self._ensure_storage()

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -59,7 +58,7 @@ def _do(services: dict[str, Any], cfg: SchedulerConfig, *, dry_run: bool = False
 
     repo = services["data_repository"]
     state_store = services.get("scheduler_state_store")
-    meta_db = Path(repo._base_dir) / "meta.db"
+    meta_db = repo.meta_db_path
 
     job_cfg = cfg.jobs.factor_eviction
     ev_cfg = EvictionConfig(

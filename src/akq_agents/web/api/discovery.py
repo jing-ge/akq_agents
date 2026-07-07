@@ -252,7 +252,7 @@ def _resolve_paper_start_date(svc) -> str | None:
         return None
     try:
         from akq_agents.services.data.repository import open_meta_db
-        db_path = svc.repo._base_dir / "meta.db"
+        db_path = svc.repo.meta_db_path
         with open_meta_db(db_path) as conn:
             row = conn.execute(
                 "SELECT MIN(partition) FROM job_runs "

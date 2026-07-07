@@ -136,13 +136,10 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
         full_universe_symbols=full_symbols, ohlcv=ohlcv, top_n=500, window=20
     )
     sub_ohlcv = ohlcv[ohlcv["symbol"].isin(set(portfolio_universe))]
-    # close pivot 一次性
-    close = sub_ohlcv.pivot_table(
-        index="date", columns="symbol", values="close", aggfunc="last"
-    ).sort_index()
-    # fill_method=None: 停牌日不要 pad 填充, 避免把停牌天 return 算成 0 稀释 IC
-    from akq_agents.services.factors.base import compute_forward_returns
+    # close pivot 一次性; fill_method=None: 停牌日不要 pad 填充, 避免把停牌天 return 算成 0 稀释 IC
+    from akq_agents.services.factors.base import compute_forward_returns, pivot_close_wide
 
+    close = pivot_close_wide(sub_ohlcv)
     forward_returns = compute_forward_returns(close)
 
     # M19: 重写 — ThreadPoolExecutor 4 worker 并行 + 调公共 backfill_one 写 90 天历史。
@@ -238,7 +235,7 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
     if repo_path is not None and hasattr(repo_path, "_base_dir"):
         try:
             recorder = StepRecorder(
-                repo_path._base_dir / "meta.db",
+                repo_path.meta_db_path,
                 parent_job_id="batch.deep_research",
                 parent_partition=str(date.today().isoformat()),
             )

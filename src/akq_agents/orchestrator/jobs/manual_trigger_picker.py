@@ -301,7 +301,7 @@ def _resolve_factor_by_name(services: dict[str, Any], name: str) -> Any | None:
         from akq_agents.services.data.repository import open_meta_db
         from akq_agents.services.factors.discovery import make_factor
         from akq_agents.services.factors.proposal_store import recipe_from_json
-        db_path = repo._base_dir / "meta.db"
+        db_path = repo.meta_db_path
         with open_meta_db(db_path) as conn:
             row = conn.execute(
                 "SELECT recipe_json FROM factor_proposals WHERE factor_name=?",
@@ -368,9 +368,8 @@ def _do_factor_backtest_single(services: dict[str, Any], payload: dict[str, Any]
     if ohlcv.empty:
         return {"ok": False, "error": f"no ohlcv for {as_of}", "error_code": "NO_OHLCV"}
 
-    close = ohlcv.pivot_table(
-        index="date", columns="symbol", values="close", aggfunc="last"
-    ).sort_index()
+    from akq_agents.services.factors.base import pivot_close_wide
+    close = pivot_close_wide(ohlcv)
     all_dates = list(close.index)
     if len(all_dates) < days + 5:
         return {"ok": False, "error": f"insufficient history: only {len(all_dates)} days, need {days+5}", "error_code": "INSUFFICIENT_HISTORY"}
@@ -486,7 +485,7 @@ def _do_factor_llm_accept(services: dict[str, Any], payload: dict[str, Any]) -> 
             "error_code": "SERVICES_MISSING",
         }
 
-    db_path = repo._base_dir / "meta.db"
+    db_path = repo.meta_db_path
     ts = _dt.now().isoformat()
 
     # 1) 校验当前 status 必须是 llm_suggested, 然后改 shadow (幂等: partition manual 唯一, 重跑也安全)
@@ -706,10 +705,10 @@ def _run_batch_post_close(
         return
     repo = workflow.services.get("data_repository")
     recorder = None
-    if repo is not None and hasattr(repo, "_base_dir"):
+    if repo is not None and hasattr(repo, "meta_db_path"):
         try:
             recorder = StepRecorder(
-                repo._base_dir / "meta.db",
+                repo.meta_db_path,
                 parent_job_id="batch.post_close",
                 parent_partition=partition,
             )

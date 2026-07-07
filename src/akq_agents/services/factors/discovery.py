@@ -32,7 +32,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from akq_agents.services.factors.base import CodeFactor, Factor, FactorRegistry, compute_forward_returns
+from akq_agents.services.factors.base import (
+    CodeFactor,
+    Factor,
+    FactorRegistry,
+    compute_forward_returns,
+    pivot_close_wide,
+)
 from akq_agents.services.factors.proposal_store import (
     FactorProposal,
     FactorProposalStore,
@@ -691,9 +697,7 @@ class DiscoveryEngine:
             return stats
 
         # 3) close 旋转 + forward returns（用于 IC 计算）
-        close = ohlcv.pivot_table(
-            index="date", columns="symbol", values="close", aggfunc="last"
-        ).sort_index()
+        close = pivot_close_wide(ohlcv)
         forward_returns = compute_forward_returns(close)
 
         # 2) 已 active 因子的完整历史矩阵（用于时间序列相关性筛选）
@@ -1094,9 +1098,7 @@ class DiscoveryEngine:
             return
         if ohlcv.empty:
             return
-        close = ohlcv.pivot_table(
-            index="date", columns="symbol", values="close", aggfunc="last"
-        ).sort_index()
+        close = pivot_close_wide(ohlcv)
         forward_returns = compute_forward_returns(close)
         all_dates = close.index
 

@@ -39,7 +39,7 @@ def _get_service():
     name_store = None
     try:
         from akq_agents.services.data.stock_names import StockNameStore
-        db_path = svc.repo._base_dir / "meta.db"
+        db_path = svc.repo.meta_db_path
         name_store = StockNameStore(db_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("StockNameStore init failed: %s", exc)
@@ -49,7 +49,7 @@ def _get_service():
     industry_map: dict[str, str] = {}
     try:
         from akq_agents.services.portfolio.industry_map import IndustryMapStore
-        db_path = svc.repo._base_dir / "meta.db"
+        db_path = svc.repo.meta_db_path
         industry_map = IndustryMapStore(db_path).load_names()
         logger.info("IndustryMapStore loaded %d entries for stock_detail", len(industry_map))
     except Exception as exc:  # noqa: BLE001

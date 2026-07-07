@@ -194,7 +194,7 @@ def cmd_factors_list(_: argparse.Namespace) -> None:
 
     data_config = _require_data_config()
     repo = build_data_repository(data_config)
-    evaluator = FactorEvaluator(meta_db_path=repo._base_dir / "meta.db", window=60)
+    evaluator = FactorEvaluator(meta_db_path=repo.meta_db_path, window=60)
     reg = build_default_registry()
     rows = []
     for f in reg.list_all():
@@ -220,7 +220,7 @@ def cmd_factors_inspect(args: argparse.Namespace) -> None:
 
     data_config = _require_data_config()
     repo = build_data_repository(data_config)
-    evaluator = FactorEvaluator(meta_db_path=repo._base_dir / "meta.db", window=60)
+    evaluator = FactorEvaluator(meta_db_path=repo.meta_db_path, window=60)
     metrics = evaluator.list_history(args.name, limit=args.limit)
     rows = [
         {
@@ -288,7 +288,7 @@ def cmd_portfolio_explain(args: argparse.Namespace) -> None:
 
     data_config = _require_data_config()
     repo = build_data_repository(data_config)
-    store = PortfolioSnapshotStore(meta_db_path=repo._base_dir / "meta.db")
+    store = PortfolioSnapshotStore(meta_db_path=repo.meta_db_path)
     d = _date.today() if args.date is None else _date.fromisoformat(args.date)
     rows = store.read_snapshot(d)
     if not rows:
@@ -321,7 +321,7 @@ def cmd_trade_list(args: argparse.Namespace) -> None:
 
     data_config = _require_data_config()
     repo = build_data_repository(data_config)
-    store = TradeListStore(meta_db_path=repo._base_dir / "meta.db")
+    store = TradeListStore(meta_db_path=repo.meta_db_path)
     d = _date.today() if args.date is None else _date.fromisoformat(args.date)
     items = store.list_cohort(d)
     if not items:
@@ -350,7 +350,7 @@ def cmd_paper_summary(_: argparse.Namespace) -> None:
 
     data_config = _require_data_config()
     repo = build_data_repository(data_config)
-    store = PaperTradingStore(repo._base_dir / "meta.db", PaperTradingConfig())
+    store = PaperTradingStore(repo.meta_db_path, PaperTradingConfig())
     print(json.dumps(store.summary(), ensure_ascii=False, indent=2))
 
 
@@ -360,7 +360,7 @@ def cmd_holdings_list(_: argparse.Namespace) -> None:
 
     data_config = _require_data_config()
     repo = build_data_repository(data_config)
-    store = HoldingsStore(meta_db_path=repo._base_dir / "meta.db")
+    store = HoldingsStore(meta_db_path=repo.meta_db_path)
     print(json.dumps({"holdings": store.list_all()}, ensure_ascii=False, indent=2))
 
 
@@ -370,7 +370,7 @@ def cmd_holdings_set(args: argparse.Namespace) -> None:
 
     data_config = _require_data_config()
     repo = build_data_repository(data_config)
-    store = HoldingsStore(meta_db_path=repo._base_dir / "meta.db")
+    store = HoldingsStore(meta_db_path=repo.meta_db_path)
     store.upsert(args.symbol, float(args.shares),
                  avg_cost=float(args.cost) if args.cost else None,
                  note=args.note)
@@ -410,7 +410,7 @@ def cmd_llm_calls(args: argparse.Namespace) -> None:
     repo = build_data_repository(data_config)
     from akq_agents.services.llm import LLMStore
 
-    store = LLMStore(repo._base_dir / "meta.db")
+    store = LLMStore(repo.meta_db_path)
     calls = store.list_calls(limit=args.last, agent=args.agent)
     rows = [
         {
@@ -438,7 +438,7 @@ def cmd_llm_sessions(args: argparse.Namespace) -> None:
     repo = build_data_repository(data_config)
     from akq_agents.services.llm import LLMStore
 
-    store = LLMStore(repo._base_dir / "meta.db")
+    store = LLMStore(repo.meta_db_path)
     print(json.dumps(store.list_sessions(limit=args.last), ensure_ascii=False, indent=2))
 
 

@@ -194,7 +194,7 @@ def _factors_list_sync() -> dict[str, Any]:
     if svc.proposal_store is not None and svc.repo is not None:
         try:
             from akq_agents.services.data.repository import open_meta_db
-            db_path = svc.repo._base_dir / "meta.db"
+            db_path = svc.repo.meta_db_path
             with open_meta_db(db_path) as conn:
                 rows = conn.execute(
                     """
@@ -242,7 +242,7 @@ def _factors_list_sync() -> dict[str, Any]:
             if dates:
                 latest_snapshot_date = dates[0]
                 from akq_agents.services.data.repository import open_meta_db
-                db_path = svc.repo._base_dir / "meta.db"
+                db_path = svc.repo.meta_db_path
                 with open_meta_db(db_path) as conn:
                     rows = conn.execute(
                         "SELECT top_factors_json FROM portfolio_snapshots WHERE as_of_date=?",
@@ -459,7 +459,7 @@ def _resolve_factor_by_name(svc: ServiceContainer, name: str):
         from akq_agents.services.data.repository import open_meta_db
         from akq_agents.services.factors.discovery import make_factor
         from akq_agents.services.factors.proposal_store import recipe_from_json
-        db_path = svc.repo._base_dir / "meta.db"
+        db_path = svc.repo.meta_db_path
         with open_meta_db(db_path) as conn:
             row = conn.execute(
                 "SELECT recipe_json FROM factor_proposals WHERE factor_name=?",
@@ -532,7 +532,7 @@ async def review_llm_suggestion(factor_name: str, action: str) -> dict[str, Any]
     from akq_agents.services.data.repository import open_meta_db
     from akq_agents.services.factors.proposal_store import now_iso
 
-    db_path = svc.repo._base_dir / "meta.db"
+    db_path = svc.repo.meta_db_path
     with open_meta_db(db_path) as conn:
         row = conn.execute(
             "SELECT status FROM factor_proposals WHERE factor_name = ?",
@@ -608,7 +608,7 @@ def _evaluate_is_ic_for_llm_factor(svc: ServiceContainer, factor_name: str) -> d
 
         # 取 recipe 从 factor_proposals
         from akq_agents.services.data.repository import open_meta_db
-        db_path = svc.repo._base_dir / "meta.db"
+        db_path = svc.repo.meta_db_path
         with open_meta_db(db_path) as conn:
             row = conn.execute(
                 "SELECT recipe_json FROM factor_proposals WHERE factor_name=?",
@@ -1012,23 +1012,18 @@ async def factors_health_dashboard() -> dict[str, Any]:
         raise HTTPException(503, "repo not ready")
 
     def _compute_sync():
-        import sqlite3
-        db_path = svc.repo._base_dir / "meta.db"
-        con = sqlite3.connect(str(db_path))
-        cur = con.cursor()
+        from akq_agents.services.data.repository import open_meta_db
 
-        # 1. 规模: factor_proposals 按 status
-        status_counts: dict[str, int] = {}
-        for s, n in cur.execute("SELECT status, COUNT(*) FROM factor_proposals GROUP BY status").fetchall():
-            status_counts[s or "unknown"] = n
+        # 1. 规模: factor_proposals 按 status — 走 FactorProposalStore.counts()
+        #    (带 evicted_at IS NULL 过滤: 健康仪表盘只统计活跃因子, 排除已淘汰)
+        status_counts: dict[str, int] = dict(svc.proposal_store.counts()) if svc.proposal_store else {}
 
-        # 2. Shadow OOS 分布
+        # 2+3. Shadow OOS 分布 + top-5 最接近达标 — 走 FactorProposalStore.list_shadow()
         oos_buckets = {"0-5": 0, "6-10": 0, "11-19": 0, "已达标(≥20)": 0}
         oos_top: list[dict[str, Any]] = []
-        for _name, oos, _shadow_at in cur.execute(
-            "SELECT factor_name, oos_observations, shadow_started_at FROM factor_proposals WHERE status='shadow'"
-        ).fetchall():
-            n = oos or 0
+        shadow_list = svc.proposal_store.list_shadow() if svc.proposal_store else []
+        for p in shadow_list:
+            n = p.oos_observations or 0
             if n <= 5:
                 oos_buckets["0-5"] += 1
             elif n <= 10:
@@ -1037,17 +1032,12 @@ async def factors_health_dashboard() -> dict[str, Any]:
                 oos_buckets["11-19"] += 1
             else:
                 oos_buckets["已达标(≥20)"] += 1
-        # top-5 最接近达标的
-        rows = cur.execute(
-            "SELECT factor_name, oos_observations, shadow_started_at "
-            "FROM factor_proposals WHERE status='shadow' "
-            "ORDER BY COALESCE(oos_observations, 0) DESC LIMIT 5"
-        ).fetchall()
-        for name, oos, shadow_at in rows:
+        # top-5 最接近达标的 (oos_observations 降序)
+        for p in sorted(shadow_list, key=lambda x: x.oos_observations or 0, reverse=True)[:5]:
             oos_top.append({
-                "name": name, "oos_observations": oos or 0,
-                "shadow_started_at": shadow_at,
-                "days_to_ready": max(0, 20 - (oos or 0)),
+                "name": p.factor_name, "oos_observations": p.oos_observations or 0,
+                "shadow_started_at": p.shadow_started_at,
+                "days_to_ready": max(0, 20 - (p.oos_observations or 0)),
             })
 
         # 3. 入选组合分布 (composite_weights > 0)
@@ -1089,46 +1079,45 @@ async def factors_health_dashboard() -> dict[str, Any]:
                 label = (verdict or {}).get("label", "未评估")
                 decay_global[label] = decay_global.get(label, 0) + 1
 
-        # 5. 数据鲜度: 关键 job 最近状态
+        # 5. 数据鲜度: 关键 job 最近状态 — 走 SchedulerStateStore.list_recent_runs()
         freshness: list[dict[str, Any]] = []
         for job_id in ["batch.post_close", "factor.discovery", "factor.promote_shadows",
                        "factor.code_brainstorm", "data.refresh_daily"]:
-            row = cur.execute(
-                "SELECT partition, status, started_at, finished_at, reason_code "
-                "FROM job_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1",
-                (job_id,),
-            ).fetchone()
-            if row:
+            recent = svc.sched_store.list_recent_runs(job_id=job_id, limit=1) if svc.sched_store else []
+            if recent:
+                r = recent[0]
                 freshness.append({
                     "job_id": job_id,
-                    "partition": row[0],
-                    "status": row[1],
-                    "started_at": row[2],
-                    "finished_at": row[3],
-                    "reason_code": row[4],
+                    "partition": r.partition,
+                    "status": r.status,
+                    "started_at": r.started_at,
+                    "finished_at": r.finished_at,
+                    "reason_code": r.reason_code,
                 })
             else:
                 freshness.append({"job_id": job_id, "status": "never_run"})
 
-        # 6. Rejected 池的原因分布 (只看最近 500 条)
+        # 6. Rejected 池的原因分布 (dashboard 专属 CASE 分类聚合, 无对应 store 方法;
+        #    走统一入口 open_meta_db(repo.meta_db_path) 而非裸 sqlite3.connect + 私有 _base_dir)
         reject_reasons: dict[str, int] = {}
-        rows = cur.execute("""
-            SELECT
-                CASE
-                    WHEN reason LIKE 'compute_error%' THEN 'compute_error'
-                    WHEN reason LIKE 'insufficient_data%' THEN 'insufficient_data'
-                    WHEN reason LIKE 'low_ic%' THEN 'low_ic'
-                    WHEN reason LIKE 'low_ir%' THEN 'low_ir'
-                    WHEN reason LIKE 'high_corr%' THEN 'high_corr'
-                    ELSE COALESCE(substr(reason, 1, 30), 'null')
-                END as cat, COUNT(*)
-            FROM factor_proposals WHERE status='rejected'
-            GROUP BY cat ORDER BY 2 DESC LIMIT 10
-        """).fetchall()
-        for cat, n in rows:
-            reject_reasons[cat] = n
+        if svc.repo is not None:
+            with open_meta_db(svc.repo.meta_db_path) as conn:
+                rows = conn.execute("""
+                    SELECT
+                        CASE
+                            WHEN reason LIKE 'compute_error%' THEN 'compute_error'
+                            WHEN reason LIKE 'insufficient_data%' THEN 'insufficient_data'
+                            WHEN reason LIKE 'low_ic%' THEN 'low_ic'
+                            WHEN reason LIKE 'low_ir%' THEN 'low_ir'
+                            WHEN reason LIKE 'high_corr%' THEN 'high_corr'
+                            ELSE COALESCE(substr(reason, 1, 30), 'null')
+                        END as cat, COUNT(*)
+                    FROM factor_proposals WHERE status='rejected'
+                    GROUP BY cat ORDER BY 2 DESC LIMIT 10
+                """).fetchall()
+            for cat, n in rows:
+                reject_reasons[cat] = n
 
-        con.close()
         return {
             "status_counts": status_counts,
             "shadow_oos_buckets": oos_buckets,

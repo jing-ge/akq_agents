@@ -45,6 +45,22 @@ def compute_forward_returns(close: pd.DataFrame) -> pd.DataFrame:
     return close.pct_change(fill_method=None).shift(-1)
 
 
+def pivot_close_wide(ohlcv: pd.DataFrame) -> pd.DataFrame:
+    """long-format ohlcv → wide close 矩阵 (``index=date, columns=symbol``)。
+
+    全项目统一的 close 宽表构造入口。历史上
+    ``pivot_table(index='date', columns='symbol', values='close', aggfunc='last').sort_index()``
+    散落在 discovery / manual_trigger_picker / batch_deep_research / momentum 等多处,
+    形态完全一致。收敛到单点便于统一停牌/去重语义 (aggfunc='last' 取当日最后一笔)。
+
+    注意: 只覆盖 ``index=date, columns=symbol`` 方向; 反方向 (index=symbol) 或
+    prompt 字符串用途 (llm_code_brainstorm) 不走此 helper。
+    """
+    return ohlcv.pivot_table(
+        index="date", columns="symbol", values="close", aggfunc="last"
+    ).sort_index()
+
+
 
 class Factor(Protocol):
     """声明性 Factor 协议。结构化类型，不做 runtime isinstance 检查。"""

@@ -11,10 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-
-def _pivot_close(ohlcv: pd.DataFrame) -> pd.DataFrame:
-    """long-format → wide ``index=date, columns=symbol, values=close``。"""
-    return ohlcv.pivot_table(index="date", columns="symbol", values="close", aggfunc="last").sort_index()
+from akq_agents.services.factors.base import pivot_close_wide as _pivot_close
 
 
 @dataclass

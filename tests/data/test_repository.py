@@ -97,6 +97,17 @@ def _fetch_errors_rows(meta_db: Path) -> list[tuple[str, str, str, str]]:
         ).fetchall()
 
 
+def test_meta_db_path_property(
+    repo: tuple[DataRepository, MagicMock, MagicMock, MagicMock, MagicMock],
+    tmp_path: Path,
+) -> None:
+    """meta_db_path public property 返回 base_dir/meta.db, 供各层取代私有属性访问。"""
+    repository, *_ = repo
+    assert repository.meta_db_path == tmp_path / "meta.db"
+    # 与内部私有属性一致 (property 只是暴露, 不改语义)
+    assert repository.meta_db_path == repository._meta_db_path
+
+
 def test_refresh_daily_happy_path(
     repo: tuple[DataRepository, MagicMock, MagicMock, MagicMock, MagicMock]
 ) -> None:

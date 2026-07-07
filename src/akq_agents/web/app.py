@@ -168,7 +168,7 @@ def _collect_factors_for_dropdown(svc) -> list[dict]:
     if svc.proposal_store is not None and svc.repo is not None:
         try:
             from akq_agents.services.data.repository import open_meta_db
-            db_path = svc.repo._base_dir / "meta.db"
+            db_path = svc.repo.meta_db_path
             with open_meta_db(db_path) as conn:
                 for name, status, direction, reason, ver in conn.execute(
                     """
