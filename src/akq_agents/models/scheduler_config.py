@@ -78,7 +78,7 @@ class FactorCodeBrainstormConfig(BaseModel):
     enabled: bool = True
     hour: int = 21
     minute: int = 0
-    timeout_s: int = 180   # sandbox 编译 + LLM 90s + 90 天 IC backfill 20 因子 ~50s
+    timeout_s: int = 300   # sandbox 编译 + LLM 90s + 冗余检查 + IC backfill. P0-1 前 180s 会 timeout, 提到 300 双保险
     n_suggestions: int = 10  # code 路径更慢, 默认少一些
 
 

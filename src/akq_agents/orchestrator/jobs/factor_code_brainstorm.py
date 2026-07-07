@@ -69,7 +69,7 @@ def run_once_now(runner: JobRunner, services: dict[str, Any], n: int = 10) -> An
     return runner.run(
         JOB_ID, partition,
         lambda: _do(services, n=n),
-        timeout_s=180,
+        timeout_s=300,  # P0-1: 与 cron 路径 (job_cfg.timeout_s=300) 对齐
     )
 
 

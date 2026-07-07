@@ -461,10 +461,16 @@ class LLMCodeFactorBrainstormer:
 
     # ---------------------------------------------------------------- P1-3: 值级冗余检查
     def _build_active_factor_history(self) -> dict[str, Any] | None:
-        """一次性算所有 active 因子的 factor_history (dict[name -> DataFrame]).
+        """一次性算 active 因子的 factor_history (dict[name -> DataFrame]).
 
-        返回 None 表示 ctx 或数据不可用, 冗余检查降级跳过 (不影响原有 code_hash 去重).
-        缓存到 self._active_hist_cache 让多次 brainstorm 之间不重算 (5min TTL).
+        性能优化 (P0-1 修 timeout):
+        - 只算最近 30 天 (spearman rank 相关性 30 天足够稳定, 之前 90 天太慢)
+        - 只对'当前入选组合可能撞的因子' (top-N by |IR|) 做冗余对比
+          — 组合外的因子(shadow/rejected)本来就不参与, 撞了没关系
+        - 之前 07-05 前 code_brainstorm 无冗余检查跑 ~90s, 加了 P1-3 后 07-06
+          timeout 180s. 优化后目标 ≤60s.
+
+        返回 None 表示 ctx 或数据不可用, 冗余检查降级跳过 (不影响 code_hash 去重).
         """
         if self._repo is None:
             return None
@@ -477,17 +483,36 @@ class LLMCodeFactorBrainstormer:
             logger.debug("redundancy check import failed: %s", exc)
             return None
 
+        # P0-1: 30 天窗口足够算 spearman rank 相关性, 之前 90 天太慢
         ctx = HistoryBackfillContext.build(
-            repo=self._repo, evaluator=self._evaluator, days=90, step=1,
+            repo=self._repo, evaluator=self._evaluator, days=30, step=1,
         )
         if ctx is None:
             logger.debug("redundancy check ctx build failed")
             return None
 
-        active_map: dict[str, Any] = {}
-        # registry.list_all() 是当前活跃 (builtin + accepted) 因子, 不含 shadow/rejected
+        # P0-1: 只对 top-N 活跃因子做冗余对比 (按最近 IR |ir| 排序)
+        # 原因: 组合真正采纳的是这些, LLM 复刻它们才是浪费; shadow/rejected
+        # 的因子撞了也无所谓 (不参与组合).
+        TOP_N_ACTIVE_PEERS = 15
+        all_factors = list(self._registry.list_all())
         try:
-            for f in self._registry.list_all():
+            scored: list[tuple[Any, float]] = []
+            for f in all_factors:
+                try:
+                    m = self._evaluator.get_latest(f.name, f.factor_version)
+                    ir = abs(float(m.ir)) if m and m.ir is not None else 0.0
+                except Exception:
+                    ir = 0.0
+                scored.append((f, ir))
+            scored.sort(key=lambda x: -x[1])
+            peer_factors = [f for f, _ in scored[:TOP_N_ACTIVE_PEERS]]
+        except Exception:
+            peer_factors = all_factors  # 拿不到 IR 就退回全量, 不 crash
+
+        active_map: dict[str, Any] = {}
+        try:
+            for f in peer_factors:
                 try:
                     hist = _compute_hist(f, ctx.ohlcv, ctx.close.index)
                     if hist is not None and not hist.empty:
@@ -500,6 +525,10 @@ class LLMCodeFactorBrainstormer:
         # 保留 self._compute_hist 供候选因子计算使用
         self._compute_hist_fn = _compute_hist
         self._ctx_for_redundancy = ctx
+        logger.info(
+            "redundancy check active_map built: peers=%d (top by |IR|), ctx_days=30",
+            len(active_map),
+        )
         return active_map
 
     def _is_redundant_by_value(
