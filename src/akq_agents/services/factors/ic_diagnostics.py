@@ -15,15 +15,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 def _compute_forward_returns(close: pd.DataFrame) -> pd.DataFrame:
-    """T+1 收益 = close.pct_change().shift(-1)"""
-    return close.pct_change(fill_method=None).shift(-1)
+    """T+1 收益 — 委托给规范 helper (factors.base.compute_forward_returns), 保持全项目单点定义。"""
+    from akq_agents.services.factors.base import compute_forward_returns
+
+    return compute_forward_returns(close)
 
 
 def _winsorize_row(row: pd.Series, low: float = 0.05, high: float = 0.95) -> pd.Series:
@@ -110,6 +111,7 @@ def diagnose_selected_factors(
     max_factors: 最多跑几个因子 (avoid 26 因子 × 30 天 × 5521 股票的爆炸计算).
     """
     from datetime import date, timedelta
+
     from akq_agents.services.factors.history_backfill import (
         _default_compute_factor_history,
     )

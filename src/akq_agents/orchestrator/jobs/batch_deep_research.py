@@ -141,7 +141,9 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
         index="date", columns="symbol", values="close", aggfunc="last"
     ).sort_index()
     # fill_method=None: 停牌日不要 pad 填充, 避免把停牌天 return 算成 0 稀释 IC
-    forward_returns = close.pct_change(fill_method=None).shift(-1)
+    from akq_agents.services.factors.base import compute_forward_returns
+
+    forward_returns = compute_forward_returns(close)
 
     # M19: 重写 — ThreadPoolExecutor 4 worker 并行 + 调公共 backfill_one 写 90 天历史。
     # 之前: 串行 233 因子 × 6s = 23 分钟, 且每因子只写 1 行 today metric (历史断断续续)。

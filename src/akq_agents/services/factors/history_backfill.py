@@ -25,7 +25,7 @@ from typing import Any
 import pandas as pd
 
 from akq_agents.services.data.repository import open_meta_db
-from akq_agents.services.factors.base import Factor
+from akq_agents.services.factors.base import Factor, compute_forward_returns
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ class HistoryBackfillContext:
         close = sub_ohlcv.pivot_table(
             index="date", columns="symbol", values="close", aggfunc="last"
         ).sort_index()
-        forward_returns = close.pct_change(fill_method=None).shift(-1)
+        forward_returns = compute_forward_returns(close)
 
         return cls._from_close(
             sub_ohlcv, close, forward_returns,
