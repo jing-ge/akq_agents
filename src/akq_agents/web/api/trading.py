@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date as _date
 from typing import Any
@@ -109,18 +110,21 @@ async def list_holdings() -> dict[str, Any]:
     store = workflow.services.get("holdings_store") if workflow else None
     if store is None:
         return {"holdings": [], "n": 0}
-    rows = store.list_all()
 
-    # 拼股票中文简称（UI 展示用）
-    name_store = workflow.services.get("stock_name_store") if workflow else None
-    if name_store is not None and rows:
-        name_map = name_store.load_all()
-        if name_map:
-            for h in rows:
-                h["name"] = name_map.get(str(h.get("symbol")), "")
+    # 修复: list_all() / load_all() 都是同步 SQLite 查询, 挪到线程池避免阻塞 event loop。
+    def _compute() -> dict[str, Any]:
+        rows = store.list_all()
+        # 拼股票中文简称（UI 展示用）
+        name_store = workflow.services.get("stock_name_store") if workflow else None
+        if name_store is not None and rows:
+            name_map = name_store.load_all()
+            if name_map:
+                for h in rows:
+                    h["name"] = name_map.get(str(h.get("symbol")), "")
+        total_shares = sum(float(r["shares"]) for r in rows)
+        return {"holdings": rows, "n": len(rows), "total_shares": total_shares}
 
-    total_shares = sum(float(r["shares"]) for r in rows)
-    return {"holdings": rows, "n": len(rows), "total_shares": total_shares}
+    return await asyncio.to_thread(_compute)
 
 
 @router.put("/holdings/{symbol}")
@@ -208,7 +212,15 @@ async def recompute_trade_list_manual() -> dict[str, Any]:
 
 @router.get("/today-list")
 async def today_trade_list(date: str | None = None) -> dict[str, Any]:
-    """获取某日（默认今日）的交易清单。"""
+    """获取某日（默认今日）的交易清单。
+
+    修复: 函数体做多次同步阻塞 IO (list_cohort / list_dates / name_store.load_all /
+    calendar.next_trading_day), 放 async endpoint 直接跑会阻塞 event loop。整体挪到线程池。
+    """
+    return await asyncio.to_thread(_today_trade_list_sync, date)
+
+
+def _today_trade_list_sync(date: str | None = None) -> dict[str, Any]:
     svc = get_services()
     workflow = svc.workflow
     store = workflow.services.get("trade_list_store") if workflow else None

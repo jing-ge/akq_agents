@@ -454,6 +454,52 @@ class SchedulerStateStore:
             conn.commit()
             return int(cursor.lastrowid or 0)
 
+    def create_pending_trigger_if_idle(
+        self,
+        *,
+        job_id: str,
+        partition: str,
+        payload: dict[str, Any] | None = None,
+    ) -> int | None:
+        """原子版 create_pending_trigger: 仅当该 job 无 pending/claimed/running 时才插入。
+
+        修复 TOCTOU (双击/并发触发导致重活重复执行): 旧路径是 web 层先调
+        has_pending_or_running_for_job() 检查、再调 create_pending_trigger() 插入,
+        两个独立连接/事务之间存在竞态窗口 — 并发请求会同时通过检查、各自插入一行,
+        触发重复执行。
+
+        这里把"检查 + 插入"合并成单条 `INSERT ... SELECT ... WHERE NOT EXISTS(...)`
+        语句。SQLite 单条写语句本身原子执行, 加上 open_meta_db 已设 busy_timeout=5000
+        让并发写串行化, 因此 NOT EXISTS 子查询与 INSERT 之间不存在竞态窗口。
+
+        返回值:
+        - int: 插入成功, 返回新行 rowid;
+        - None: 该 job 已有 pending/claimed 的 trigger 或 running 的 job_run, 未插入
+          (web 层据此返 409)。
+        """
+        payload_json = None if payload is None else json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        with open_meta_db(self._meta_db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO pending_triggers (job_id, partition, payload_json, status, requested_at)
+                SELECT ?, ?, ?, 'pending', ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM pending_triggers
+                    WHERE job_id = ? AND status IN ('pending', 'claimed')
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM job_runs
+                    WHERE job_id = ? AND status = 'running'
+                )
+                """,
+                (job_id, partition, payload_json, datetime.now().isoformat(), job_id, job_id),
+            )
+            conn.commit()
+            # rowcount == 0 表示 WHERE NOT EXISTS 未通过 (已有活儿), 未插入。
+            if cursor.rowcount == 0:
+                return None
+            return int(cursor.lastrowid or 0)
+
     def claim_one_pending_trigger(self, *, claimed_by: str) -> dict[str, Any] | None:
         """daemon picker 原子拿一行: UPDATE ... WHERE claimed_at IS NULL; 没行返回 None.
 

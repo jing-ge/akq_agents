@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -16,56 +17,63 @@ router = APIRouter()
 async def health() -> dict[str, Any]:
     """聚合：DataHealth + DaemonState + today_batch + scheduler_events_24h_by_level。"""
     svc: ServiceContainer = get_services()
-    data_health = None
-    if svc.repo is not None:
-        try:
-            data_health = svc.repo.quality_report().model_dump(mode="json")
-            # L-7: coverage > 100% 时（spot 接口含新股 > universe）夹到 1.0 + 标注
-            if data_health and "ohlcv_coverage_today" in data_health:
-                cov = data_health["ohlcv_coverage_today"]
-                if cov is not None and cov > 1.0:
-                    data_health["ohlcv_coverage_today_raw"] = cov
-                    data_health["ohlcv_coverage_today"] = 1.0
-                    data_health["coverage_note"] = "今日 spot 拉取数 > universe（含未入池新股）"
-            # P0-followup: 给 UI 多塞两个字段
-            #   today_refresh_status: PENDING / IN_PROGRESS / OK / RETRY / SKIPPED_NON_TRADING_DAY
-            #   next_refresh_attempt: 下一次 data.refresh_daily cron 时刻 (ISO 字符串)
-            _attach_refresh_info(svc, data_health)
-        except Exception as exc:  # noqa: BLE001
-            data_health = {"error": str(exc)[:200]}
 
-    daemon: dict[str, Any] = {"state": None, "is_alive": False}
-    if svc.daemon_state_file is not None:
-        state = svc.daemon_state_file.read()
-        daemon = {
-            "state": state.to_dict() if state else None,
-            "is_alive": svc.daemon_state_file.is_alive(max_age_s=600),
-        }
+    # 修复: 整个 health 聚合会做多次同步阻塞 IO (quality_report 查 parquet/meta.db、
+    # daemon_state_file.read() 读文件、get_job_run / events_count 查 SQLite)。放在 async
+    # endpoint 里直接跑会阻塞 event loop, 用 asyncio.to_thread 挪到线程池。
+    def _compute() -> dict[str, Any]:
+        data_health = None
+        if svc.repo is not None:
+            try:
+                data_health = svc.repo.quality_report().model_dump(mode="json")
+                # L-7: coverage > 100% 时（spot 接口含新股 > universe）夹到 1.0 + 标注
+                if data_health and "ohlcv_coverage_today" in data_health:
+                    cov = data_health["ohlcv_coverage_today"]
+                    if cov is not None and cov > 1.0:
+                        data_health["ohlcv_coverage_today_raw"] = cov
+                        data_health["ohlcv_coverage_today"] = 1.0
+                        data_health["coverage_note"] = "今日 spot 拉取数 > universe（含未入池新股）"
+                # P0-followup: 给 UI 多塞两个字段
+                #   today_refresh_status: PENDING / IN_PROGRESS / OK / RETRY / SKIPPED_NON_TRADING_DAY
+                #   next_refresh_attempt: 下一次 data.refresh_daily cron 时刻 (ISO 字符串)
+                _attach_refresh_info(svc, data_health)
+            except Exception as exc:  # noqa: BLE001
+                data_health = {"error": str(exc)[:200]}
 
-    today_batch: dict[str, Any] | None = None
-    if svc.sched_store is not None:
-        from datetime import date as _date
-
-        run = svc.sched_store.get_job_run("batch.post_close", _date.today().isoformat())
-        if run is not None:
-            today_batch = {
-                "status": run.status,
-                "reason_code": run.reason_code,
-                "started_at": run.started_at,
-                "finished_at": run.finished_at,
-                "duration_ms": run.duration_ms,
+        daemon: dict[str, Any] = {"state": None, "is_alive": False}
+        if svc.daemon_state_file is not None:
+            state = svc.daemon_state_file.read()
+            daemon = {
+                "state": state.to_dict() if state else None,
+                "is_alive": svc.daemon_state_file.is_alive(max_age_s=600),
             }
 
-    scheduler_events_24h_by_level: dict[str, int] = {"info": 0, "warning": 0, "error": 0}
-    if svc.sched_store is not None:
-        scheduler_events_24h_by_level = svc.sched_store.events_count_24h_by_level()
+        today_batch: dict[str, Any] | None = None
+        if svc.sched_store is not None:
+            from datetime import date as _date
 
-    return {
-        "data_health": data_health,
-        "daemon": daemon,
-        "today_batch": today_batch,
-        "scheduler_events_24h_by_level": scheduler_events_24h_by_level,
-    }
+            run = svc.sched_store.get_job_run("batch.post_close", _date.today().isoformat())
+            if run is not None:
+                today_batch = {
+                    "status": run.status,
+                    "reason_code": run.reason_code,
+                    "started_at": run.started_at,
+                    "finished_at": run.finished_at,
+                    "duration_ms": run.duration_ms,
+                }
+
+        scheduler_events_24h_by_level: dict[str, int] = {"info": 0, "warning": 0, "error": 0}
+        if svc.sched_store is not None:
+            scheduler_events_24h_by_level = svc.sched_store.events_count_24h_by_level()
+
+        return {
+            "data_health": data_health,
+            "daemon": daemon,
+            "today_batch": today_batch,
+            "scheduler_events_24h_by_level": scheduler_events_24h_by_level,
+        }
+
+    return await asyncio.to_thread(_compute)
 
 
 @router.get("/job-runs")
@@ -181,22 +189,27 @@ async def data_freshness() -> dict[str, Any]:
     def stale(d: str | None) -> bool:
         return d is None or d < today_str
 
-    out = {
-        "today": today_str,
-        "ohlcv_latest": _max("refresh_state", "target_date"),
-        "portfolio_snapshots_latest": _max("portfolio_snapshots", "as_of_date"),
-        "portfolio_nav_latest": _max("portfolio_nav", "as_of_date"),
-        "trade_list_latest": _max("trade_list_cohorts", "cohort_date"),
-        "paper_trades_latest": _max("paper_trades", "cohort_date"),
-        "paper_perf_latest": _max("paper_track_perf", "as_of_date"),
-        "factor_metrics_latest": _max("factor_metrics", "as_of_date"),
-        "factor_proposals_count": _count_table(svc.repo, "factor_proposals"),
-        "holdings_count": _count_table(svc.repo, "holdings"),
-    }
-    out["all_fresh"] = all(not stale(out[k]) for k in [
-        "ohlcv_latest", "portfolio_snapshots_latest", "trade_list_latest",
-    ])
-    return out
+    # 修复: 下面 8+ 次 _max / _count_table 都是同步 SQLite 查询, 放 async endpoint 里
+    # 会阻塞 event loop。整块挪到线程池执行。
+    def _compute() -> dict[str, Any]:
+        out = {
+            "today": today_str,
+            "ohlcv_latest": _max("refresh_state", "target_date"),
+            "portfolio_snapshots_latest": _max("portfolio_snapshots", "as_of_date"),
+            "portfolio_nav_latest": _max("portfolio_nav", "as_of_date"),
+            "trade_list_latest": _max("trade_list_cohorts", "cohort_date"),
+            "paper_trades_latest": _max("paper_trades", "cohort_date"),
+            "paper_perf_latest": _max("paper_track_perf", "as_of_date"),
+            "factor_metrics_latest": _max("factor_metrics", "as_of_date"),
+            "factor_proposals_count": _count_table(svc.repo, "factor_proposals"),
+            "holdings_count": _count_table(svc.repo, "holdings"),
+        }
+        out["all_fresh"] = all(not stale(out[k]) for k in [
+            "ohlcv_latest", "portfolio_snapshots_latest", "trade_list_latest",
+        ])
+        return out
+
+    return await asyncio.to_thread(_compute)
 
 
 def _count_table(repo, table: str) -> int:
@@ -312,13 +325,18 @@ async def get_logs(
         return {"source": source, "lines": [], "exists": False}
 
     try:
-        # 简单 tail：读最后 ~200KB 然后切行
-        with open(log_path, "rb") as f:
-            f.seek(0, 2)
-            file_size = f.tell()
-            read_size = min(file_size, 200 * 1024)
-            f.seek(file_size - read_size)
-            chunk = f.read().decode("utf-8", errors="replace")
+        # 修复: 读日志文件 (seek + read ~200KB) 是同步阻塞 IO, 放 async endpoint 会阻塞
+        # event loop。用 asyncio.to_thread 挪到线程池。
+        def _read_tail() -> tuple[str, int]:
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                fsize = f.tell()
+                read_size = min(fsize, 200 * 1024)
+                f.seek(fsize - read_size)
+                data = f.read().decode("utf-8", errors="replace")
+            return data, fsize
+
+        chunk, file_size = await asyncio.to_thread(_read_tail)
         all_lines = chunk.splitlines()
     except Exception as exc:  # noqa: BLE001
         return {"source": source, "error": str(exc)[:200], "lines": []}

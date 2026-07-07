@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -193,7 +194,14 @@ async def get_nav() -> dict[str, Any]:
     M20: 区分 backfill 段 vs 真实 paper trading 段 — daemon 第一次 batch.post_close
     成功的日期作为 paper_start_date, 之前的 NAV 都是 rebuild_full_history 回填的
     in-sample 回测, 不构成真实 alpha 证据。前端据此分段渲染避免用户自欺。
+
+    修复: read_nav() 读 parquet、_summarize() 计算、_resolve_paper_start_date() 查
+    SQLite 都是同步阻塞 IO, 放 async endpoint 直接跑会阻塞 event loop。整体挪到线程池。
     """
+    return await asyncio.to_thread(_get_nav_sync)
+
+
+def _get_nav_sync() -> dict[str, Any]:
     svc: ServiceContainer = get_services()
     workflow = svc.workflow
     backtester = workflow.services.get("portfolio_backtester") if workflow else None

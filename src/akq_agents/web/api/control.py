@@ -90,13 +90,6 @@ async def trigger_job(
     base_partition = date.today().isoformat()
     partition = _manual_partition(base_partition)
 
-    # 并发防护
-    if svc.sched_store.has_pending_or_running_for_job(name):
-        raise HTTPException(
-            409,
-            f"{name} 已有 pending/running 任务, 请等当前任务结束再触发 (看 /api/ops/job-runs 状态)",
-        )
-
     # 构造 payload: 老 job 走 query param, M24 新 job 走 body 透传.
     payload: dict[str, Any] = dict(body or {})
     if name == "batch.deep_research":
@@ -115,9 +108,18 @@ async def trigger_job(
         allowed = set(_USER_FACING_PAYLOAD_KEYS[name])
         payload = {k: v for k, v in payload.items() if k in allowed}
 
-    trigger_id = svc.sched_store.create_pending_trigger(
+    # 并发防护 (修复 TOCTOU): 原子 "检查无 pending/claimed/running → 插入 pending" 单语句完成。
+    # 旧实现先 has_pending_or_running_for_job() 检查再 create_pending_trigger() 插入,
+    # 两步之间存在竞态窗口, 双击/并发触发会都通过检查、各插一行, 导致重活重复执行。
+    # create_pending_trigger_if_idle 返回 None 即表示已有活儿在跑, 直接 409。
+    trigger_id = svc.sched_store.create_pending_trigger_if_idle(
         job_id=name, partition=partition, payload=payload,
     )
+    if trigger_id is None:
+        raise HTTPException(
+            409,
+            f"{name} 已有 pending/running 任务, 请等当前任务结束再触发 (看 /api/ops/job-runs 状态)",
+        )
 
     # 立即写一行 job_runs.status='pending' 让 UI /api/ops/job-runs 立刻能看到记录.
     try:
