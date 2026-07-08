@@ -86,7 +86,6 @@ def _do(
             manual 触发是 ``{date}-manual-{hex6}``, cron 是裸 ``{date}``。
             缺省 (None) 回退 ``date.today()`` — 仅向后兼容, 正常调用都应显式传。
     """
-    import pandas as pd
 
     repo = services["data_repository"]
     registry = services["factor_registry"]
@@ -179,24 +178,11 @@ def _do(
         window,
     )
 
-    # 内部 _compute_factor_history (避免循环 import; 跟 history_backfill 默认实现一致)
-    def _compute_fh(factor, ohlcv_arg, all_dates_arg):
-        rows = {}
-        for d in all_dates_arg:
-            d_date = d.date() if hasattr(d, "date") else d
-            sub = ohlcv_arg[ohlcv_arg["date"] <= d_date]
-            if len(sub) < factor.lookback_days:
-                continue
-            try:
-                s = factor.compute(sub)
-            except Exception:  # noqa: BLE001
-                continue
-            if s is None or s.empty:
-                continue
-            rows[d] = s
-        if not rows:
-            return pd.DataFrame()
-        return pd.DataFrame(rows).T
+    # 方案 1: 向量化 compute_factor_history — 对 _RuntimeFactor (DSL) 一次性算全历史矩阵,
+    # 避免逐日重复 pivot+_apply_op (占旧路径 75-85% 耗时)。不支持向量化的因子 (CodeFactor)
+    # 在函数内部自动回退逐日路径, 数值严格等价 (tests/portfolio/test_compute_factor_history_vectorized.py)。
+    from akq_agents.services.factors.history_backfill import compute_factor_history_vectorized
+    _compute_fh = compute_factor_history_vectorized
 
     metrics_written = 0
     failures = 0

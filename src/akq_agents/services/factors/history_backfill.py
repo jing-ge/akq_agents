@@ -379,6 +379,83 @@ def _default_compute_factor_history(factor, ohlcv, all_dates):
     return pd.DataFrame(rows).T
 
 
+def compute_factor_history_vectorized(factor, ohlcv, all_dates):
+    """方案 1: 向量化版本。对 _RuntimeFactor (DSL base/op/window) 一次性算全历史矩阵,
+    避免逐日重复 pivot + _apply_op (占旧路径 75-85% 耗时)。
+
+    等价性 (见 tests/portfolio/test_compute_factor_history_vectorized.py):
+    _apply_op 的算子都是因果时序算子 (rolling/shift/ewm/diff, d 日值只依赖 d 及之前 +
+    固定起点) 或按行横截面算子 (cs_rank/cs_zscore)。全量算后取第 d 行 == 用截止 d 的
+    sub 算后取末行, 逐位相等。
+
+    不支持向量化的因子 (CodeFactor / 无 base·op·window 字段) 自动回退逐日路径,
+    保证不改变任何数值, 只是不加速。
+
+    与逐日路径对齐的两个门槛:
+    1. len(sub) < lookback_days 的 as_of 日跳过 (sub 是"截止该日的总行数", symbols×days)。
+    2. _apply_op 返回 None (数据 < window+1) 时该批全 NaN — 与逐日 compute 返回全 NaN 一致。
+    """
+    # 只有 _RuntimeFactor (DSL) 能安全向量化; 其余回退逐日。
+    base = getattr(factor, "base", None)
+    op = getattr(factor, "op", None)
+    window = getattr(factor, "window", None)
+    if base is None or op is None or window is None:
+        return _default_compute_factor_history(factor, ohlcv, all_dates)
+
+    if ohlcv is None or ohlcv.empty:
+        return pd.DataFrame()
+
+    from akq_agents.services.factors.discovery import (
+        _BASES,  # noqa: PLC0415
+        _apply_op,  # noqa: PLC0415
+    )
+
+    if base not in _BASES:
+        # 未知 base — 回退逐日 (与逐日 compute 内部 KeyError→continue 语义一致)
+        return _default_compute_factor_history(factor, ohlcv, all_dates)
+
+    # 一次性 pivot 全历史 (等价逐日 compute 里的 pivot_table, aggfunc='last')
+    base_long = _BASES[base](ohlcv).rename("v")
+    wide = (
+        pd.DataFrame({"date": ohlcv["date"], "symbol": ohlcv["symbol"], "v": base_long})
+        .pivot_table(index="date", columns="symbol", values="v", aggfunc="last")
+        .sort_index()
+    )
+    full = _apply_op(wide, op, window)  # date×symbol 全历史矩阵 (或 None)
+
+    lookback = int(getattr(factor, "lookback_days", 0) or 0)
+    # 逐日门槛: len(sub) = 截止 d 的总行数 (symbols × days)。用累计行数复刻。
+    counts = ohlcv.groupby("date").size().sort_index().cumsum()
+    # 逐日 _apply_op 早退门槛: 截止 d 的 wide 行数 (= 天数) < window+1 时逐日返回 None → 全 NaN。
+    # 复刻: wide 每个日期的 1-based 序号, 序号 < window+1 的日期该 as_of 全 NaN。
+    wide_rownum = {d: i + 1 for i, d in enumerate(wide.index)}
+    all_nan = pd.Series({sym: float("nan") for sym in wide.columns}, name=factor.name)
+
+    rows: dict = {}
+    for d in all_dates:
+        d_date = d.date() if hasattr(d, "date") else d
+        # 门槛 1: 截止 d 的总行数 < lookback → 跳过 (与逐日 len(sub) < lookback_days 一致)
+        c = counts.loc[:d_date]
+        if c.empty or int(c.iloc[-1]) < lookback:
+            continue
+        # 门槛 2: 截止 d 的 wide 天数 < window+1 → 逐日 _apply_op 返回 None → 该天全 NaN。
+        if full is None or wide_rownum.get(d_date, 0) < window + 1:
+            rows[d] = all_nan.copy()
+            continue
+        # 取第 d 行 (等价逐日 out.iloc[-1]); d 可能不在 full.index (停牌当日无截面) → 跳过
+        if d_date not in full.index:
+            continue
+        s = full.loc[d_date].replace([float("inf"), float("-inf")], float("nan"))
+        if s is None or s.empty:
+            continue
+        s = s.copy()
+        s.name = factor.name
+        rows[d] = s
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).T
+
+
 def _mark_backfill_status(evaluator: Any, factor_name: str, as_of_dates) -> None:
     """把这批 backfill 写的行 reason 改成 'backfill', status 强 active.
 
