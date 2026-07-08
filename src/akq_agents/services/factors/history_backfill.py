@@ -258,37 +258,43 @@ def backfill_one(
 
     # M22: 收集所有 metric, 一次事务批量写。原来是 90 次单事务 = 90 次 commit,
     # 现在 = 1 次 commit. SQLite WAL 写锁从 90 次降到 1 次, 让 web 端读不再被写锁阻塞.
+    # 方案 2: rolling IC 增量化 — evaluate_batch_fast 一次算全历史 IC, 逐 as_of 取 tail,
+    # 与旧逐个 evaluate 数值严格等价 (tests/portfolio/test_rolling_ic_incremental_equiv.py)。
     n_written = 0
     latest_metric = None
     failed_dates: list[str] = []
-    pending_metrics: list = []
-    # M22: 进入 batch 模式, evaluate 内部累积 metrics 不立即 commit, 退出时一次 _upsert_many.
-    # 90 天 1 因子 1 commit, 锁争用从 90x 降到 1x.
-    with evaluator.batch():
-        for as_of, _iso in todo:  # candidate_dates DESC, 最新在前
-            as_of_d = as_of.date() if hasattr(as_of, "date") else as_of
-            fh_sub = factor_history.loc[:as_of]
-            fr_sub = ctx.forward_returns.loc[:as_of]
-            common_idx = fh_sub.index.intersection(fr_sub.index)
-            if len(common_idx) < ctx.window:
-                continue
-            try:
-                metric = evaluator.evaluate(
-                    factor=factor,
-                    factor_history=fh_sub.loc[common_idx],
-                    forward_returns=fr_sub.loc[common_idx],
-                    as_of_date=as_of_d,
-                )
-                pending_metrics.append(metric)
-                n_written += 1
-                if latest_metric is None:  # todo DESC, 第一个就是最新
-                    latest_metric = metric
-            except Exception as exc:  # noqa: BLE001
-                # P0-3: SQLite BUSY / compute 异常 — 累加而非吞掉
-                failed_dates.append(as_of_d.isoformat())
-                logger.warning("history_backfill: evaluate(%s, %s) failed: %s",
-                               factor.name, as_of_d, exc)
-    # 模式上 batch() exit 时已一次 _upsert_many, 不需要额外同步.
+    # 只把 common_idx >= window 的 as_of 交给 evaluate_batch_fast (与旧路径 continue 跳过
+    # insufficient 的行为一致: 这些日期不写 metric、不计 n_written)。
+    eligible: list = []  # [(as_of_d, as_of_orig)]
+    for as_of, _iso in todo:  # candidate_dates DESC, 最新在前
+        as_of_d = as_of.date() if hasattr(as_of, "date") else as_of
+        fh_sub = factor_history.loc[:as_of]
+        fr_sub = ctx.forward_returns.loc[:as_of]
+        common_idx = fh_sub.index.intersection(fr_sub.index)
+        if len(common_idx) < ctx.window:
+            continue
+        eligible.append(as_of_d)
+
+    if eligible:
+        try:
+            # 传原始 factor_history / forward_returns 全量; evaluate_batch_fast 内部按
+            # as_of 各自 .loc[:as_of] 对齐 (等价旧路径 fh_sub.loc[common_idx])。
+            metrics = evaluator.evaluate_batch_fast(
+                factor=factor,
+                factor_history=factor_history,
+                forward_returns=ctx.forward_returns,
+                as_of_dates=eligible,
+            )
+            n_written = len(metrics)
+            if metrics:
+                # eligible 按 todo DESC, 第一个即最新 as_of。
+                latest_metric = metrics[0]
+        except Exception as exc:  # noqa: BLE001
+            # P0-3: SQLite BUSY / compute 异常 — 整批失败时累加 (与旧逐个 catch 粒度不同,
+            # 但 evaluate_batch_fast 内部无逐日 try; 批级失败视为全 eligible 失败)。
+            failed_dates.extend(d.isoformat() for d in eligible)
+            logger.warning("history_backfill: evaluate_batch_fast(%s) failed: %s",
+                           factor.name, exc)
 
     if n_written == 0 and n_skipped == 0:
         return {"ok": False, "reason": "no_metric_written (insufficient history per as_of_date)",

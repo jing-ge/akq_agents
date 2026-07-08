@@ -348,6 +348,60 @@ class FactorEvaluator:
             self._upsert_many(pending)
         return results
 
+    def evaluate_batch_fast(
+        self,
+        *,
+        factor: Factor,
+        factor_history: pd.DataFrame,
+        forward_returns: pd.DataFrame,
+        as_of_dates: list,
+    ) -> list:
+        """方案 2 提速: 与 evaluate_batch 数值严格等价, 但把 rolling IC 增量化。
+
+        evaluate_batch 对每个 as_of 都调 _rolling_ic (tail(window) 逐日重算, 相邻窗口
+        59/60 重叠 → ~97% 冗余)。本方法只调一次 _rolling_ic_full 得全历史逐日 IC,
+        再对每个 as_of 取其对齐窗口内的 tail(window) 做 O(1) 聚合。
+
+        等价性: 逐日 IC 只依赖当天截面 rank 相关, 与窗口/截止日无关, 故
+        _rolling_ic(fh.loc[:as_of], fr.loc[:as_of], w) 与 full_ic 落在同一批日期上的值
+        逐位相等。status 判定同样走 _read_recent_history (buffer 结束才 flush, 与
+        evaluate_batch 读到的 db 状态一致)。见 tests/portfolio/test_rolling_ic_incremental_equiv.py。
+
+        串行约束不变: status 依赖前 N 期历史, 中途不 _upsert_many, 结束一次写。
+        """
+        # 全历史逐日 IC 只算一次 (index = fh ∩ fr 的日期)
+        full_ic = _rolling_ic_full(factor_history, forward_returns)
+
+        results: list = []
+        pending: list = []
+        for as_of_date in as_of_dates:
+            fh_sub = factor_history.loc[:as_of_date]
+            fr_sub = forward_returns.loc[:as_of_date]
+            common_idx = fh_sub.index.intersection(fr_sub.index)
+            if len(common_idx) < self._window:
+                metric = FactorMetric(
+                    factor_name=factor.name,
+                    factor_version=factor.factor_version,
+                    as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
+                    window_days=self._window,
+                    ic_mean=None, ic_std=None, ir=None, t_stat=None,
+                    status="active", reason="insufficient_data",
+                )
+            else:
+                # 与旧路径对齐: _rolling_ic(fh.loc[common_idx], ...) 取 common_idx 上最后
+                # window 天。full_ic 已是 fh∩fr 全历史 IC, 取 common_idx ∩ full_ic.index
+                # 再 tail(window) 即同一批日期的同一批 IC 值。
+                ic_idx = common_idx.intersection(full_ic.index)
+                ic_window = full_ic.loc[ic_idx].tail(self._window)
+                metric = self._metric_from_ic(
+                    factor=factor, as_of_date=as_of_date, ic=ic_window
+                )
+            pending.append(metric)
+            results.append(metric)
+        if pending:
+            self._upsert_many(pending)
+        return results
+
     def _compute_metric(
         self,
         *,
@@ -358,12 +412,33 @@ class FactorEvaluator:
     ) -> FactorMetric:
         """M22: evaluate() 的纯计算部分, 不写 db, 供 evaluate_batch 复用."""
         ic = _rolling_ic(factor_history, forward_returns, self._window)
+        return self._metric_from_ic(factor=factor, as_of_date=as_of_date, ic=ic)
+
+    def _metric_from_ic(
+        self,
+        *,
+        factor: Factor,
+        as_of_date,
+        ic: pd.Series,
+    ) -> FactorMetric:
+        """从一段逐日 IC series 聚合出 FactorMetric (mean/std/ir/t_stat + status 判定)。
+
+        纯聚合, 不写 db。供三条路径共用, 保证逻辑不漂移:
+        - _compute_metric (旧 evaluate_batch)
+        - evaluate (旧单点路径, 见其内联实现)
+        - evaluate_batch_fast (新增量路径)
+
+        ``ic`` 已是"截止 as_of 的窗口内逐日 IC"(旧路径 _rolling_ic tail(window),
+        新路径 _rolling_ic_full.loc[:as_of].tail(window)) — 两者逐位相等, 故本函数
+        对两路径产出完全一致的 metric。
+        """
+        as_of_iso = as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date)
         ic_clean = ic.dropna()
         if len(ic_clean) < 5:
             return FactorMetric(
                 factor_name=factor.name,
                 factor_version=factor.factor_version,
-                as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
+                as_of_date=as_of_iso,
                 window_days=self._window,
                 ic_mean=None, ic_std=None, ir=None, t_stat=None,
                 status="active", reason="insufficient_data",
@@ -389,7 +464,7 @@ class FactorEvaluator:
         return FactorMetric(
             factor_name=factor.name,
             factor_version=factor.factor_version,
-            as_of_date=as_of_date.isoformat() if hasattr(as_of_date, "isoformat") else str(as_of_date),
+            as_of_date=as_of_iso,
             window_days=self._window,
             ic_mean=ic_mean, ic_std=ic_std, ir=ir, t_stat=t_stat,
             status=status, reason=reason,

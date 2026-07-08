@@ -49,7 +49,7 @@ def register(
 
     def _run() -> None:
         partition = date.today().isoformat()
-        runner.run(JOB_ID, partition, lambda: _do(services), timeout_s=job_cfg.timeout_s)
+        runner.run(JOB_ID, partition, lambda: _do(services, partition=partition), timeout_s=job_cfg.timeout_s)
 
     trigger_kwargs: dict[str, Any] = {
         "hour": job_cfg.hour,
@@ -73,12 +73,18 @@ def _has_required_services(services: dict[str, Any]) -> bool:
     return all(k in services for k in {"data_repository", "factor_registry", "factor_evaluator"})
 
 
-def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
+def _do(
+    services: dict[str, Any], *, mode: str = "fast", partition: str | None = None
+) -> dict[str, Any]:
     """实际业务：对每个 factor 做 rolling IC 评估并写表。
 
     Args:
         mode: 'fast' (默认, 跳过 db 已有日期, 只补缺失 — 日常 cron / 用户日常按) /
             'full' (重算所有 90 天 覆盖 db — 数据修复或主动重算用)
+        partition: 本次执行的 partition, 用于 StepRecorder 写 job_steps。必须与
+            runner.run/submit 用的 partition 一致, UI 才读得到子步骤。
+            manual 触发是 ``{date}-manual-{hex6}``, cron 是裸 ``{date}``。
+            缺省 (None) 回退 ``date.today()`` — 仅向后兼容, 正常调用都应显式传。
     """
     import pandas as pd
 
@@ -232,12 +238,15 @@ def _do(services: dict[str, Any], *, mode: str = "fast") -> dict[str, Any]:
     STEP_BATCH = 10  # M22: 20 -> 10, 让 n_candidates 10-20 的小批量也看到中间进度
     repo_path = services.get("data_repository")
     recorder: StepRecorder | None = None
+    # partition 必须与 runner 用的一致 (manual 是 {date}-manual-{hex6}), 否则 UI 读不到子步骤。
+    # 缺省回退 date.today() 仅为向后兼容 (老调用点没传时不至于崩)。
+    step_partition = partition if partition is not None else str(date.today().isoformat())
     if repo_path is not None and hasattr(repo_path, "_base_dir"):
         try:
             recorder = StepRecorder(
                 repo_path.meta_db_path,
                 parent_job_id="batch.deep_research",
-                parent_partition=str(date.today().isoformat()),
+                parent_partition=step_partition,
             )
         except Exception:  # noqa: BLE001
             recorder = None

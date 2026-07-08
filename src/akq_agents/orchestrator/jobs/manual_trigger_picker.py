@@ -743,7 +743,7 @@ def _run_batch_deep_research(
     mode = payload.get("mode", "fast")
     fut = runner.submit(
         "batch.deep_research", partition,
-        lambda: batch_deep_research._do(workflow.services, mode=mode),
+        lambda: batch_deep_research._do(workflow.services, mode=mode, partition=partition),
         timeout_s=timeout_s,
     )
     _attach_finalize_callback(fut, store, trigger_id, "batch.deep_research", partition)
