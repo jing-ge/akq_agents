@@ -80,6 +80,7 @@ class BacktestConfig(BaseModel):
     engine: str = "mock"
     commission: float = 0.0003
     slippage: float = 0.0005
+    stamp_duty: float = 0.0005  # A股卖出单边印花税, 与 portfolio.backtester.BacktestConfig 对齐
     initial_capital: float = 1000000
     start_date: str | None = None
     end_date: str | None = None
