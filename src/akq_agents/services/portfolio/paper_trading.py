@@ -92,9 +92,15 @@ class PaperTradingStore:
     ) -> int:
         """把当日权重 + close 冻结到 paper_trades。
 
-        已存在的 (cohort_date, symbol) 不修改（PRIMARY KEY 保证）。
+        **幂等**: 一个 cohort_date 一旦冻结即锁定 (paper trading 的意义是锁定当时决策)。
+        若该 cohort_date 已有记录, 直接返回 0 跳过 —— 不做二次写入。
 
-        修复 oracle #2：close_prices 里缺 symbol（停牌）时，如果 fallback_lookup 不为 None，
+        历史 bug (2026-07-02): daemon 当天跑两次, 第二次用不同票池 freeze,
+        原来的 INSERT OR IGNORE 只按 (cohort,symbol) 去重, 新票直接追加 →
+        权重和累积 > 1 (1.24), 持仓市值超本金, 该 cohort 收益系统性高估。
+        改为"cohort 已存在则整体跳过"根治: 要么完整锁定首次快照, 要么完全不动。
+
+        close_prices 里缺 symbol（停牌）时，如果 fallback_lookup 不为 None，
         会调用 fallback_lookup(symbol, as_of_date) 退化用最近 close 冻结，
         避免静默丢权重导致 paper 当日总权重 < 100%、长期低估收益。
 
@@ -103,6 +109,19 @@ class PaperTradingStore:
         from datetime import datetime
 
         if not weights:
+            return 0
+
+        # 幂等门: cohort 已冻结则跳过, 防止二次 freeze 用不同票池叠加权重 (权重膨胀 bug)。
+        with open_meta_db(self._db) as conn:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM paper_trades WHERE cohort_date = ?",
+                (as_of_date.isoformat(),),
+            ).fetchone()[0]
+        if existing:
+            logger.info(
+                "freeze_today_cohort: cohort %s 已存在 %d 行, 幂等跳过 (不二次冻结)",
+                as_of_date.isoformat(), existing,
+            )
             return 0
 
         capital = self._cfg.assumed_capital

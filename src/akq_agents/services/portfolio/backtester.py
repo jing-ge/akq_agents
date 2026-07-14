@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS portfolio_nav (
 class BacktestConfig:
     commission: float = 0.0003   # 单边手续费
     slippage: float = 0.0005     # 单边滑点
+    # A股卖出单边印花税 (2023-08 起 0.05%). 只在卖出边征收, 买入不征。
+    # 缺失会让回测收益系统性高估 (实测本组合约 +3.44pp)。
+    stamp_duty: float = 0.0005
     benchmark_symbol: str = "000300"
     # 涨跌停不可成交阈值 (一字板代理): 当日 close 相对前一交易日涨跌幅达此比例视为
     # 涨/跌停, 涨停禁买 / 跌停禁卖. A 股主板 ±10%, 取 0.095 留缓冲. 设 None 关闭该约束.
@@ -250,6 +253,9 @@ class PortfolioBacktester:
         nav_gross = 1.0
         prev_weights: dict[str, float] = {}
         shares: dict[str, float] = {}
+        # 未成交权重留存为现金 (涨跌停禁买 / 缺价无法建仓时). 现金不随行情波动,
+        # 保证盯市市值 mv == nav_net 恒等, 避免权重凭空蒸发造成虚假日跳空.
+        cash = 0.0
         prev_mv = 1.0
 
         records = []
@@ -257,10 +263,10 @@ class PortfolioBacktester:
         for td in sim_days:
             today_close = close.loc[td] if td in close.index else None
 
-            # 1) 盯市：按今日 close 计算持仓市值（未扣费的真实收益）
+            # 1) 盯市：按今日 close 计算持仓市值（未扣费的真实收益）+ 现金
             raw_return = 0.0
-            if today_close is not None and shares:
-                mv = 0.0
+            if today_close is not None and (shares or cash > 0):
+                mv = cash
                 for sym, sh in shares.items():
                     px = today_close.get(sym)
                     if px is None or pd.isna(px) or px <= 0:
@@ -285,9 +291,12 @@ class PortfolioBacktester:
                 turnover_today = 0.5 * sum(
                     abs(new_weights.get(s, 0.0) - prev_weights.get(s, 0.0)) for s in all_syms
                 )
-                # 双边成本：买入 + 卖出 两边都付，所以乘 2
-                # commission/slippage 是单边费率（见 BacktestConfig 注释）
-                cost_today = 2.0 * turnover_today * (cfg.commission + cfg.slippage)
+                # 双边成本：买入边 (commission+slippage) + 卖出边 (commission+slippage+印花税)。
+                # turnover 是单边换手率, 买卖各 turnover 的量。
+                # commission/slippage 单边费率; stamp_duty 仅卖出征 (A股规则)。
+                cost_today = turnover_today * (
+                    2.0 * (cfg.commission + cfg.slippage) + cfg.stamp_duty
+                )
                 nav_net = nav_net * (1.0 - cost_today)
                 # 重新建立 shares (涨停禁买 / 跌停禁卖: 受限 symbol 维持 rebalance 前持仓)
                 prev_shares = dict(shares)
@@ -319,6 +328,23 @@ class PortfolioBacktester:
                             continue
                         if limited.get(sym) == "down":
                             shares[sym] = held
+                # 守恒: 重建后实际持仓市值可能 < nav_net (部分票涨跌停禁买卖 / 缺价无法
+                # 建仓, 其目标权重未落地). 差额留存为现金, 保证盯市 mv == nav_net,
+                # 否则下一日 mv/prev_mv 会把丢失的权重算成虚假亏损 (误差逐次累积).
+                held_mv = 0.0
+                if today_close is not None:
+                    for sym, sh in shares.items():
+                        px = today_close.get(sym)
+                        if px is None or pd.isna(px) or px <= 0:
+                            last_px = _last_valid_px_before(close, sym, td)
+                            if last_px is not None:
+                                held_mv += sh * float(last_px)
+                        else:
+                            held_mv += sh * float(px)
+                cash = nav_net - held_mv
+                if cash < 0:
+                    # 数值噪声兜底: 实际市值不应超过 nav_net; 轻微为负时归零.
+                    cash = 0.0
                 prev_weights = dict(new_weights)
 
             # daily_return_net: 在扣 cost 之后基于 nav_net 算，这样 cost 反映在当日 return
@@ -396,7 +422,21 @@ class PortfolioBacktester:
             return {"n_days": int(len(nav_net))}
         total_ret = float(nav_net.iloc[-1] - 1.0)
         n = len(nav_net)
-        ann_ret = float(nav_net.iloc[-1] ** (252.0 / n) - 1.0) if nav_net.iloc[-1] > 0 else 0.0
+        # 年化: 按**实际日历跨度**折算, 不能假设 n 个交易日 = 满年 (252/n 外推).
+        # 不足一年时 252/n 会把短期收益外推成整年, 严重高估 (5 日涨 20% 曾算出 +978792%).
+        # 用首末 as_of_date 的日历天数 / 365.25 作为年数.
+        # 关键: 跨度太短时任何年化都是危险外推 (0.01 年的 20% 收益年化到天文数字),
+        # 故跨度 < 30 天不输出年化 (None), 避免误导. 30 天是"最短可外推"的经验阈值.
+        first_d = date.fromisoformat(str(nav_df["as_of_date"].iloc[0]))
+        last_d = date.fromisoformat(str(nav_df["as_of_date"].iloc[-1]))
+        span_days = (last_d - first_d).days
+        final_nav = float(nav_net.iloc[-1])
+        if span_days >= 30 and final_nav > 0:
+            years = span_days / 365.25
+            ann_ret = float(final_nav ** (1.0 / years) - 1.0)
+        else:
+            # 跨度不足 30 天: 年化外推不可靠, 不输出 (标注给上层)
+            ann_ret = None
         sharpe = float(ret.mean() / ret.std() * np.sqrt(252)) if ret.std() > 0 else 0.0
         cummax = nav_net.cummax()
         max_dd = float((nav_net / cummax - 1.0).min())
@@ -410,15 +450,20 @@ class PortfolioBacktester:
             bench_total = float(last_aligned["benchmark_nav"] - 1.0)
             # 用同一天的 nav_net (而不是全表末日的 nav_net) 算超额
             nav_at_bench_end = float(last_aligned["nav_net"])
-            excess = nav_at_bench_end - 1.0 - bench_total
+            total_ret_aligned = nav_at_bench_end - 1.0
+            excess = total_ret_aligned - bench_total
             excess_aligned_date = str(last_aligned["as_of_date"])
         else:
             bench_total = None
             excess = None
+            total_ret_aligned = None
             excess_aligned_date = None
         return {
             "n_days": int(n),
             "total_return_net": total_ret,
+            # 与 excess / benchmark_total_return 同口径 (对齐到基准末日) 的组合收益,
+            # 保证 total_return_net_aligned - benchmark_total_return == excess_return, 可自洽核对.
+            "total_return_net_aligned": total_ret_aligned,
             "annualized_return_net": ann_ret,
             "sharpe_net": sharpe,
             "max_drawdown": max_dd,
@@ -451,14 +496,30 @@ def _last_valid_px_before(close: pd.DataFrame, sym: str, td: date):
     return col.iloc[-1]
 
 
+def _board_limit_pct(sym: str, base_pct: float) -> float:
+    """按板块返回涨跌停阈值。base_pct 是主板基准 (如 0.095 对应主板 ±10%)。
+
+    A股涨跌停: 主板 ±10%, 创业板(300/301)/科创板(688) ±20%, 北交所(8/4/92) ±30%。
+    以主板为基准按倍数放宽, 保证 cfg.price_limit_pct 语义连续 (改基准两板同步变)。
+    ST股 (±5%) 无法从代码前缀判定 (需股票名称), 选股阶段一般已过滤, 此处不特殊处理。
+    """
+    s = str(sym)
+    if s.startswith("688") or s.startswith(("300", "301")):
+        return base_pct * 2.0   # 创业板 / 科创板 ±20%
+    if s.startswith(("8", "4", "92")):
+        return base_pct * 3.0   # 北交所 ±30%
+    return base_pct             # 主板 ±10%
+
+
 def _price_limited_symbols(
     close: pd.DataFrame, td: date, limit_pct: float | None
 ) -> dict[str, str]:
     """判定 td 当日哪些 symbol 涨停 / 跌停 (一字板代理)。
 
     用 td 当日 close 相对 **td 之前最近有效交易日 close** 的涨跌幅近似:
-    涨幅 >= +limit_pct → "up" (涨停, 禁买); 跌幅 <= -limit_pct → "down" (跌停, 禁卖)。
-    limit_pct 为 None 时返回空 (关闭该约束)。
+    涨幅 >= +阈值 → "up" (涨停, 禁买); 跌幅 <= -阈值 → "down" (跌停, 禁卖)。
+    **阈值按板块区分** (主板 ±10% / 创业科创 ±20% / 北交所 ±30%), 见 _board_limit_pct。
+    limit_pct 为 None 时返回空 (关闭该约束); 非 None 时作为主板基准。
 
     注意这是近似: 真实涨跌停应比对官方前收盘价且判一字板 (high==low),
     但回测仅加载了 close, 用相邻 close 涨跌幅代理已能挡住绝大多数不可成交场景。
@@ -478,8 +539,9 @@ def _price_limited_symbols(
         if prev_px is None or prev_px <= 0:
             continue
         chg = float(px) / float(prev_px) - 1.0
-        if chg >= limit_pct:
+        sym_limit = _board_limit_pct(sym, limit_pct)
+        if chg >= sym_limit:
             out[sym] = "up"
-        elif chg <= -limit_pct:
+        elif chg <= -sym_limit:
             out[sym] = "down"
     return out
